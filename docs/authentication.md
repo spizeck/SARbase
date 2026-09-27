@@ -67,7 +67,12 @@ it cannot resolve a context even while a cookie remains valid.
 
 ### Cardinality
 
-- AuthIdentity → Member: **1 : 0..N** (via optional `Member.authIdentityId`)
+- AuthIdentity → Member: **1 : 0..N** globally (via optional
+  `Member.authIdentityId`), but **at most one linked Member per
+  organization per identity** — enforced by
+  `@@unique([organizationId, authIdentityId])` on `Member`. NULL
+  `authIdentityId` values are distinct in Postgres, so any number of
+  unlinked member records coexist.
 - AuthIdentity ↔ Organization: **N : M** via `OrganizationAccess`, one
   role per (identity, org) pair
 - Member → AuthIdentity: **0..1** — members don't need logins, and
@@ -122,8 +127,10 @@ internal groupings, not security boundaries.
 
 ## Initial administrator bootstrap
 
-There is no in-app or self-registration path to ADMIN. Provisioning is
-a CLI command (idempotent, no secrets in source):
+There is no in-app or self-registration path to ADMIN — and no in-app
+path to organization creation either. Creating an organization and
+granting its first ADMIN is a single explicit operator act via the CLI
+command (idempotent, no secrets in source):
 
 ```bash
 # The person must exist in Firebase Authentication AND have signed in
@@ -146,12 +153,20 @@ missing organization.
 ## Account ↔ member linking
 
 On a member's admin page, an org ADMIN can link a sign-in identity to
-that member record by the identity's **sign-in email** — which must
-already exist (the person signed in once, or was provisioned by UID).
+that member record by the identity's **sign-in email**. Because
+`AuthIdentity.email` is deliberately non-unique, the link resolves only
+when the email matches **exactly one** ACTIVE identity — zero matches
+gives an account-not-ready error, multiple matches refuse with an
+ambiguity error (mirroring `admin:provision`'s `--email` behavior).
+Email is a lookup convenience, never an authoritative identity key.
+
 Linking writes `Member.authIdentityId` _and_ ensures a `MEMBER`-level
 `OrganizationAccess` row for the member's organization, so the account
-has a deterministic context. Unlinking clears the member link without
-touching access grants. Both emit structured `auth.identity_linked` /
+has a deterministic context — it never creates `ADMIN` grants. An
+identity already linked to a member in that organization fails with a
+clear "already linked" error (the per-org uniqueness constraint).
+Unlinking clears the member link without touching access grants. All
+of these emit structured `auth.identity_linked` /
 `auth.identity_unlinked` events.
 
 ## Deployment (Firebase setup)

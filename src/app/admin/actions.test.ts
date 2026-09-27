@@ -6,15 +6,13 @@ const {
   memberFindUniqueMock,
   unitFindUniqueMock,
   organizationUpdateMock,
-  organizationCreateMock,
   unitCreateMock,
   unitUpdateMock,
   memberCreateMock,
   memberUpdateMock,
   memberUnitDeleteManyMock,
   memberUnitCreateManyMock,
-  authIdentityFindFirstMock,
-  organizationAccessCreateMock,
+  authIdentityFindManyMock,
   organizationAccessUpsertMock,
 } = vi.hoisted(() => ({
   getAuthContextMock: vi.fn(),
@@ -24,15 +22,13 @@ const {
   memberFindUniqueMock: vi.fn(),
   unitFindUniqueMock: vi.fn(),
   organizationUpdateMock: vi.fn(),
-  organizationCreateMock: vi.fn(),
   unitCreateMock: vi.fn(),
   unitUpdateMock: vi.fn(),
   memberCreateMock: vi.fn(),
   memberUpdateMock: vi.fn(),
   memberUnitDeleteManyMock: vi.fn(),
   memberUnitCreateManyMock: vi.fn(),
-  authIdentityFindFirstMock: vi.fn(),
-  organizationAccessCreateMock: vi.fn(),
+  authIdentityFindManyMock: vi.fn(),
   organizationAccessUpsertMock: vi.fn(),
 }));
 
@@ -43,7 +39,6 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     organization: {
       update: organizationUpdateMock,
-      create: organizationCreateMock,
     },
     unit: {
       findUnique: unitFindUniqueMock,
@@ -59,7 +54,8 @@ vi.mock("@/lib/prisma", () => ({
       deleteMany: memberUnitDeleteManyMock,
       createMany: memberUnitCreateManyMock,
     },
-    authIdentity: { findFirst: authIdentityFindFirstMock },
+    authIdentity: { findMany: authIdentityFindManyMock },
+    organizationAccess: { upsert: organizationAccessUpsertMock },
     $transaction: vi.fn(async (arg) => {
       if (Array.isArray(arg)) return Promise.all(arg);
       return arg({
@@ -69,11 +65,7 @@ vi.mock("@/lib/prisma", () => ({
         },
         unit: { findMany: vi.fn().mockResolvedValue([]) },
         member: { update: memberUpdateMock },
-        organization: { create: organizationCreateMock },
-        organizationAccess: {
-          create: organizationAccessCreateMock,
-          upsert: organizationAccessUpsertMock,
-        },
+        organizationAccess: { upsert: organizationAccessUpsertMock },
       });
     }),
   },
@@ -86,7 +78,6 @@ vi.mock("@/lib/auth/context", async (importOriginal) => ({
 
 import {
   createMemberAction,
-  createOrganizationAction,
   createUnitAction,
   linkIdentityToMemberAction,
   setMemberStatusAction,
@@ -257,21 +248,61 @@ describe("in-scope admin operations", () => {
     });
   });
 
-  it("creates an organization and grants the creator ADMIN", async () => {
-    organizationCreateMock.mockResolvedValue({ id: "org-new" });
-    await expect(
-      createOrganizationAction({}, formData({ name: "New Org" })),
-    ).rejects.toThrow("NEXT_REDIRECT");
-    expect(organizationCreateMock).toHaveBeenCalledWith({
-      data: { name: "New Org" },
+  it("exposes no organization-creation action — ADMIN cannot be self-granted", async () => {
+    // Issue #6 hardening: org creation + first ADMIN grant live only in
+    // scripts/provision-admin.ts. No exported action may create an
+    // Organization or write an ADMIN OrganizationAccess row.
+    const actions = await import("./actions");
+    expect("createOrganizationAction" in actions).toBe(false);
+    for (const value of Object.values(actions)) {
+      expect(typeof value).toBe("function");
+    }
+  });
+
+  it("links an identity only when exactly one ACTIVE match exists", async () => {
+    memberFindUniqueMock.mockResolvedValue({
+      id: "member-a",
+      organizationId: ORG_A,
     });
-    expect(organizationAccessCreateMock).toHaveBeenCalledWith({
-      data: {
-        organizationId: "org-new",
-        authIdentityId: "ident-actor",
-        role: "ADMIN",
-      },
+    authIdentityFindManyMock.mockResolvedValue([
+      { id: "ident-target", status: "ACTIVE" },
+    ]);
+    memberUpdateMock.mockResolvedValue({});
+    organizationAccessUpsertMock.mockResolvedValue({});
+
+    const result = await linkIdentityToMemberAction(
+      "member-a",
+      {},
+      formData({ email: "one@example.org" }),
+    );
+    expect(result).toEqual({});
+    // The access row created by linking is MEMBER — never ADMIN.
+    expect(organizationAccessUpsertMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ role: "MEMBER" }),
+        update: {},
+      }),
+    );
+  });
+
+  it("refuses ambiguous email matches — no link, no access grant", async () => {
+    memberFindUniqueMock.mockResolvedValue({
+      id: "member-a",
+      organizationId: ORG_A,
     });
+    authIdentityFindManyMock.mockResolvedValue([
+      { id: "ident-1", status: "ACTIVE" },
+      { id: "ident-2", status: "ACTIVE" },
+    ]);
+
+    const result = await linkIdentityToMemberAction(
+      "member-a",
+      {},
+      formData({ email: "dupe@example.org" }),
+    );
+    expect(result.fieldErrors?.email?.[0]).toContain("Multiple");
+    expect(memberUpdateMock).not.toHaveBeenCalled();
+    expect(organizationAccessUpsertMock).not.toHaveBeenCalled();
   });
 
   it("renames its own organization", async () => {

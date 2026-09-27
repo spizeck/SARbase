@@ -195,7 +195,7 @@ Inherited from the foundation baseline, working today:
 
 ### Domain functionality already implemented
 
-- Core records: **Organization → Unit → Member**, with an internal admin UI (`/admin`) for creating and editing organizations, units, and member contact details; member activation/deactivation; unit assignment; and identity linking (see `docs/domain-model.md`)
+- Core records: **Organization → Unit → Member**, with an internal admin UI (`/admin`) for editing organizations and managing units and member contact details; member activation/deactivation; unit assignment; and identity linking. Organization creation and first-admin grants are operator-provisioned via `npm run admin:provision` (see `docs/domain-model.md`)
 - **Authentication and organization-scoped authorization**: Firebase Auth → server-verified HTTP-only session cookie; separate `AuthIdentity` login model linked to `Member` records; explicit `OrganizationAccess` grants with `MEMBER`/`ADMIN` roles; centralized server-side authorization helpers; admin bootstrap via `npm run admin:provision` (see `docs/authentication.md`)
 - Sign-in/sign-out UI plus a minimal `/account` page showing identity, linked member records, and granted organization access
 

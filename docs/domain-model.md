@@ -118,9 +118,12 @@ reference is `docs/authentication.md`. The model in brief:
   unique, normalized email, `ACTIVE`/`DISABLED`). Auto-provisioned at
   first verified sign-in with zero access; provider identifiers never
   land on `Member`.
-- **`Member.authIdentityId`** — optional, non-unique FK to an identity
-  (`SetNull` on delete). One identity may link to member records in
-  several organizations; each member links to at most one identity.
+- **`Member.authIdentityId`** — optional FK to an identity (`SetNull` on
+  delete). Globally one identity may link to member records in several
+  organizations, but `@@unique([organizationId, authIdentityId])`
+  caps it at **one linked member per organization per identity**;
+  each member links to at most one identity, and unlinked members
+  coexist (NULLs are distinct).
 - **`OrganizationAccess`** — explicit `(authIdentityId, organizationId,
 role)` rows; the sole source of org-scoped authorization. `OrgRole` is
   `MEMBER` or `ADMIN` (application administration only — it implies no

@@ -84,41 +84,10 @@ function mapDomainError(error: unknown): ActionState {
   throw error;
 }
 
-export async function createOrganizationAction(
-  _prev: ActionState,
-  formData: FormData,
-): Promise<ActionState> {
-  const ctx = await requireAuth();
-
-  const parsed = organizationInputSchema.safeParse({
-    name: formData.get("name"),
-  });
-  if (!parsed.success) return zodErrors(parsed.error);
-
-  // Creating an organization grants the creator ADMIN access to it —
-  // this is how a new SAR org adopts SARbase without a central operator.
-  const organization = await prisma.$transaction(async (tx) => {
-    const org = await tx.organization.create({
-      data: { name: parsed.data.name },
-    });
-    await tx.organizationAccess.create({
-      data: {
-        organizationId: org.id,
-        authIdentityId: ctx.identity.id,
-        role: "ADMIN",
-      },
-    });
-    return org;
-  });
-  log({
-    event: "organization.created",
-    subsystem: "domain",
-    entityType: "Organization",
-    entityId: organization.id,
-    actorId: ctx.identity.id,
-  });
-  redirect(`/admin/organizations/${organization.id}`);
-}
+// There is deliberately NO createOrganizationAction: creating an
+// organization and granting its first ADMIN is an explicit operator
+// act via `npm run admin:provision` — never an authenticated
+// self-service path (see docs/authentication.md).
 
 export async function updateOrganizationAction(
   organizationId: string,
@@ -339,11 +308,15 @@ export async function linkIdentityToMemberAction(
     return { fieldErrors: { email: ["Enter the account's sign-in email."] } };
   }
 
-  const identity = await prisma.authIdentity.findFirst({
+  // AuthIdentity.email is deliberately non-unique — it is a lookup
+  // convenience, not an identity key. Linking is only permitted when the
+  // email resolves to EXACTLY ONE active identity; ambiguous matches
+  // refuse the link rather than silently picking one (mirrors
+  // scripts/provision-admin.ts).
+  const matches = await prisma.authIdentity.findMany({
     where: { email: parsed.data, status: "ACTIVE" },
-    orderBy: { createdAt: "asc" },
   });
-  if (!identity) {
+  if (matches.length === 0) {
     return {
       fieldErrors: {
         email: [
@@ -352,27 +325,55 @@ export async function linkIdentityToMemberAction(
       },
     };
   }
+  if (matches.length > 1) {
+    return {
+      fieldErrors: {
+        email: [
+          "Multiple sign-in accounts share that email. Linking must use an unambiguous identity — contact the operator.",
+        ],
+      },
+    };
+  }
+  const identity = matches[0]!;
 
-  await prisma.$transaction([
-    prisma.member.update({
-      where: { id: memberId },
-      data: { authIdentityId: identity.id },
-    }),
-    prisma.organizationAccess.upsert({
-      where: {
-        authIdentityId_organizationId: {
+  try {
+    await prisma.$transaction([
+      prisma.member.update({
+        where: { id: memberId },
+        data: { authIdentityId: identity.id },
+      }),
+      prisma.organizationAccess.upsert({
+        where: {
+          authIdentityId_organizationId: {
+            authIdentityId: identity.id,
+            organizationId: member.organizationId,
+          },
+        },
+        update: {},
+        create: {
           authIdentityId: identity.id,
           organizationId: member.organizationId,
+          role: "MEMBER",
         },
-      },
-      update: {},
-      create: {
-        authIdentityId: identity.id,
-        organizationId: member.organizationId,
-        role: "MEMBER",
-      },
-    }),
-  ]);
+      }),
+    ]);
+  } catch (error) {
+    // @@unique([organizationId, authIdentityId]): this identity is
+    // already linked to a member record in this organization.
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      return {
+        fieldErrors: {
+          email: [
+            "This account is already linked to a member record in this organization.",
+          ],
+        },
+      };
+    }
+    throw error;
+  }
   log({
     event: "auth.identity_linked",
     subsystem: "auth",

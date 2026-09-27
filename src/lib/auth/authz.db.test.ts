@@ -410,6 +410,159 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       });
       expect(stillUnlinked?.authIdentityId).toBeNull();
     });
+
+    it("refuses an ambiguous email — no member link, no access grant", async () => {
+      signInAs(adminAUid);
+      // Two ACTIVE identities sharing one email: email is a lookup
+      // convenience, never an authoritative identity key.
+      const email = uniq("dupe") + "@example.org";
+      const dupe1 = await prisma.authIdentity.create({
+        data: { provider: "firebase", providerUid: uniq("dupe-1"), email },
+      });
+      const dupe2 = await prisma.authIdentity.create({
+        data: { provider: "firebase", providerUid: uniq("dupe-2"), email },
+      });
+      const member = await prisma.member.create({
+        data: { organizationId: orgA.id, displayName: uniq("ambig") },
+      });
+
+      const result = await linkIdentityToMemberAction(
+        member.id,
+        {},
+        form({ email }),
+      );
+      expect(result.fieldErrors?.email?.[0]).toContain("Multiple");
+
+      // Nothing was written: no link, no OrganizationAccess grant.
+      const stillUnlinked = await prisma.member.findUnique({
+        where: { id: member.id },
+      });
+      expect(stillUnlinked?.authIdentityId).toBeNull();
+      expect(
+        await prisma.organizationAccess.count({
+          where: {
+            organizationId: orgA.id,
+            authIdentityId: { in: [dupe1.id, dupe2.id] },
+          },
+        }),
+      ).toBe(0);
+    });
+
+    it("ignores DISABLED identities when resolving by email", async () => {
+      signInAs(adminAUid);
+      const email = uniq("disabled-dupe") + "@example.org";
+      await prisma.authIdentity.create({
+        data: {
+          provider: "firebase",
+          providerUid: uniq("disabled"),
+          email,
+          status: "DISABLED",
+        },
+      });
+      const active = await prisma.authIdentity.create({
+        data: {
+          provider: "firebase",
+          providerUid: uniq("active"),
+          email,
+          status: "ACTIVE",
+        },
+      });
+      const member = await prisma.member.create({
+        data: { organizationId: orgA.id, displayName: uniq("disambig") },
+      });
+      const result = await linkIdentityToMemberAction(
+        member.id,
+        {},
+        form({ email }),
+      );
+      expect(result).toEqual({});
+      const linked = await prisma.member.findUnique({
+        where: { id: member.id },
+      });
+      expect(linked?.authIdentityId).toBe(active.id);
+    });
+  });
+
+  describe("one linked member per organization per identity", () => {
+    it("allows cross-org links, rejects a second link in the same org, allows unlinked", async () => {
+      const identity = await prisma.authIdentity.create({
+        data: { provider: "firebase", providerUid: uniq("uid-multi") },
+      });
+
+      // Identity → member in org A: allowed.
+      const inA = await prisma.member.create({
+        data: {
+          organizationId: orgA.id,
+          displayName: uniq("multi-a"),
+          authIdentityId: identity.id,
+        },
+      });
+      expect(inA.authIdentityId).toBe(identity.id);
+
+      // Identity → member in org B: allowed (same human, other org).
+      const inB = await prisma.member.create({
+        data: {
+          organizationId: orgB.id,
+          displayName: uniq("multi-b"),
+          authIdentityId: identity.id,
+        },
+      });
+      expect(inB.authIdentityId).toBe(identity.id);
+
+      // Identity → a SECOND member in org A: rejected by the
+      // (organizationId, authIdentityId) unique constraint.
+      await expect(
+        prisma.member.create({
+          data: {
+            organizationId: orgA.id,
+            displayName: uniq("multi-a2"),
+            authIdentityId: identity.id,
+          },
+        }),
+      ).rejects.toThrow();
+
+      // Any number of UNLINKED members in org A coexist — NULL
+      // authIdentityId values are distinct under the constraint.
+      const u1 = await prisma.member.create({
+        data: { organizationId: orgA.id, displayName: uniq("unlinked-1") },
+      });
+      const u2 = await prisma.member.create({
+        data: { organizationId: orgA.id, displayName: uniq("unlinked-2") },
+      });
+      expect(u1.authIdentityId).toBeNull();
+      expect(u2.authIdentityId).toBeNull();
+    });
+
+    it("the application surfaces the constraint as an error, not a silent overwrite", async () => {
+      signInAs(adminAUid);
+      const identity = await prisma.authIdentity.create({
+        data: {
+          provider: "firebase",
+          providerUid: uniq("uid-collision"),
+          email: uniq("collision") + "@example.org",
+        },
+      });
+      await prisma.member.create({
+        data: {
+          organizationId: orgA.id,
+          displayName: uniq("first"),
+          authIdentityId: identity.id,
+        },
+      });
+      const second = await prisma.member.create({
+        data: { organizationId: orgA.id, displayName: uniq("second") },
+      });
+      const result = await linkIdentityToMemberAction(
+        second.id,
+        {},
+        form({ email: identity.email! }),
+      );
+      expect(result.fieldErrors?.email?.[0]).toContain("already linked");
+      const unchanged = await prisma.member.findUnique({
+        where: { id: second.id },
+      });
+      expect(unchanged?.authIdentityId).toBeNull();
+    });
   });
 
   describe("schema constraints", () => {

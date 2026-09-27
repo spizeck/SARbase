@@ -95,15 +95,19 @@ model Member {
 
   // Optional link to a login identity. Nullable — most members never sign
   // in. SetNull on identity deletion: removing a login must never destroy
-  // the domain person record or its history. NOT unique: one identity may
-  // legitimately link to member records in several organizations (the
-  // same person volunteering across orgs), while each member record maps
-  // to at most one account.
+  // the domain person record or its history. One identity may legitimately
+  // link to member records in several organizations (the same person
+  // volunteering across orgs) — but at most ONE member record per
+  // organization per identity (see the composite unique below; Postgres
+  // treats NULL authIdentityId values as distinct, so any number of
+  // unlinked members coexist).
   authIdentityId String?
   authIdentity   AuthIdentity? @relation(fields: [authIdentityId], references: [id], onDelete: SetNull)
 
   // Composite-FK target so MemberUnit can enforce same-organization rows.
   @@unique([id, organizationId])
+  // At most one linked Member per organization per AuthIdentity.
+  @@unique([organizationId, authIdentityId])
   @@index([organizationId, status])
   @@index([email])
   @@index([authIdentityId])
