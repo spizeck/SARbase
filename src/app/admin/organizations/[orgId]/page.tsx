@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { getOrganization } from "@/lib/domain/organization";
 import { listMembers } from "@/lib/domain/member";
+import { adminSurfaceEnabled } from "@/lib/admin-gate";
 
 import {
   updateOrganizationAction,
@@ -28,6 +29,9 @@ export default async function OrganizationPage({
   params: Promise<{ orgId: string }>;
   searchParams: Promise<{ unit?: string }>;
 }) {
+  // Temporary bootstrap gate — removed by issue #6 (see lib/admin-gate).
+  if (!adminSurfaceEnabled()) notFound();
+
   const { orgId } = await params;
   const { unit: unitFilter } = await searchParams;
 

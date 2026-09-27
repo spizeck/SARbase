@@ -23,15 +23,18 @@ import {
   memberStatusSchema,
   memberUnitsSchema,
 } from "@/lib/domain/schemas";
+import { assertAdminEnabled } from "@/lib/admin-gate";
 
 /**
  * Server actions for the internal administration surface.
  *
  * SECURITY NOTE — intentionally unauthenticated for now: issue #5 ships
  * the domain and its admin UI; issue #6 adds authentication and
- * centralized server-side authorization. These actions must be gated
- * before any deployment holding real data. Until then they are
- * development/bootstrap surface only.
+ * centralized server-side authorization. Until then every action calls
+ * the temporary `assertAdminEnabled()` gate FIRST — it throws in any
+ * production build (deployed environments always run NODE_ENV=
+ * production), so a crafted request cannot invoke mutations even though
+ * no login exists yet. Issue #6 replaces this module with real authz.
  */
 
 export interface ActionState {
@@ -69,6 +72,7 @@ export async function createOrganizationAction(
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  assertAdminEnabled();
   const parsed = organizationInputSchema.safeParse({
     name: formData.get("name"),
   });
@@ -83,6 +87,7 @@ export async function updateOrganizationAction(
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  assertAdminEnabled();
   const parsed = organizationInputSchema.safeParse({
     name: formData.get("name"),
   });
@@ -105,6 +110,7 @@ export async function createUnitAction(
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  assertAdminEnabled();
   const parsed = unitInputSchema.safeParse({ name: formData.get("name") });
   if (!parsed.success) return zodErrors(parsed.error);
 
@@ -135,6 +141,7 @@ export async function updateUnitAction(
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  assertAdminEnabled();
   const parsed = unitInputSchema.safeParse({ name: formData.get("name") });
   if (!parsed.success) return zodErrors(parsed.error);
 
@@ -164,6 +171,7 @@ export async function createMemberAction(
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  assertAdminEnabled();
   const parsed = memberInputSchema.safeParse({
     displayName: formData.get("displayName"),
     email: formData.get("email"),
@@ -181,6 +189,7 @@ export async function updateMemberAction(
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  assertAdminEnabled();
   const parsed = memberInputSchema.safeParse({
     displayName: formData.get("displayName"),
     email: formData.get("email"),
@@ -205,6 +214,7 @@ export async function setMemberStatusAction(
   organizationId: string,
   status: string,
 ): Promise<void> {
+  assertAdminEnabled();
   const parsed = memberStatusSchema.safeParse(status);
   if (!parsed.success) return;
 
@@ -219,6 +229,7 @@ export async function setMemberUnitsAction(
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  assertAdminEnabled();
   const parsed = memberUnitsSchema.safeParse({
     unitIds: formData.getAll("unitIds"),
   });

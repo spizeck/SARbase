@@ -111,12 +111,22 @@ application surface itself never deletes members — see lifecycle below.
 ## Authorization assumptions (deferred to issue #6)
 
 The admin surface under `/admin` performs server-side validation but is
-**intentionally unauthenticated**. Issue #6 adds authentication,
+**intentionally unauthenticated** until issue #6 adds authentication,
 centralized server-side authorization, and account↔member linkage.
-Until then these routes are development/bootstrap surface and must not
-be deployed holding real data. No row-level security or tenant
-middleware exists yet by design — ownership is a data constraint first;
-access control lands with authentication.
+
+**Temporary bootstrap gate** (`src/lib/admin-gate.ts`): the surface is
+enabled only outside production builds (`NODE_ENV !== "production"`).
+Since every deployed environment runs a production build, `/admin` 404s
+there at the page level _and_ every server action throws
+`AdminDisabledError` before touching the domain — a crafted POST to an
+action endpoint cannot invoke mutations. Issue #6 **replaces and
+removes** this module; the gate is deliberately a single import plus one
+call per page/action so removal is mechanical. Do not deploy `/admin`
+holding real data until real authorization exists.
+
+No row-level security or tenant middleware exists yet by design —
+ownership is a data constraint first; access control lands with
+authentication.
 
 ## Validation
 

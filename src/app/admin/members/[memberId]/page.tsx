@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { getMember } from "@/lib/domain/member";
 import { listUnits } from "@/lib/domain/unit";
+import { adminSurfaceEnabled } from "@/lib/admin-gate";
 
 import {
   updateMemberAction,
@@ -20,6 +21,9 @@ export default async function MemberPage({
 }: {
   params: Promise<{ memberId: string }>;
 }) {
+  // Temporary bootstrap gate — removed by issue #6 (see lib/admin-gate).
+  if (!adminSurfaceEnabled()) notFound();
+
   const { memberId } = await params;
   const member = await getMember(memberId);
   if (!member) notFound();

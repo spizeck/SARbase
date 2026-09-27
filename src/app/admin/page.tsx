@@ -1,6 +1,8 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 
 import { listOrganizations } from "@/lib/domain/organization";
+import { adminSurfaceEnabled } from "@/lib/admin-gate";
 
 import { createOrganizationAction } from "./actions";
 import { OrganizationForm } from "./forms";
@@ -11,6 +13,9 @@ export const metadata = { title: "Administration" };
 export const dynamic = "force-dynamic";
 
 export default async function AdminPage() {
+  // Temporary bootstrap gate — removed by issue #6 (see lib/admin-gate).
+  if (!adminSurfaceEnabled()) notFound();
+
   const organizations = await listOrganizations();
 
   return (
