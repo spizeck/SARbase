@@ -1,8 +1,7 @@
-// Bootstrap schema — `BootstrapItem` is a deliberately neutral placeholder
-// that proves the migration pipeline end-to-end until the real SARbase
-// domain schema is designed. The conventions below (cuid ids,
-// createdAt/updatedAt, explicit indexes) are the house style carried from
-// the app-foundations production apps.
+// SARbase domain schema — see docs/domain-model.md for the semantics,
+// cardinality reasoning, and the organization ownership boundary.
+// Conventions (cuid ids, createdAt/updatedAt, explicit indexes) are the
+// house style carried from the app-foundations production apps.
 
 generator client {
   provider = "prisma-client-js"
@@ -15,11 +14,89 @@ datasource db {
   url = env("DATABASE_URL")
 }
 
-model BootstrapItem {
+// Administrative lifecycle for a member record. Deactivation preserves
+// identity and history; there is no destructive member deletion in the
+// application surface (see docs/domain-model.md).
+enum MemberStatus {
+  ACTIVE
+  INACTIVE
+}
+
+// The independent SAR organization that owns its records. Deliberately
+// minimal — no billing, federation, or regional hierarchy concepts.
+model Organization {
   id        String   @id @default(cuid())
-  label     String
+  name      String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([createdAt])
+  units   Unit[]
+  members Member[]
+}
+
+// An internal operational/administrative grouping within an organization
+// (station, base, detachment, team, ...). An organization may have zero
+// units — units are optional structure, not a requirement.
+model Unit {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  memberUnits  MemberUnit[]
+
+  // Unit names are unique within an organization (not globally).
+  @@unique([organizationId, name])
+  // Composite-FK target so MemberUnit can enforce same-organization rows.
+  @@unique([id, organizationId])
+  @@index([organizationId])
+}
+
+// A person belonging to a SAR organization. This is a DOMAIN record —
+// it is not an authentication account. A volunteer exists in SARbase
+// before (and independently of) any sign-in; a future auth identity
+// links TO a member rather than defining one (see issue #6).
+model Member {
+  id             String       @id @default(cuid())
+  organizationId String
+  displayName    String
+  // Contact points are optional, non-unique, and org-scoped in meaning.
+  // A person without email/phone is a valid member; the same email may
+  // legitimately appear on multiple members (shared family contact,
+  // separate orgs) — uniqueness for sign-in linkage belongs to the auth
+  // layer, not this record.
+  email          String?
+  phone          String?
+  status         MemberStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  memberUnits  MemberUnit[]
+
+  // Composite-FK target so MemberUnit can enforce same-organization rows.
+  @@unique([id, organizationId])
+  @@index([organizationId, status])
+  @@index([email])
+}
+
+// Member ↔ Unit assignment. A member may belong to zero, one, or several
+// units of their organization. The denormalized organizationId exists so
+// the composite foreign keys below can guarantee — at the database level,
+// not just in application code — that a member is only ever assigned to
+// units of their own organization.
+model MemberUnit {
+  id             String   @id @default(cuid())
+  organizationId String
+  memberId       String
+  unitId         String
+  createdAt      DateTime @default(now())
+
+  member Member @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  unit   Unit   @relation(fields: [unitId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  @@unique([memberId, unitId])
+  @@index([unitId])
 }
