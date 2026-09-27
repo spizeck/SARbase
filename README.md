@@ -176,7 +176,26 @@ SARbase is built as a modern web application using:
 - React
 - Tailwind CSS
 
-The project is based on production-tested open-source application foundations and is designed to support self-hosted deployments.
+The project is based on the [`app-foundations`](https://github.com/spizeck/app-foundations) `next-neon` baseline — production-tested open-source application foundations — and is designed to support self-hosted deployments. Foundation code is copied in at creation time; SARbase does not depend on `app-foundations` at runtime.
+
+### Foundation capabilities already implemented
+
+Inherited from the foundation baseline, working today:
+
+- TypeScript strict mode, ESLint, Prettier, Node 24
+- Structured JSON logging with field/pattern redaction (`src/lib/logging.ts`)
+- Feature-gated security headers including CSP (`src/lib/security/headers.ts`)
+- API route wrapper with request IDs and safe error envelopes (`src/lib/api.ts`)
+- `/api/health` liveness endpoint with a real database check
+- Lazy per-concern environment validation (`src/lib/env.ts`)
+- Prisma + Postgres migration pipeline: guarded deploys inside the Vercel build, migration replay and schema-drift checks in CI, isolated `*.db.test.ts` database tests
+- Guarded logical backups and a local restore drill (`scripts/`)
+- Playwright smoke + axe accessibility suites
+- Optional modules already copied in: Sentry observability (privacy-scrubbed, disabled without a DSN — `src/lib/observability/`) and a fixed-window rate limiter with a pluggable store (`src/lib/rate-limit/`)
+
+### Not yet implemented
+
+Authentication, authorization, notifications, attachments, audit history, background jobs, and all SAR domain functionality (members, callouts, incidents, equipment, expenses, search) are **planned, not built**. The single `BootstrapItem` table exists only to prove the migration pipeline; the real schema will be designed in a dedicated issue.
 
 ## Status
 
@@ -192,11 +211,36 @@ SARbase is intended to be shaped by the real needs of volunteer search and rescu
 
 Operational SAR doctrine is outside the scope of the project. Proposed features that attempt to provide search planning, rescue tactics, navigation guidance, or operational decision-making may be declined even when technically feasible.
 
+## Development
+
+SARbase is a standard Next.js application. Requirements: Node 24 (see `.nvmrc`) and Docker (or any local Postgres) for the development database.
+
+```bash
+npm install
+cp .env.example .env.local       # fill in the documented values
+docker compose up -d             # local Postgres on :5433
+npm run db:migrate:deploy        # apply migrations
+npm run db:seed                  # synthetic seed rows
+npm run db:restore-drill -- --target development --confirm
+                                 # prove dump→restore works locally
+npm run dev
+```
+
+Verification (the same gates CI enforces):
+
+```bash
+npm run check          # format, lint, typecheck, unit tests, production build — needs no env values
+TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/sarbase_test npm run test:db
+npm run test:e2e       # Playwright smoke + accessibility suite
+```
+
+The database environment/migration contract — pooled vs unpooled URLs, expand/contract discipline, preview isolation, backup posture — is documented in [`docs/database.md`](docs/database.md). Operator recovery procedures live in [`runbooks/database-backup-restore.md`](runbooks/database-backup-restore.md). Architectural principles are in [`docs/architecture.md`](docs/architecture.md).
+
 ## Security
 
 Please do not publicly disclose vulnerabilities involving authentication, authorization, personal information, incident records, or other sensitive data.
 
-A dedicated security reporting process will be documented as the project approaches its first public release.
+See [`SECURITY.md`](SECURITY.md) for the reporting process.
 
 ## License
 

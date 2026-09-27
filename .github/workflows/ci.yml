@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Core gates: install from the lockfile, then the full check suite —
+  # format, lint, typecheck, unit tests, production build — running with
+  # zero secrets. The browser smoke suite reuses the build output.
+  app:
+    name: App
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - name: Upload Playwright report
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report-${{ github.sha }}
+          path: playwright-report/
+          retention-days: 7
+
+  # Database gates against the docker-compose Postgres: replay every
+  # migration onto an empty database, diff migration history against
+  # schema.prisma (drift check), run the isolated db test suite, and
+  # prove the backup path with a restore drill.
+  database:
+    name: Database
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # pg_isready probes the unix socket and can report "ready" against
+      # the entrypoint's temporary initdb server, which then shuts down —
+      # racing createdb. db:wait requires real TCP queries instead.
+      - name: Start PostgreSQL
+        run: |
+          docker compose up -d postgres
+          npm run db:wait
+      - name: Migration replay + schema drift check
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5433/sarbase_dev
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5433/shadow
+        run: |
+          docker compose exec -T postgres createdb -U postgres shadow
+          npx prisma migrate deploy
+          npx prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema-datamodel prisma/schema.prisma \
+            --shadow-database-url "$SHADOW_DATABASE_URL" \
+            --exit-code
+      - name: Database tests
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5433/sarbase_test
+        run: |
+          docker compose exec -T postgres createdb -U postgres sarbase_test
+          DATABASE_URL="$TEST_DATABASE_URL" npx prisma migrate deploy
+          npm run test:db
+      - name: Restore drill
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5433/sarbase_dev
+        run: npm run db:restore-drill -- --target development --confirm

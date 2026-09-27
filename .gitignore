@@ -1,0 +1,30 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+next-env.d.ts
+
+# production
+build/
+
+# env files — never commit secrets; .env.example is the documented exception
+.env
+.env.*
+!.env.example
+
+# testing
+coverage/
+playwright-report/
+test-results/
+
+# database dumps — contain real data, never commit
+backups/
+*.dump
+
+# misc
+*.log
+*.tsbuildinfo
+.DS_Store
+.vercel

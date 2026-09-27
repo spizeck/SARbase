@@ -1,0 +1,25 @@
+// Bootstrap schema — `BootstrapItem` is a deliberately neutral placeholder
+// that proves the migration pipeline end-to-end until the real SARbase
+// domain schema is designed. The conventions below (cuid ids,
+// createdAt/updatedAt, explicit indexes) are the house style carried from
+// the app-foundations production apps.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Runtime queries use the pooled DATABASE_URL. Migrations and
+  // introspection should use DATABASE_URL_UNPOOLED — see .env.example.
+  url = env("DATABASE_URL")
+}
+
+model BootstrapItem {
+  id        String   @id @default(cuid())
+  label     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([createdAt])
+}

@@ -1,0 +1,69 @@
+version: 2
+# Dependency maintenance for SARbase's single npm manifest plus GitHub
+# Actions. Grouping model inherited from app-foundations: lockstep
+# families grouped by name, routine minor/patch updates rolled up,
+# majors never grouped into routine rollups. Security updates are never
+# grouped or suppressed. @types/node majors are ignored (Node 24 is
+# pinned via .nvmrc + engines). No auto-merge — dependency PRs get the
+# same CI + review as everything else.
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+    # eslint majors held while eslint-config-next's bundled
+    # eslint-plugin-react crashes on ESLint 10's removed rule-context
+    # API; revisit when eslint-config-next ships an ESLint-10-compatible
+    # plugin set. typescript majors held while typescript-eslint supports
+    # typescript <6.1.0 only. prisma/@prisma/* majors held: the
+    # foundation ships the Prisma 6 config/architecture model; 7.x is a
+    # deliberate migration project, not routine maintenance.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "prisma"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@prisma/*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      nextjs:
+        patterns: ["next", "eslint-config-next"]
+      react:
+        patterns: ["react", "react-dom", "@types/react", "@types/react-dom"]
+      prisma:
+        patterns: ["prisma", "@prisma/*"]
+      sentry:
+        patterns: ["@sentry/*"]
+      npm-production:
+        dependency-type: production
+        update-types: [minor, patch]
+        exclude-patterns:
+          ["next", "react", "react-dom", "prisma", "@prisma/*", "@sentry/*"]
+      npm-development:
+        dependency-type: development
+        update-types: [minor, patch]
+        exclude-patterns:
+          [
+            "eslint-config-next",
+            "@types/react",
+            "@types/react-dom",
+            "prisma",
+            "@prisma/*",
+            "@sentry/*",
+          ]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: [dependencies, github-actions]
+    groups:
+      github-actions:
+        update-types: [minor, patch]

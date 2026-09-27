@@ -1,0 +1,11 @@
+@import "tailwindcss";
+
+/*
+ * The global focus-visible outline is an accessibility requirement —
+ * never remove it without providing a visible replacement (see
+ * standards/seo-accessibility).
+ */
+:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
