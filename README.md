@@ -193,9 +193,13 @@ Inherited from the foundation baseline, working today:
 - Playwright smoke + axe accessibility suites
 - Optional modules already copied in: Sentry observability (privacy-scrubbed, disabled without a DSN — `src/lib/observability/`) and a fixed-window rate limiter with a pluggable store (`src/lib/rate-limit/`)
 
+### Domain functionality already implemented
+
+- Core records: **Organization → Unit → Member**, with an internal admin UI (`/admin`) for creating and editing organizations, units, and member contact details; member activation/deactivation; and unit assignment (see `docs/domain-model.md`)
+
 ### Not yet implemented
 
-Authentication, authorization, notifications, attachments, audit history, background jobs, and all SAR domain functionality (members, callouts, incidents, equipment, expenses, search) are **planned, not built**. The single `BootstrapItem` table exists only to prove the migration pipeline; the real schema will be designed in a dedicated issue.
+Authentication, authorization, notifications, attachments, audit history, background jobs, and the remaining SAR domain functionality (qualifications, availability, callouts, incidents, equipment, expenses, search) are **planned, not built**. The admin UI is intentionally unauthenticated until the authentication/authorization issue lands; a temporary gate (`src/lib/admin-gate.ts`) disables the entire surface — pages and mutations — under production builds until then.
 
 ## Status
 

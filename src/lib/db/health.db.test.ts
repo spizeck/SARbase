@@ -15,9 +15,9 @@ describe.skipIf(!hasDb)("database health check", () => {
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
 
-  it("can read the migrated bootstrap table", async () => {
+  it("can read the migrated domain tables", async () => {
     const { prisma } = await import("@/lib/prisma");
-    const count = await prisma.bootstrapItem.count();
+    const count = await prisma.organization.count();
     expect(count).toBeGreaterThanOrEqual(0);
   });
 });

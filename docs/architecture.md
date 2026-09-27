@@ -59,6 +59,13 @@ feasible.
    real SAR organizations experience — not by speculative complexity.
    The schema and modules land when the need lands.
 
+## Domain model
+
+The first domain records — Organization, Unit, Member — are implemented
+along with their ownership semantics, cardinality rationale, lifecycle
+rules, and the member≠authentication boundary. See
+[`docs/domain-model.md`](docs/domain-model.md).
+
 ## Foundation
 
 The technical baseline comes from

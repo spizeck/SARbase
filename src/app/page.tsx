@@ -1,3 +1,7 @@
+import Link from "next/link";
+
+import { adminSurfaceEnabled } from "@/lib/admin-gate";
+
 export default function HomePage() {
   return (
     <main className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center px-6 py-16">
@@ -12,9 +16,19 @@ export default function HomePage() {
         for all operational decisions.
       </p>
       <p className="mt-8 rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-600">
-        SARbase is under initial development. Application features are not yet
-        available.
+        SARbase is under initial development. Basic record administration is
+        available; further features are planned.
       </p>
+      {adminSurfaceEnabled() && (
+        <p className="mt-4">
+          <Link
+            href="/admin"
+            className="text-sm font-medium text-neutral-900 underline underline-offset-4 hover:text-neutral-600"
+          >
+            Administration
+          </Link>
+        </p>
+      )}
     </main>
   );
 }

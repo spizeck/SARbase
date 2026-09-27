@@ -20,7 +20,7 @@ import {
  * Restore drill: prove the backup path actually restores.
  *
  * Extracted from the Sea Saba `scripts/restore-drill.ts`, generalized
- * to the repository's bootstrap `BootstrapItem` model. A backup that has
+ * to the repository's `Organization` domain model. A backup that has
  * never been restored is not a backup — this script creates a scratch
  * database, seeds a synthetic row, dumps, deletes, restores, and
  * verifies recovery, then drops the scratch database.
@@ -712,9 +712,9 @@ async function main() {
     runPrismaMigrateDeploy(drillUrl, args.dryRun);
 
     const prisma = createPrismaClient(drillUrl);
-    const fixtureLabel = `drill-${Date.now()}`;
-    const created = await prisma.bootstrapItem.create({
-      data: { label: fixtureLabel },
+    const fixtureName = `Drill Organization ${Date.now()}`;
+    const created = await prisma.organization.create({
+      data: { name: fixtureName },
     });
     const createdId = created.id;
     console.log("Created synthetic row:", createdId);
@@ -724,14 +724,14 @@ async function main() {
     console.log("Backup created:", tempBackupPath);
 
     const prismaAfterDelete = createPrismaClient(drillUrl);
-    await prismaAfterDelete.bootstrapItem.delete({ where: { id: createdId } });
+    await prismaAfterDelete.organization.delete({ where: { id: createdId } });
     console.log("Deleted synthetic row to simulate data loss");
     await prismaAfterDelete.$disconnect();
 
     runPgRestore(runner, drillUrl, tempBackupPath, args.dryRun);
 
     const prismaAfterRestore = createPrismaClient(drillUrl);
-    const restored = await prismaAfterRestore.bootstrapItem.findUnique({
+    const restored = await prismaAfterRestore.organization.findUnique({
       where: { id: createdId },
     });
 
@@ -741,7 +741,7 @@ async function main() {
       );
     }
 
-    if (restored.label !== fixtureLabel) {
+    if (restored.name !== fixtureName) {
       throw new Error(
         "Restore validation failed: recovered row does not match.",
       );
