@@ -1,0 +1,67 @@
+{
+  "name": "sarbase",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "build:vercel": "tsx scripts/vercel-build.ts",
+    "start": "next start",
+    "postinstall": "prisma generate",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check:react-versions": "node scripts/check-react-versions.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:db": "vitest run --config vitest.db.config.ts",
+    "test:e2e": "playwright test",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:migrate:status": "prisma migrate status",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:seed": "tsx --env-file-if-exists=.env prisma/seed.ts",
+    "db:wait": "tsx scripts/wait-for-postgres.ts",
+    "db:backup": "tsx --env-file-if-exists=.env scripts/backup-database.ts",
+    "db:restore-drill": "tsx --env-file-if-exists=.env scripts/restore-drill.ts",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run check:react-versions && npm run test && npm run build"
+  },
+  "overrides": {
+    "deepmerge-ts": "^8.0.0"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "@sentry/nextjs": "^10.75.0",
+    "next": "16.3.5",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "^1.63.0",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^24",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.5",
+    "eslint-config-prettier": "^10",
+    "prettier": "^3",
+    "prisma": "^6.19.3",
+    "tailwindcss": "^4",
+    "tsx": "^4",
+    "typescript": "^5",
+    "vitest": "^5"
+  },
+  "allowScripts": {
+    "unrs-resolver@1.12.2": true,
+    "@prisma/engines": true,
+    "prisma": true,
+    "@prisma/client": true
+  }
+}
