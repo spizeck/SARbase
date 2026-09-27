@@ -22,6 +22,21 @@ enum MemberStatus {
   INACTIVE
 }
 
+// Lifecycle for a login identity. DISABLED fails closed on every check —
+// a disabled account cannot hold a usable session.
+enum AuthIdentityStatus {
+  ACTIVE
+  DISABLED
+}
+
+// Application-level roles within an organization. ADMIN means
+// administration of SARbase records — it implies nothing about SAR
+// command authority, operational competence, or launch authority.
+enum OrgRole {
+  MEMBER
+  ADMIN
+}
+
 // The independent SAR organization that owns its records. Deliberately
 // minimal — no billing, federation, or regional hierarchy concepts.
 model Organization {
@@ -32,6 +47,8 @@ model Organization {
 
   units   Unit[]
   members Member[]
+
+  organizationAccesses OrganizationAccess[]
 }
 
 // An internal operational/administrative grouping within an organization
@@ -76,10 +93,68 @@ model Member {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   memberUnits  MemberUnit[]
 
+  // Optional link to a login identity. Nullable — most members never sign
+  // in. SetNull on identity deletion: removing a login must never destroy
+  // the domain person record or its history. One identity may legitimately
+  // link to member records in several organizations (the same person
+  // volunteering across orgs) — but at most ONE member record per
+  // organization per identity (see the composite unique below; Postgres
+  // treats NULL authIdentityId values as distinct, so any number of
+  // unlinked members coexist).
+  authIdentityId String?
+  authIdentity   AuthIdentity? @relation(fields: [authIdentityId], references: [id], onDelete: SetNull)
+
   // Composite-FK target so MemberUnit can enforce same-organization rows.
   @@unique([id, organizationId])
+  // At most one linked Member per organization per AuthIdentity.
+  @@unique([organizationId, authIdentityId])
   @@index([organizationId, status])
   @@index([email])
+  @@index([authIdentityId])
+}
+
+// A login identity — NOT the SAR domain person. Created automatically at
+// first verified sign-in (with no access); linked to Member records and
+// granted organization access explicitly by administrators or the
+// bootstrap provisioning script. Deleting an identity must not destroy
+// Member history (SetNull on Member.authIdentityId).
+model AuthIdentity {
+  id          String             @id @default(cuid())
+  // e.g. "firebase" — provider-specific, so migrations stay
+  // provider-portable and a second provider could coexist.
+  provider    String
+  providerUid String
+  // The account's sign-in email, normalized lowercase. Display/lookup
+  // value only — deliberately NOT unique and NOT an authorization input.
+  email       String?
+  status      AuthIdentityStatus @default(ACTIVE)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  members              Member[]
+  organizationAccesses OrganizationAccess[]
+
+  @@unique([provider, providerUid])
+  @@index([email])
+}
+
+// Explicit organization-scoped authorization for a login identity. This
+// relation — not MemberUnit membership, not email matching — is the sole
+// source of organization access and role. One row per (identity, org);
+// the role column is the extensible point for future roles.
+model OrganizationAccess {
+  id             String   @id @default(cuid())
+  organizationId String
+  authIdentityId String
+  role           OrgRole  @default(MEMBER)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  authIdentity  AuthIdentity  @relation(fields: [authIdentityId], references: [id], onDelete: Cascade)
+
+  @@unique([authIdentityId, organizationId])
+  @@index([organizationId])
 }
 
 // Member ↔ Unit assignment. A member may belong to zero, one, or several

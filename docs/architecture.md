@@ -66,6 +66,12 @@ along with their ownership semantics, cardinality rationale, lifecycle
 rules, and the member≠authentication boundary. See
 [`docs/domain-model.md`](docs/domain-model.md).
 
+Authentication (Firebase Auth → server-verified session cookie) and
+organization-scoped authorization (`AuthIdentity`,
+`OrganizationAccess`, `MEMBER`/`ADMIN` roles, centralized helpers,
+IDOR model, bootstrap) are documented in
+[`docs/authentication.md`](docs/authentication.md).
+
 ## Foundation
 
 The technical baseline comes from

@@ -4,10 +4,8 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
 
-import {
-  createOrganization,
-  updateOrganization,
-} from "@/lib/domain/organization";
+import { prisma } from "@/lib/prisma";
+import { updateOrganization } from "@/lib/domain/organization";
 import { createUnit, updateUnit } from "@/lib/domain/unit";
 import {
   createMember,
@@ -23,18 +21,30 @@ import {
   memberStatusSchema,
   memberUnitsSchema,
 } from "@/lib/domain/schemas";
-import { assertAdminEnabled } from "@/lib/admin-gate";
+import {
+  requireAuth,
+  requireOrgAdmin,
+  requireOrgAdminForMember,
+  requireOrgAdminForUnit,
+} from "@/lib/auth/authorize";
+import { AuthenticationError, AuthorizationError } from "@/lib/auth/context";
+import { emailSchema } from "@/lib/domain/schemas";
+import { log } from "@/lib/logging";
 
 /**
  * Server actions for the internal administration surface.
  *
- * SECURITY NOTE — intentionally unauthenticated for now: issue #5 ships
- * the domain and its admin UI; issue #6 adds authentication and
- * centralized server-side authorization. Until then every action calls
- * the temporary `assertAdminEnabled()` gate FIRST — it throws in any
- * production build (deployed environments always run NODE_ENV=
- * production), so a crafted request cannot invoke mutations even though
- * no login exists yet. Issue #6 replaces this module with real authz.
+ * AUTHORIZATION MODEL (issue #6): every action resolves the caller's
+ * auth context from the verified session, then checks an explicit
+ * OrganizationAccess ADMIN row for the REAL organization of the target.
+ * organizationId/memberId/unitId parameters are untrusted selectors —
+ * they choose which record to act on, never which grant to honor. Where
+ * an org id used to come from the caller, the record's own
+ * organizationId is used instead.
+ *
+ * Failures are deliberately opaque: AuthorizationError maps to a generic
+ * "Not found." so probes cannot distinguish "record doesn't exist" from
+ * "record exists outside your scope".
  */
 
 export interface ActionState {
@@ -53,7 +63,13 @@ function zodErrors(error: {
   return { fieldErrors } satisfies ActionState;
 }
 
-function mapDomainError(error: unknown): ActionState | null {
+function mapDomainError(error: unknown): ActionState {
+  if (
+    error instanceof AuthorizationError ||
+    error instanceof AuthenticationError
+  ) {
+    return { message: "Not found." };
+  }
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     if (error.code === "P2002") {
       return { message: "A record with that name already exists." };
@@ -65,29 +81,26 @@ function mapDomainError(error: unknown): ActionState | null {
   if (error instanceof CrossOrganizationAssignmentError) {
     return { message: error.message };
   }
-  return null;
+  throw error;
 }
 
-export async function createOrganizationAction(
-  _prev: ActionState,
-  formData: FormData,
-): Promise<ActionState> {
-  assertAdminEnabled();
-  const parsed = organizationInputSchema.safeParse({
-    name: formData.get("name"),
-  });
-  if (!parsed.success) return zodErrors(parsed.error);
-
-  const organization = await createOrganization(parsed.data);
-  redirect(`/admin/organizations/${organization.id}`);
-}
+// There is deliberately NO createOrganizationAction: creating an
+// organization and granting its first ADMIN is an explicit operator
+// act via `npm run admin:provision` — never an authenticated
+// self-service path (see docs/authentication.md).
 
 export async function updateOrganizationAction(
   organizationId: string,
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  assertAdminEnabled();
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
   const parsed = organizationInputSchema.safeParse({
     name: formData.get("name"),
   });
@@ -96,9 +109,7 @@ export async function updateOrganizationAction(
   try {
     await updateOrganization(organizationId, parsed.data);
   } catch (error) {
-    const mapped = mapDomainError(error);
-    if (mapped) return mapped;
-    throw error;
+    return mapDomainError(error);
   }
   revalidatePath(`/admin/organizations/${organizationId}`);
   revalidatePath("/admin");
@@ -110,7 +121,13 @@ export async function createUnitAction(
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  assertAdminEnabled();
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
   const parsed = unitInputSchema.safeParse({ name: formData.get("name") });
   if (!parsed.success) return zodErrors(parsed.error);
 
@@ -118,18 +135,15 @@ export async function createUnitAction(
     await createUnit(organizationId, parsed.data);
   } catch (error) {
     const mapped = mapDomainError(error);
-    if (mapped) {
-      return mapped.message?.includes("already exists")
-        ? {
-            fieldErrors: {
-              name: [
-                "A unit with this name already exists in this organization.",
-              ],
-            },
-          }
-        : mapped;
-    }
-    throw error;
+    return mapped.message?.includes("already exists")
+      ? {
+          fieldErrors: {
+            name: [
+              "A unit with this name already exists in this organization.",
+            ],
+          },
+        }
+      : mapped;
   }
   revalidatePath(`/admin/organizations/${organizationId}`);
   return {};
@@ -137,11 +151,17 @@ export async function createUnitAction(
 
 export async function updateUnitAction(
   unitId: string,
-  organizationId: string,
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  assertAdminEnabled();
+  const ctx = await requireAuth();
+  let unit;
+  try {
+    unit = await requireOrgAdminForUnit(ctx, unitId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
   const parsed = unitInputSchema.safeParse({ name: formData.get("name") });
   if (!parsed.success) return zodErrors(parsed.error);
 
@@ -149,20 +169,17 @@ export async function updateUnitAction(
     await updateUnit(unitId, parsed.data);
   } catch (error) {
     const mapped = mapDomainError(error);
-    if (mapped) {
-      return mapped.message?.includes("already exists")
-        ? {
-            fieldErrors: {
-              name: [
-                "A unit with this name already exists in this organization.",
-              ],
-            },
-          }
-        : mapped;
-    }
-    throw error;
+    return mapped.message?.includes("already exists")
+      ? {
+          fieldErrors: {
+            name: [
+              "A unit with this name already exists in this organization.",
+            ],
+          },
+        }
+      : mapped;
   }
-  revalidatePath(`/admin/organizations/${organizationId}`);
+  revalidatePath(`/admin/organizations/${unit.organizationId}`);
   return {};
 }
 
@@ -171,7 +188,13 @@ export async function createMemberAction(
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  assertAdminEnabled();
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
   const parsed = memberInputSchema.safeParse({
     displayName: formData.get("displayName"),
     email: formData.get("email"),
@@ -185,11 +208,17 @@ export async function createMemberAction(
 
 export async function updateMemberAction(
   memberId: string,
-  organizationId: string,
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  assertAdminEnabled();
+  const ctx = await requireAuth();
+  let member;
+  try {
+    member = await requireOrgAdminForMember(ctx, memberId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
   const parsed = memberInputSchema.safeParse({
     displayName: formData.get("displayName"),
     email: formData.get("email"),
@@ -200,36 +229,43 @@ export async function updateMemberAction(
   try {
     await updateMember(memberId, parsed.data);
   } catch (error) {
-    const mapped = mapDomainError(error);
-    if (mapped) return mapped;
-    throw error;
+    return mapDomainError(error);
   }
   revalidatePath(`/admin/members/${memberId}`);
-  revalidatePath(`/admin/organizations/${organizationId}`);
+  revalidatePath(`/admin/organizations/${member.organizationId}`);
   return {};
 }
 
 export async function setMemberStatusAction(
   memberId: string,
-  organizationId: string,
   status: string,
 ): Promise<void> {
-  assertAdminEnabled();
+  const ctx = await requireAuth();
+  // Propagates the opaque AuthorizationError — a void action has no
+  // error state to return.
+  const member = await requireOrgAdminForMember(ctx, memberId);
+
   const parsed = memberStatusSchema.safeParse(status);
   if (!parsed.success) return;
 
   await setMemberStatus(memberId, parsed.data);
   revalidatePath(`/admin/members/${memberId}`);
-  revalidatePath(`/admin/organizations/${organizationId}`);
+  revalidatePath(`/admin/organizations/${member.organizationId}`);
 }
 
 export async function setMemberUnitsAction(
   memberId: string,
-  organizationId: string,
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  assertAdminEnabled();
+  const ctx = await requireAuth();
+  let member;
+  try {
+    member = await requireOrgAdminForMember(ctx, memberId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
   const parsed = memberUnitsSchema.safeParse({
     unitIds: formData.getAll("unitIds"),
   });
@@ -238,11 +274,137 @@ export async function setMemberUnitsAction(
   try {
     await setMemberUnits(memberId, parsed.data.unitIds);
   } catch (error) {
-    const mapped = mapDomainError(error);
-    if (mapped) return mapped;
-    throw error;
+    return mapDomainError(error);
   }
   revalidatePath(`/admin/members/${memberId}`);
-  revalidatePath(`/admin/organizations/${organizationId}`);
+  revalidatePath(`/admin/organizations/${member.organizationId}`);
   return {};
+}
+
+/**
+ * Link an existing sign-in account (AuthIdentity, resolved by its
+ * normalized sign-in email) to this Member record. Explicit admin
+ * action — an email match alone never grants identity ownership, and
+ * the account must already exist (the person signed in at least once,
+ * or an operator provisioned it). Linking also ensures a MEMBER-level
+ * OrganizationAccess row in the member's organization so the account
+ * has a deterministic access context.
+ */
+export async function linkIdentityToMemberAction(
+  memberId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let member;
+  try {
+    member = await requireOrgAdminForMember(ctx, memberId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = emailSchema.safeParse(formData.get("email"));
+  if (!parsed.success || !parsed.data) {
+    return { fieldErrors: { email: ["Enter the account's sign-in email."] } };
+  }
+
+  // AuthIdentity.email is deliberately non-unique — it is a lookup
+  // convenience, not an identity key. Linking is only permitted when the
+  // email resolves to EXACTLY ONE active identity; ambiguous matches
+  // refuse the link rather than silently picking one (mirrors
+  // scripts/provision-admin.ts).
+  const matches = await prisma.authIdentity.findMany({
+    where: { email: parsed.data, status: "ACTIVE" },
+  });
+  if (matches.length === 0) {
+    return {
+      fieldErrors: {
+        email: [
+          "No active sign-in account with that email. The account must exist first.",
+        ],
+      },
+    };
+  }
+  if (matches.length > 1) {
+    return {
+      fieldErrors: {
+        email: [
+          "Multiple sign-in accounts share that email. Linking must use an unambiguous identity — contact the operator.",
+        ],
+      },
+    };
+  }
+  const identity = matches[0]!;
+
+  try {
+    await prisma.$transaction([
+      prisma.member.update({
+        where: { id: memberId },
+        data: { authIdentityId: identity.id },
+      }),
+      prisma.organizationAccess.upsert({
+        where: {
+          authIdentityId_organizationId: {
+            authIdentityId: identity.id,
+            organizationId: member.organizationId,
+          },
+        },
+        update: {},
+        create: {
+          authIdentityId: identity.id,
+          organizationId: member.organizationId,
+          role: "MEMBER",
+        },
+      }),
+    ]);
+  } catch (error) {
+    // @@unique([organizationId, authIdentityId]): this identity is
+    // already linked to a member record in this organization.
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      return {
+        fieldErrors: {
+          email: [
+            "This account is already linked to a member record in this organization.",
+          ],
+        },
+      };
+    }
+    throw error;
+  }
+  log({
+    event: "auth.identity_linked",
+    subsystem: "auth",
+    actorId: ctx.identity.id,
+    entityType: "Member",
+    entityId: memberId,
+    organizationId: member.organizationId,
+    authIdentityId: identity.id,
+  });
+
+  revalidatePath(`/admin/members/${memberId}`);
+  return {};
+}
+
+export async function unlinkIdentityFromMemberAction(
+  memberId: string,
+): Promise<void> {
+  const ctx = await requireAuth();
+  const member = await requireOrgAdminForMember(ctx, memberId);
+
+  await prisma.member.update({
+    where: { id: memberId },
+    data: { authIdentityId: null },
+  });
+  log({
+    event: "auth.identity_unlinked",
+    subsystem: "auth",
+    actorId: ctx.identity.id,
+    entityType: "Member",
+    entityId: memberId,
+    organizationId: member.organizationId,
+  });
+  revalidatePath(`/admin/members/${memberId}`);
 }

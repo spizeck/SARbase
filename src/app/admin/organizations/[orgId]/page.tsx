@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 
 import { getOrganization } from "@/lib/domain/organization";
 import { listMembers } from "@/lib/domain/member";
-import { adminSurfaceEnabled } from "@/lib/admin-gate";
+import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
 
 import {
   updateOrganizationAction,
@@ -29,10 +29,10 @@ export default async function OrganizationPage({
   params: Promise<{ orgId: string }>;
   searchParams: Promise<{ unit?: string }>;
 }) {
-  // Temporary bootstrap gate — removed by issue #6 (see lib/admin-gate).
-  if (!adminSurfaceEnabled()) notFound();
-
   const { orgId } = await params;
+  // orgId from the URL is an untrusted selector: requireOrgAdminOrNotFound
+  // checks the caller's OrganizationAccess rows, then resolves the org.
+  await requireOrgAdminOrNotFound(orgId);
   const { unit: unitFilter } = await searchParams;
 
   const organization = await getOrganization(orgId);
@@ -94,7 +94,7 @@ export default async function OrganizationPage({
                 className="rounded-md border border-neutral-200 p-3"
               >
                 <UnitRenameForm
-                  action={updateUnitAction.bind(null, unit.id, orgId)}
+                  action={updateUnitAction.bind(null, unit.id)}
                   defaultName={unit.name}
                   unitId={unit.id}
                 />

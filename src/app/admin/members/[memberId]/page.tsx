@@ -3,14 +3,16 @@ import { notFound } from "next/navigation";
 
 import { getMember } from "@/lib/domain/member";
 import { listUnits } from "@/lib/domain/unit";
-import { adminSurfaceEnabled } from "@/lib/admin-gate";
+import { requireAuth, isOrgAdmin } from "@/lib/auth/authorize";
 
 import {
   updateMemberAction,
   setMemberStatusAction,
   setMemberUnitsAction,
+  linkIdentityToMemberAction,
+  unlinkIdentityFromMemberAction,
 } from "../../actions";
-import { MemberForm, MemberUnitsForm } from "../../forms";
+import { MemberForm, MemberUnitsForm, LinkIdentityForm } from "../../forms";
 
 export const metadata = { title: "Member" };
 
@@ -21,12 +23,12 @@ export default async function MemberPage({
 }: {
   params: Promise<{ memberId: string }>;
 }) {
-  // Temporary bootstrap gate — removed by issue #6 (see lib/admin-gate).
-  if (!adminSurfaceEnabled()) notFound();
-
+  const ctx = await requireAuth();
   const { memberId } = await params;
+  // memberId is an untrusted selector — resolve the record, then check
+  // ADMIN access to the member's REAL organizationId, not a supplied one.
   const member = await getMember(memberId);
-  if (!member) notFound();
+  if (!member || !isOrgAdmin(ctx, member.organizationId)) notFound();
 
   const orgId = member.organizationId;
   const units = await listUnits(orgId);
@@ -86,7 +88,6 @@ export default async function MemberPage({
           action={setMemberStatusAction.bind(
             null,
             member.id,
-            orgId,
             isActive ? "INACTIVE" : "ACTIVE",
           )}
           className="mt-3"
@@ -112,7 +113,7 @@ export default async function MemberPage({
         </h2>
         <div className="mt-2">
           <MemberForm
-            action={updateMemberAction.bind(null, member.id, orgId)}
+            action={updateMemberAction.bind(null, member.id)}
             defaults={{
               displayName: member.displayName,
               email: member.email,
@@ -132,11 +133,53 @@ export default async function MemberPage({
         </h2>
         <div className="mt-2">
           <MemberUnitsForm
-            action={setMemberUnitsAction.bind(null, member.id, orgId)}
+            action={setMemberUnitsAction.bind(null, member.id)}
             units={units}
             assignedUnitIds={assignedUnitIds}
           />
         </div>
+      </section>
+
+      <section
+        aria-labelledby="login-heading"
+        className="mt-6 rounded-md border border-neutral-200 p-4"
+      >
+        <h2 id="login-heading" className="text-sm font-medium text-neutral-800">
+          Login account
+        </h2>
+        {member.authIdentityId ? (
+          <div className="mt-2">
+            <p className="text-sm text-neutral-600">
+              This member record is linked to a sign-in identity. Unlinking
+              removes that identity&apos;s member context — it does not remove
+              the identity&apos;s organization access grants.
+            </p>
+            <form
+              action={unlinkIdentityFromMemberAction.bind(null, member.id)}
+              className="mt-3"
+            >
+              <button
+                type="submit"
+                className="rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-800 hover:bg-neutral-50"
+              >
+                Unlink login identity
+              </button>
+            </form>
+          </div>
+        ) : (
+          <div className="mt-2">
+            <p className="mt-1 text-sm text-neutral-600">
+              No sign-in identity linked. To grant this member login access,
+              have them sign in once, then link their identity here by its email
+              address.
+            </p>
+            <div className="mt-3">
+              <LinkIdentityForm
+                action={linkIdentityToMemberAction.bind(null, member.id)}
+              />
+            </div>
+          </div>
+        )}
       </section>
     </main>
   );
