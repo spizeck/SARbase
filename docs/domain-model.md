@@ -56,7 +56,8 @@ organization administers. It belongs to exactly one Organization.
 
 A Member is not a login. A volunteer exists in SARbase before — and
 independently of — ever signing in. The authentication/authorization
-issue (#6) will add a separate auth identity that _links to_ a Member
+a separate `AuthIdentity` _links to_ a Member
+(see docs/authentication.md)
 without defining it. Member records must survive deactivation and be
 referenceable by future historical records regardless of sign-in state.
 
@@ -108,25 +109,30 @@ application surface itself never deletes members — see lifecycle below.
   history — who changed status, when — into durable audit records rather
   than relying on `updatedAt`.
 
-## Authorization assumptions (deferred to issue #6)
+## Authentication and authorization
 
-The admin surface under `/admin` performs server-side validation but is
-**intentionally unauthenticated** until issue #6 adds authentication,
-centralized server-side authorization, and account↔member linkage.
+Issue #6 replaced the issue #5 temporary gate with real auth — the full
+reference is `docs/authentication.md`. The model in brief:
 
-**Temporary bootstrap gate** (`src/lib/admin-gate.ts`): the surface is
-enabled only outside production builds (`NODE_ENV !== "production"`).
-Since every deployed environment runs a production build, `/admin` 404s
-there at the page level _and_ every server action throws
-`AdminDisabledError` before touching the domain — a crafted POST to an
-action endpoint cannot invoke mutations. Issue #6 **replaces and
-removes** this module; the gate is deliberately a single import plus one
-call per page/action so removal is mechanical. Do not deploy `/admin`
-holding real data until real authorization exists.
+- **`AuthIdentity`** — a login identity (`provider` + `providerUid`
+  unique, normalized email, `ACTIVE`/`DISABLED`). Auto-provisioned at
+  first verified sign-in with zero access; provider identifiers never
+  land on `Member`.
+- **`Member.authIdentityId`** — optional, non-unique FK to an identity
+  (`SetNull` on delete). One identity may link to member records in
+  several organizations; each member links to at most one identity.
+- **`OrganizationAccess`** — explicit `(authIdentityId, organizationId,
+role)` rows; the sole source of org-scoped authorization. `OrgRole` is
+  `MEMBER` or `ADMIN` (application administration only — it implies no
+  SAR command authority or operational qualification).
 
-No row-level security or tenant middleware exists yet by design —
-ownership is a data constraint first; access control lands with
-authentication.
+`Member` remains a domain person record, not an account. `MemberUnit`
+membership is never an authorization input — units are internal
+groupings, not security boundaries.
+
+No row-level security or tenant middleware exists yet; ownership is a
+data constraint first, enforced by the composite FKs above plus the
+centralized helpers in `src/lib/auth/authorize.ts`.
 
 ## Validation
 

@@ -1,29 +1,32 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
 
-import { listOrganizations } from "@/lib/domain/organization";
-import { adminSurfaceEnabled } from "@/lib/admin-gate";
+import { prisma } from "@/lib/prisma";
+import { requireAuth, adminOrganizationIds } from "@/lib/auth/authorize";
 
 import { createOrganizationAction } from "./actions";
 import { OrganizationForm } from "./forms";
 
 export const metadata = { title: "Administration" };
 
-// Reads live records — never prerender at build time.
+// Reads live records and auth state — never prerender.
 export const dynamic = "force-dynamic";
 
 export default async function AdminPage() {
-  // Temporary bootstrap gate — removed by issue #6 (see lib/admin-gate).
-  if (!adminSurfaceEnabled()) notFound();
+  const ctx = await requireAuth();
+  const adminOrgIds = adminOrganizationIds(ctx);
 
-  const organizations = await listOrganizations();
+  // Scoped listing: only organizations this account administers.
+  const organizations = await prisma.organization.findMany({
+    where: { id: { in: adminOrgIds } },
+    orderBy: { name: "asc" },
+    include: { _count: { select: { units: true, members: true } } },
+  });
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
       <h1 className="text-2xl font-semibold tracking-tight">Administration</h1>
       <p className="mt-2 text-sm text-neutral-600">
-        Manage organizations, units, and member records. Internal administration
-        only — authentication and authorization are enforced in a later release.
+        Manage organizations, units, and member records you administer.
       </p>
 
       <section aria-labelledby="organizations-heading" className="mt-8">
@@ -32,7 +35,8 @@ export default async function AdminPage() {
         </h2>
         {organizations.length === 0 ? (
           <p className="mt-3 text-sm text-neutral-500">
-            No organizations yet. Create one below.
+            You do not administer any organizations yet. Create one below, or
+            ask an existing administrator to grant you access.
           </p>
         ) : (
           <ul className="mt-3 divide-y divide-neutral-200 rounded-md border border-neutral-200">
@@ -64,6 +68,9 @@ export default async function AdminPage() {
         <h2 id="create-organization-heading" className="text-lg font-medium">
           New organization
         </h2>
+        <p className="mt-1 text-sm text-neutral-600">
+          You become its administrator.
+        </p>
         <div className="mt-3">
           <OrganizationForm
             action={createOrganizationAction}

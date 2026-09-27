@@ -224,6 +224,43 @@ export function MemberForm({
   );
 }
 
+export function LinkIdentityForm({ action }: { action: BoundAction }) {
+  const [state, formAction, pending] = useActionState(action, {});
+
+  return (
+    <form action={formAction} className="space-y-4">
+      <div>
+        <label htmlFor="identity-email" className={labelClass}>
+          Sign-in email
+        </label>
+        <input
+          id="identity-email"
+          name="email"
+          type="email"
+          required
+          maxLength={254}
+          placeholder="name@example.org"
+          className={inputClass}
+          aria-describedby="identity-email-error"
+          aria-invalid={state.fieldErrors?.email ? "true" : undefined}
+        />
+        <FieldError
+          id="identity-email-error"
+          errors={state.fieldErrors?.email}
+        />
+      </div>
+      {state.message && (
+        <p className={errorClass} role="alert">
+          {state.message}
+        </p>
+      )}
+      <button type="submit" disabled={pending} className={buttonClass}>
+        {pending ? "Linking…" : "Link identity"}
+      </button>
+    </form>
+  );
+}
+
 export function MemberUnitsForm({
   action,
   units,

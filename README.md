@@ -195,11 +195,13 @@ Inherited from the foundation baseline, working today:
 
 ### Domain functionality already implemented
 
-- Core records: **Organization → Unit → Member**, with an internal admin UI (`/admin`) for creating and editing organizations, units, and member contact details; member activation/deactivation; and unit assignment (see `docs/domain-model.md`)
+- Core records: **Organization → Unit → Member**, with an internal admin UI (`/admin`) for creating and editing organizations, units, and member contact details; member activation/deactivation; unit assignment; and identity linking (see `docs/domain-model.md`)
+- **Authentication and organization-scoped authorization**: Firebase Auth → server-verified HTTP-only session cookie; separate `AuthIdentity` login model linked to `Member` records; explicit `OrganizationAccess` grants with `MEMBER`/`ADMIN` roles; centralized server-side authorization helpers; admin bootstrap via `npm run admin:provision` (see `docs/authentication.md`)
+- Sign-in/sign-out UI plus a minimal `/account` page showing identity, linked member records, and granted organization access
 
 ### Not yet implemented
 
-Authentication, authorization, notifications, attachments, audit history, background jobs, and the remaining SAR domain functionality (qualifications, availability, callouts, incidents, equipment, expenses, search) are **planned, not built**. The admin UI is intentionally unauthenticated until the authentication/authorization issue lands; a temporary gate (`src/lib/admin-gate.ts`) disables the entire surface — pages and mutations — under production builds until then.
+Notifications, attachments, audit history, background jobs, member self-service beyond `/account`, and the remaining SAR domain functionality (qualifications, availability, callouts, incidents, equipment, expenses, search) are **planned, not built**. `/admin` now requires an authenticated identity with an explicit `ADMIN` grant for the target organization.
 
 ## Status
 

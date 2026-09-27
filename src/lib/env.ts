@@ -214,3 +214,60 @@ export function parseAppEnvironment(
 ): AppEnvironment {
   return appEnvironmentSchema.parse(values);
 }
+
+/**
+ * Browser-side Firebase Auth configuration (NEXT_PUBLIC_* — embedded in
+ * the client bundle by definition, never secret). Required only where
+ * the sign-in UI runs; absent config must degrade to "authentication
+ * not configured", never to a crash or a permissive path.
+ */
+export const firebaseClientEnvironmentSchema = z.object({
+  NEXT_PUBLIC_FIREBASE_API_KEY: z.string().min(1),
+  NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: z.string().min(1),
+  NEXT_PUBLIC_FIREBASE_PROJECT_ID: z.string().min(1),
+  NEXT_PUBLIC_FIREBASE_APP_ID: z.string().min(1),
+});
+
+export type FirebaseClientEnvironment = z.infer<
+  typeof firebaseClientEnvironmentSchema
+>;
+
+/** Non-throwing variant — the login UI checks "is auth configured?" */
+export function tryParseFirebaseClientEnvironment(
+  values: Record<string, string | undefined> = process.env,
+): FirebaseClientEnvironment | null {
+  const result = firebaseClientEnvironmentSchema.safeParse(values);
+  return result.success ? result.data : null;
+}
+
+/**
+ * Server-side Firebase Admin credentials — used only to verify ID
+ * tokens and mint/revoke session cookies. Never imported into client
+ * bundles. PRIVATE_KEY arrives with escaped newlines from every env
+ * provider; normalize here so consumers get a real PEM.
+ */
+export const firebaseAdminEnvironmentSchema = z.object({
+  FIREBASE_ADMIN_PROJECT_ID: z.string().min(1),
+  FIREBASE_ADMIN_CLIENT_EMAIL: z.string().min(1),
+  FIREBASE_ADMIN_PRIVATE_KEY: z
+    .string()
+    .min(1)
+    .transform((key) => key.replace(/\\n/g, "\n")),
+});
+
+export type FirebaseAdminEnvironment = z.infer<
+  typeof firebaseAdminEnvironmentSchema
+>;
+
+export function parseFirebaseAdminEnvironment(
+  values: Record<string, string | undefined> = process.env,
+): FirebaseAdminEnvironment {
+  return firebaseAdminEnvironmentSchema.parse(values);
+}
+
+/** Non-throwing variant for "is server auth configured?" checks. */
+export function isFirebaseAdminConfigured(
+  values: Record<string, string | undefined> = process.env,
+): boolean {
+  return firebaseAdminEnvironmentSchema.safeParse(values).success;
+}
