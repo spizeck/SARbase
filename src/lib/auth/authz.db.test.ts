@@ -59,11 +59,15 @@ import {
   createQualificationDefinitionAction,
   createUnitAction,
   linkIdentityToMemberAction,
+  createTrainingEventAction,
   setMemberStatusAction,
   setMemberUnitsAction,
   setQualificationDefinitionStatusAction,
+  setTrainingAttendanceAction,
+  setTrainingEventStatusAction,
   unlinkIdentityFromMemberAction,
   updateMemberAction,
+  updateTrainingEventAction,
   updateMemberQualificationAction,
   updateOrganizationAction,
   updateQualificationDefinitionAction,
@@ -168,6 +172,19 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
     });
     await prisma.authIdentity.deleteMany({
       where: { providerUid: { startsWith: PREFIX } },
+    });
+    await prisma.trainingAttendance.deleteMany({
+      where: { member: { organization: { name: { startsWith: PREFIX } } } },
+    });
+    await prisma.trainingTopic.deleteMany({
+      where: { event: { organization: { name: { startsWith: PREFIX } } } },
+    });
+    await prisma.trainingEvent.updateMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+      data: { leadMemberId: null },
+    });
+    await prisma.trainingEvent.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.memberQualification.deleteMany({
       where: { member: { organization: { name: { startsWith: PREFIX } } } },
@@ -1012,6 +1029,190 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
           .map((m) => m.id)
           .sort(),
       ).toEqual([memberInA.id, memberInB.id].sort());
+    });
+  });
+
+  describe("training administration", () => {
+    let eventA: { id: string };
+    let eventB: { id: string };
+
+    beforeAll(async () => {
+      eventA = await prisma.trainingEvent.create({
+        data: {
+          organizationId: orgA.id,
+          title: uniq("event-a"),
+          date: new Date("2027-03-01T00:00:00.000Z"),
+        },
+      });
+      eventB = await prisma.trainingEvent.create({
+        data: {
+          organizationId: orgB.id,
+          title: uniq("event-b"),
+          date: new Date("2027-03-01T00:00:00.000Z"),
+        },
+      });
+    });
+
+    it("admin A manages events and attendance in A", async () => {
+      signInAs(adminAUid);
+      const created = await createTrainingEventAction(
+        orgA.id,
+        {},
+        form({
+          title: uniq("via-action"),
+          date: "2027-05-10",
+          durationMinutes: "90",
+          topics: "anchors, radio",
+        }),
+      );
+      expect(created).toEqual({});
+
+      expect(
+        await updateTrainingEventAction(
+          eventA.id,
+          {},
+          form({ title: "renamed", date: "2027-03-01" }),
+        ),
+      ).toEqual({});
+
+      expect(
+        await setTrainingAttendanceAction(
+          eventA.id,
+          {},
+          form({ memberIds: [memberA.id] }),
+        ),
+      ).toEqual({});
+      const rows = await prisma.trainingAttendance.findMany({
+        where: { trainingEventId: eventA.id },
+      });
+      expect(rows.map((r) => r.memberId)).toEqual([memberA.id]);
+
+      await expect(
+        setTrainingEventStatusAction(eventA.id, "CANCELLED"),
+      ).resolves.toBeUndefined();
+      const after = await prisma.trainingEvent.findUnique({
+        where: { id: eventA.id },
+      });
+      expect(after?.status).toBe("CANCELLED");
+      await setTrainingEventStatusAction(eventA.id, "COMPLETED");
+    });
+
+    it("admin A cannot create an event in org B", async () => {
+      signInAs(adminAUid);
+      expect(
+        await createTrainingEventAction(
+          orgB.id,
+          {},
+          form({ title: "intruder", date: "2027-01-01" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await prisma.trainingEvent.count({
+          where: { organizationId: orgB.id, title: "intruder" },
+        }),
+      ).toBe(0);
+    });
+
+    it("admin A cannot edit, cancel, or set attendance on org-B events", async () => {
+      signInAs(adminAUid);
+      expect(
+        await updateTrainingEventAction(
+          eventB.id,
+          {},
+          form({ title: "hijacked", date: "2027-03-01" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      await expect(
+        setTrainingEventStatusAction(eventB.id, "CANCELLED"),
+      ).rejects.toThrow("Not found or not permitted.");
+      expect(
+        await setTrainingAttendanceAction(
+          eventB.id,
+          {},
+          form({ memberIds: [memberA.id] }),
+        ),
+      ).toEqual({ message: "Not found." });
+      const unchanged = await prisma.trainingEvent.findUnique({
+        where: { id: eventB.id },
+      });
+      expect(unchanged?.title).not.toBe("hijacked");
+      expect(unchanged?.status).toBe("COMPLETED");
+    });
+
+    it("admin A cannot add an org-B member to an org-A event", async () => {
+      signInAs(adminAUid);
+      const result = await setTrainingAttendanceAction(
+        eventA.id,
+        {},
+        form({ memberIds: [memberB.id] }),
+      );
+      expect(result).toEqual({ message: "Not found." });
+      expect(
+        await prisma.trainingAttendance.count({
+          where: { trainingEventId: eventA.id, memberId: memberB.id },
+        }),
+      ).toBe(0);
+    });
+
+    it("admin A cannot reference an org-B unit or lead when creating", async () => {
+      signInAs(adminAUid);
+      expect(
+        await createTrainingEventAction(
+          orgA.id,
+          {},
+          form({
+            title: "x",
+            date: "2027-01-01",
+            unitId: unitB.id,
+          }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await createTrainingEventAction(
+          orgA.id,
+          {},
+          form({
+            title: "x",
+            date: "2027-01-01",
+            leadMemberId: memberB.id,
+          }),
+        ),
+      ).toEqual({ message: "Not found." });
+    });
+
+    it("MEMBER role cannot mutate training records", async () => {
+      signInAs(memberRoleUid); // MEMBER of org A
+      expect(
+        await createTrainingEventAction(
+          orgA.id,
+          {},
+          form({ title: "x", date: "2027-01-01" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateTrainingEventAction(
+          eventA.id,
+          {},
+          form({ title: "x", date: "2027-01-01" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await setTrainingAttendanceAction(
+          eventA.id,
+          {},
+          form({ memberIds: [memberA.id] }),
+        ),
+      ).toEqual({ message: "Not found." });
+    });
+
+    it("unauthenticated training calls redirect to /login", async () => {
+      signInAs(null);
+      await expect(
+        createTrainingEventAction(orgA.id, {}, form({})),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
+      await expect(
+        setTrainingAttendanceAction(eventA.id, {}, form({})),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
     });
   });
 });

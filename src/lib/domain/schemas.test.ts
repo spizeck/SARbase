@@ -7,6 +7,8 @@ import {
   memberStatusSchema,
   organizationInputSchema,
   qualificationDefinitionInputSchema,
+  trainingAttendanceSchema,
+  trainingEventInputSchema,
 } from "./schemas";
 
 describe("organizationInputSchema", () => {
@@ -180,5 +182,67 @@ describe("organizationInputSchema timezone", () => {
         timezone: "Not/AZone",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("trainingEventInputSchema", () => {
+  const base = { title: "Anchor drill", date: "2027-06-01" };
+
+  it("accepts a minimal event and normalizes blanks", () => {
+    const parsed = trainingEventInputSchema.parse({
+      ...base,
+      unitId: "",
+      durationMinutes: "",
+      location: "",
+      topics: [],
+    });
+    expect(parsed.title).toBe("Anchor drill");
+    expect(parsed.date!.toISOString()).toBe("2027-06-01T00:00:00.000Z");
+    expect(parsed.unitId).toBeUndefined();
+    expect(parsed.durationMinutes).toBeUndefined();
+  });
+
+  it("requires a real date", () => {
+    expect(trainingEventInputSchema.safeParse({ title: "X" }).success).toBe(
+      false,
+    );
+    expect(
+      trainingEventInputSchema.safeParse({ ...base, date: "2027-02-30" })
+        .success,
+    ).toBe(false);
+    expect(
+      trainingEventInputSchema.safeParse({ ...base, date: "June 1" }).success,
+    ).toBe(false);
+  });
+
+  it("bounds duration to 1–1440 whole minutes", () => {
+    for (const bad of ["0", "-5", "1441", "1.5", "abc"]) {
+      expect(
+        trainingEventInputSchema.safeParse({
+          ...base,
+          durationMinutes: bad,
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      trainingEventInputSchema.parse({ ...base, durationMinutes: "90" })
+        .durationMinutes,
+    ).toBe(90);
+  });
+
+  it("accepts topics as a bounded string array", () => {
+    const parsed = trainingEventInputSchema.parse({
+      ...base,
+      topics: ["  anchor work ", "radio"],
+    });
+    expect(parsed.topics).toEqual(["anchor work", "radio"]);
+  });
+});
+
+describe("trainingAttendanceSchema", () => {
+  it("accepts a member id list", () => {
+    expect(
+      trainingAttendanceSchema.parse({ memberIds: ["m1", "m2"] }).memberIds,
+    ).toEqual(["m1", "m2"]);
   });
 });

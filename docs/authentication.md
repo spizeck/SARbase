@@ -129,6 +129,10 @@ Centralized helpers in `src/lib/auth/`:
 - `requireOrgAdminForDefinition(ctx, definitionId)` /
   `requireOrgAdminForQualification(ctx, qualificationId)` — same
   pattern for the qualification domain (issue #8)
+- `requireOrgAdminForTrainingEvent(ctx, eventId)` — same pattern for
+  training events and their attendance (issue #9)
+- `linkedMembersWithAccess(ctx)` — the member records visible to this
+  identity (access boundary; see below)
 
 Every `/admin` server action follows this shape. For example
 `updateMemberAction(memberId, …)` resolves the member server-side and

@@ -9,6 +9,10 @@ import {
   expiryLabel,
 } from "@/lib/domain/qualification";
 import { calendarDateInZone, formatDateOnly } from "@/lib/dates";
+import {
+  listMemberTraining,
+  getMemberTrainingSummary,
+} from "@/lib/domain/training";
 import { requireAuth, isOrgAdmin } from "@/lib/auth/authorize";
 
 import {
@@ -51,6 +55,8 @@ export default async function MemberPage({
   const today = calendarDateInZone(member.organization.timezone);
   const qualifications = await listMemberQualifications(member.id);
   const activeDefinitions = await listQualificationDefinitions(orgId);
+  const trainingHistory = await listMemberTraining(member.id);
+  const trainingSummary = await getMemberTrainingSummary(member.id);
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
@@ -258,6 +264,45 @@ export default async function MemberPage({
             Define qualifications on the organization page before adding member
             records.
           </p>
+        )}
+      </section>
+
+      <section aria-labelledby="training-heading" className="mt-8">
+        <h2 id="training-heading" className="text-lg font-medium">
+          Training history
+        </h2>
+        <p className="mt-1 text-sm text-neutral-600">
+          {trainingSummary.lastAttendedOn
+            ? `Last attended: ${formatDateOnly(trainingSummary.lastAttendedOn)} · ${trainingSummary.attendedCount} completed event${trainingSummary.attendedCount === 1 ? "" : "s"}`
+            : "No completed training events recorded."}
+        </p>
+        {trainingHistory.length > 0 && (
+          <ul className="mt-3 divide-y divide-neutral-200 rounded-md border border-neutral-200">
+            {trainingHistory.map((attendance) => (
+              <li
+                key={attendance.id}
+                className="flex items-center justify-between gap-3 px-4 py-2 text-sm"
+              >
+                <Link
+                  href={`/admin/training/${attendance.event.id}`}
+                  className="font-medium text-neutral-900 hover:underline"
+                >
+                  {attendance.event.title}
+                </Link>
+                <span className="flex items-center gap-3 text-neutral-600">
+                  {attendance.event.durationMinutes != null && (
+                    <span>{attendance.event.durationMinutes} min</span>
+                  )}
+                  <span>{formatDateOnly(attendance.event.date)}</span>
+                  {attendance.event.status === "CANCELLED" && (
+                    <span className="inline-block rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-600">
+                      Cancelled
+                    </span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
         )}
       </section>
 

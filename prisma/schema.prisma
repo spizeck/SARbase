@@ -65,6 +65,7 @@ model Organization {
 
   organizationAccesses     OrganizationAccess[]
   qualificationDefinitions QualificationDefinition[]
+  trainingEvents           TrainingEvent[]
 }
 
 // An internal operational/administrative grouping within an organization
@@ -77,8 +78,9 @@ model Unit {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  memberUnits  MemberUnit[]
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  memberUnits    MemberUnit[]
+  trainingEvents TrainingEvent[]
 
   // Unit names are unique within an organization (not globally).
   @@unique([organizationId, name])
@@ -113,6 +115,11 @@ model Member {
   // a member row can never be hard-deleted while qualification history
   // references it — records are preserved, not convenience-deleted.
   memberQualifications MemberQualification[]
+
+  // Training participation history + optional "led by" pointer on
+  // events. Restrict on attendance: history is preserved.
+  trainingAttendances TrainingAttendance[]
+  ledTrainingEvents   TrainingEvent[]       @relation("TrainingLead")
 
   // Optional link to a login identity. Nullable — most members never sign
   // in. SetNull on identity deletion: removing a login must never destroy
@@ -259,4 +266,95 @@ model MemberUnit {
 
   @@unique([memberId, unitId])
   @@index([unitId])
+}
+
+enum TrainingEventStatus {
+  COMPLETED
+  CANCELLED
+}
+
+// One factual training activity. `date` is the organization's local
+// calendar date (@db.Date — same semantics as qualification dates, see
+// Organization.timezone / src/lib/dates.ts); `durationMinutes` is the
+// whole-event length and the future volunteer-hours source for all
+// attendees. No scores, pass/fail, rank, or eligibility fields exist —
+// SARbase records that training happened, never what it proves.
+//
+// Optional unitId/leadMemberId carry organizationId in composite FKs:
+// Postgres MATCH SIMPLE skips the check when the component is NULL,
+// and enforces same-organization when present.
+//
+// Lifecycle: COMPLETED (the training happened) or CANCELLED (it was
+// planned/recorded but did not occur). CANCELLED keeps the row and any
+// attendance rows for history, but they are excluded from
+// participation views — attendees are never presented as having
+// attended something that did not happen. There is no DRAFT: training
+// recordkeeping is historical, not a scheduling workflow.
+//
+// Issue #16 attachments: training documents/attendance sheets will
+// later hang off this record's id — deliberately no URL/blob column.
+model TrainingEvent {
+  id              String              @id @default(cuid())
+  organizationId  String
+  unitId          String?
+  title           String
+  date            DateTime            @db.Date
+  durationMinutes Int?
+  location        String?
+  instructorName  String?
+  leadMemberId    String?
+  notes           String?
+  followUp        String?
+  status          TrainingEventStatus @default(COMPLETED)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  unit         Unit?           @relation(fields: [unitId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  leadMember   Member?         @relation("TrainingLead", fields: [leadMemberId, organizationId], references: [id, organizationId], onDelete: SetNull)
+  attendances  TrainingAttendance[]
+  topics       TrainingTopic[]
+
+  // Composite-FK target for attendance/topics.
+  @@unique([id, organizationId])
+  @@index([organizationId, date])
+  @@index([unitId])
+}
+
+// A factual label describing what was practiced — the organization's
+// own vocabulary, one row per topic (no comma-blobs) so future search
+// and reporting stay relational. Cascade: topics are part of the
+// event record itself, not independent history.
+model TrainingTopic {
+  id              String @id @default(cuid())
+  organizationId  String
+  trainingEventId String
+  label           String
+  createdAt       DateTime @default(now())
+
+  event TrainingEvent @relation(fields: [trainingEventId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  @@unique([trainingEventId, label])
+  @@index([label])
+}
+
+// "This member attended this training event" — row existence is the
+// fact; there is deliberately no attendance taxonomy (no excused/
+// unavailable grading). Notes allow per-attendee factual detail.
+// Same-organization integrity via composite FKs — a member from org B
+// physically cannot attend an event in org A.
+model TrainingAttendance {
+  id              String   @id @default(cuid())
+  organizationId  String
+  trainingEventId String
+  memberId        String
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  event  TrainingEvent @relation(fields: [trainingEventId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  member Member        @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([trainingEventId, memberId])
+  @@index([memberId])
 }

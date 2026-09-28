@@ -8,7 +8,8 @@ import {
   listExpiringQualifications,
   expiryLabel,
 } from "@/lib/domain/qualification";
-import { calendarDateInZone } from "@/lib/dates";
+import { listTrainingEvents } from "@/lib/domain/training";
+import { calendarDateInZone, formatDateOnly } from "@/lib/dates";
 import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
 
 import {
@@ -19,6 +20,7 @@ import {
   createQualificationDefinitionAction,
   updateQualificationDefinitionAction,
   setQualificationDefinitionStatusAction,
+  createTrainingEventAction,
 } from "../../actions";
 import {
   OrganizationForm,
@@ -26,6 +28,7 @@ import {
   UnitRenameForm,
   MemberForm,
   QualificationDefinitionForm,
+  TrainingEventForm,
 } from "../../forms";
 
 export const metadata = { title: "Organization" };
@@ -69,6 +72,11 @@ export default async function OrganizationPage({
     today,
     includeExpired: true,
   });
+
+  const trainingEvents = await listTrainingEvents(orgId, {
+    includeCancelled: true,
+  });
+  const allMembers = await listMembers(orgId);
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
@@ -275,6 +283,70 @@ export default async function OrganizationPage({
             ))}
           </ul>
         )}
+      </section>
+
+      <section aria-labelledby="training-heading" className="mt-10">
+        <h2 id="training-heading" className="text-lg font-medium">
+          Training
+        </h2>
+        <p className="mt-1 text-sm text-neutral-600">
+          Training events and attendance history. Cancelled events are kept for
+          the record but do not count as attended.
+        </p>
+        {trainingEvents.length === 0 ? (
+          <p className="mt-3 text-sm text-neutral-500">
+            No training events recorded yet.
+          </p>
+        ) : (
+          <ul className="mt-3 divide-y divide-neutral-200 rounded-md border border-neutral-200">
+            {trainingEvents.map((event) => (
+              <li
+                key={event.id}
+                className="flex items-center justify-between gap-3 px-4 py-2 text-sm"
+              >
+                <span>
+                  <Link
+                    href={`/admin/training/${event.id}`}
+                    className="font-medium text-neutral-900 hover:underline"
+                  >
+                    {event.title}
+                  </Link>
+                  <span className="text-neutral-500">
+                    {event.unit ? ` · ${event.unit.name}` : ""}
+                  </span>
+                </span>
+                <span className="flex items-center gap-3 text-neutral-600">
+                  <span>
+                    {event._count.attendances} attendee
+                    {event._count.attendances === 1 ? "" : "s"}
+                  </span>
+                  <span>{formatDateOnly(event.date)}</span>
+                  {event.status === "CANCELLED" && (
+                    <span className="inline-block rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-600">
+                      Cancelled
+                    </span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <details className="mt-3 rounded-md border border-neutral-200 p-4">
+          <summary className="cursor-pointer text-sm font-medium text-neutral-800">
+            Record a training event
+          </summary>
+          <div className="mt-3">
+            <TrainingEventForm
+              action={createTrainingEventAction.bind(null, orgId)}
+              units={organization.units}
+              members={allMembers.map((m) => ({
+                id: m.id,
+                displayName: m.displayName,
+              }))}
+              submitLabel="Save event"
+            />
+          </div>
+        </details>
       </section>
 
       <section aria-labelledby="members-heading" className="mt-10">
