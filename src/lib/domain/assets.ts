@@ -33,10 +33,16 @@ import type {
  * Same-organization integrity uses the established pattern —
  * denormalized organizationId + composite foreign keys — so a
  * cross-org parent/location/unit pairing is impossible at the database
- * level. Hierarchy cycles and the location-container XOR cannot be
- * expressed as FKs; the domain enforces them via a union-DFS ancestor
- * walk over the container graph (location→parentLocation|
- * containingAsset, asset→storageLocation|parentAsset).
+ * level. The location-container XOR is enforced at both layers: the
+ * "StorageLocation_single_container" CHECK constraint rejects a
+ * dual-container row outright, and the domain rejects it first for a
+ * friendly error. Hierarchy cycles cannot be expressed as constraints;
+ * the domain enforces them via a union-DFS ancestor walk over the
+ * container graph (location→parentLocation|containingAsset,
+ * asset→storageLocation|parentAsset), and every containment-edge write
+ * runs under a per-organization advisory lock (withContainmentLock) so
+ * concurrent writers serialize instead of racing the read-then-write
+ * check.
  */
 
 export class CrossOrganizationAssetError extends Error {
@@ -122,9 +128,10 @@ function collectAncestors(index: ContainerIndex, start: NodeKey) {
 
 async function loadContainerIndex(
   organizationId: string,
+  db: Prisma.TransactionClient = prisma,
 ): Promise<ContainerIndex> {
   const [locations, assets] = await Promise.all([
-    prisma.storageLocation.findMany({
+    db.storageLocation.findMany({
       where: { organizationId },
       select: {
         id: true,
@@ -133,7 +140,7 @@ async function loadContainerIndex(
         containingAssetId: true,
       },
     }),
-    prisma.asset.findMany({
+    db.asset.findMany({
       where: { organizationId },
       select: {
         id: true,
@@ -188,6 +195,42 @@ export function locationPathFromIndex(
 }
 
 /* ------------------------------------------------------------------ */
+/* Containment-graph write serialization                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Run a containment-graph mutation while holding this organization's
+ * transaction-scoped PostgreSQL advisory lock. The union-DFS cycle
+ * check is read-then-write: without serialization, two concurrent
+ * admins could each validate against the same stale graph and commit a
+ * cycle (A placed inside B while B is placed inside A).
+ *
+ * pg_advisory_xact_lock serializes the graph read + cycle check +
+ * write per organization — hashtextextended maps the org id to a
+ * stable bigint key (collisions merely over-serialize, never
+ * under-serialize) — is released automatically on commit or rollback,
+ * and holds across serverless/server instances where an in-process
+ * mutex would not. It is deliberately org-scoped: writers in other
+ * organizations never wait. Reads and InventoryItem writes stay
+ * unlocked — items are graph leaves, never containers.
+ */
+export async function withContainmentLock<T>(
+  organizationId: string,
+  fn: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  return prisma.$transaction(async (tx) => {
+    // pg_advisory_xact_lock returns void — $executeRaw avoids the
+    // $queryRaw deserialization that void would break.
+    await tx.$executeRaw`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(${"sarbase:containment:" + organizationId}, 0)
+      )
+    `;
+    return fn(tx);
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Reference validation                                                */
 /* ------------------------------------------------------------------ */
 
@@ -200,40 +243,41 @@ async function assertSameOrgRefs(
     parentLocationId?: string;
     containingAssetId?: string;
   },
+  db: Prisma.TransactionClient = prisma,
 ) {
   const checks: [string | undefined, () => Promise<boolean>][] = [
     [
       input.unitId,
       async () =>
-        (await prisma.unit.count({
+        (await db.unit.count({
           where: { id: input.unitId, organizationId },
         })) === 1,
     ],
     [
       input.storageLocationId,
       async () =>
-        (await prisma.storageLocation.count({
+        (await db.storageLocation.count({
           where: { id: input.storageLocationId, organizationId },
         })) === 1,
     ],
     [
       input.parentAssetId,
       async () =>
-        (await prisma.asset.count({
+        (await db.asset.count({
           where: { id: input.parentAssetId, organizationId },
         })) === 1,
     ],
     [
       input.parentLocationId,
       async () =>
-        (await prisma.storageLocation.count({
+        (await db.storageLocation.count({
           where: { id: input.parentLocationId, organizationId },
         })) === 1,
     ],
     [
       input.containingAssetId,
       async () =>
-        (await prisma.asset.count({
+        (await db.asset.count({
           where: { id: input.containingAssetId, organizationId },
         })) === 1,
     ],
@@ -318,30 +362,35 @@ export async function createStorageLocation(
   organizationId: string,
   input: StorageLocationInput,
 ) {
+  // Fast-fail before locking — the XOR is also backed by the
+  // StorageLocation_single_container CHECK constraint, so a dual
+  // container can never be persisted even if this check is bypassed.
   if (input.parentLocationId && input.containingAssetId) {
     throw new AssetHierarchyError(
       "A location sits inside either a parent location or an asset — not both.",
     );
   }
-  await assertSameOrgRefs(organizationId, input);
-  const location = await prisma.storageLocation.create({
-    data: {
+  return withContainmentLock(organizationId, async (tx) => {
+    await assertSameOrgRefs(organizationId, input, tx);
+    const location = await tx.storageLocation.create({
+      data: {
+        organizationId,
+        parentLocationId: input.parentLocationId ?? null,
+        containingAssetId: input.containingAssetId ?? null,
+        name: input.name,
+        description: input.description ?? null,
+        status: input.status,
+      },
+    });
+    log({
+      event: "asset.location_created",
+      subsystem: "domain",
+      entityType: "StorageLocation",
+      entityId: location.id,
       organizationId,
-      parentLocationId: input.parentLocationId ?? null,
-      containingAssetId: input.containingAssetId ?? null,
-      name: input.name,
-      description: input.description ?? null,
-      status: input.status,
-    },
+    });
+    return location;
   });
-  log({
-    event: "asset.location_created",
-    subsystem: "domain",
-    entityType: "StorageLocation",
-    entityId: location.id,
-    organizationId,
-  });
-  return location;
 }
 
 export async function updateStorageLocation(
@@ -360,36 +409,43 @@ export async function updateStorageLocation(
   if (input.parentLocationId === id) {
     throw new AssetHierarchyError("A location cannot contain itself.");
   }
-  await assertSameOrgRefs(existing.organizationId, input);
+  const organizationId = existing.organizationId;
+  // Validate + check + write under the org's advisory lock: a
+  // concurrent placement re-reads the graph only after the earlier
+  // writer commits, so a second placement that would close a cycle
+  // always sees the committed edge and rejects cleanly.
+  return withContainmentLock(organizationId, async (tx) => {
+    await assertSameOrgRefs(organizationId, input, tx);
 
-  const index = await loadContainerIndex(existing.organizationId);
-  assertNoContainmentCycle(
-    index,
-    locationKey(id),
-    [
-      input.parentLocationId && locationKey(input.parentLocationId),
-      input.containingAssetId && assetKey(input.containingAssetId),
-    ].filter(Boolean) as NodeKey[],
-  );
+    const index = await loadContainerIndex(organizationId, tx);
+    assertNoContainmentCycle(
+      index,
+      locationKey(id),
+      [
+        input.parentLocationId && locationKey(input.parentLocationId),
+        input.containingAssetId && assetKey(input.containingAssetId),
+      ].filter(Boolean) as NodeKey[],
+    );
 
-  const location = await prisma.storageLocation.update({
-    where: { id },
-    data: {
-      parentLocationId: input.parentLocationId ?? null,
-      containingAssetId: input.containingAssetId ?? null,
-      name: input.name,
-      description: input.description ?? null,
-      status: input.status,
-    },
+    const location = await tx.storageLocation.update({
+      where: { id },
+      data: {
+        parentLocationId: input.parentLocationId ?? null,
+        containingAssetId: input.containingAssetId ?? null,
+        name: input.name,
+        description: input.description ?? null,
+        status: input.status,
+      },
+    });
+    log({
+      event: "asset.location_updated",
+      subsystem: "domain",
+      entityType: "StorageLocation",
+      entityId: location.id,
+      organizationId,
+    });
+    return location;
   });
-  log({
-    event: "asset.location_updated",
-    subsystem: "domain",
-    entityType: "StorageLocation",
-    entityId: location.id,
-    organizationId: existing.organizationId,
-  });
-  return location;
 }
 
 /* ------------------------------------------------------------------ */
@@ -445,34 +501,39 @@ export function getAsset(id: string) {
 }
 
 export async function createAsset(organizationId: string, input: AssetInput) {
-  await assertSameOrgRefs(organizationId, input);
-  const asset = await prisma.asset.create({
-    data: {
+  // A fresh node can't close a cycle (nothing references it yet), but
+  // the create still writes containment edges — keep every edge write
+  // under the same per-organization serialization.
+  return withContainmentLock(organizationId, async (tx) => {
+    await assertSameOrgRefs(organizationId, input, tx);
+    const asset = await tx.asset.create({
+      data: {
+        organizationId,
+        unitId: input.unitId ?? null,
+        parentAssetId: input.parentAssetId ?? null,
+        storageLocationId: input.storageLocationId ?? null,
+        name: input.name,
+        category: input.category ?? null,
+        manufacturer: input.manufacturer ?? null,
+        model: input.model ?? null,
+        serialNumber: input.serialNumber ?? null,
+        assetTag: input.assetTag ?? null,
+        purchaseDate: input.purchaseDate ?? null,
+        vendor: input.vendor ?? null,
+        status: input.status,
+        condition: input.condition,
+        notes: input.notes ?? null,
+      },
+    });
+    log({
+      event: "asset.created",
+      subsystem: "domain",
+      entityType: "Asset",
+      entityId: asset.id,
       organizationId,
-      unitId: input.unitId ?? null,
-      parentAssetId: input.parentAssetId ?? null,
-      storageLocationId: input.storageLocationId ?? null,
-      name: input.name,
-      category: input.category ?? null,
-      manufacturer: input.manufacturer ?? null,
-      model: input.model ?? null,
-      serialNumber: input.serialNumber ?? null,
-      assetTag: input.assetTag ?? null,
-      purchaseDate: input.purchaseDate ?? null,
-      vendor: input.vendor ?? null,
-      status: input.status,
-      condition: input.condition,
-      notes: input.notes ?? null,
-    },
+    });
+    return asset;
   });
-  log({
-    event: "asset.created",
-    subsystem: "domain",
-    entityType: "Asset",
-    entityId: asset.id,
-    organizationId,
-  });
-  return asset;
 }
 
 export async function updateAsset(id: string, input: AssetInput) {
@@ -483,47 +544,51 @@ export async function updateAsset(id: string, input: AssetInput) {
   if (input.parentAssetId === id) {
     throw new AssetHierarchyError("An asset cannot be its own parent.");
   }
-  await assertSameOrgRefs(existing.organizationId, input);
+  const organizationId = existing.organizationId;
+  return withContainmentLock(organizationId, async (tx) => {
+    await assertSameOrgRefs(organizationId, input, tx);
 
-  // Cycle check: the new storage location / parent asset must not
-  // already sit inside this asset (transitively).
-  const index = await loadContainerIndex(existing.organizationId);
-  assertNoContainmentCycle(
-    index,
-    assetKey(id),
-    [
-      input.storageLocationId && locationKey(input.storageLocationId),
-      input.parentAssetId && assetKey(input.parentAssetId),
-    ].filter(Boolean) as NodeKey[],
-  );
+    // Cycle check: the new storage location / parent asset must not
+    // already sit inside this asset (transitively). Runs under the
+    // org lock, so the graph read reflects every committed placement.
+    const index = await loadContainerIndex(organizationId, tx);
+    assertNoContainmentCycle(
+      index,
+      assetKey(id),
+      [
+        input.storageLocationId && locationKey(input.storageLocationId),
+        input.parentAssetId && assetKey(input.parentAssetId),
+      ].filter(Boolean) as NodeKey[],
+    );
 
-  const asset = await prisma.asset.update({
-    where: { id },
-    data: {
-      unitId: input.unitId ?? null,
-      parentAssetId: input.parentAssetId ?? null,
-      storageLocationId: input.storageLocationId ?? null,
-      name: input.name,
-      category: input.category ?? null,
-      manufacturer: input.manufacturer ?? null,
-      model: input.model ?? null,
-      serialNumber: input.serialNumber ?? null,
-      assetTag: input.assetTag ?? null,
-      purchaseDate: input.purchaseDate ?? null,
-      vendor: input.vendor ?? null,
-      status: input.status,
-      condition: input.condition,
-      notes: input.notes ?? null,
-    },
+    const asset = await tx.asset.update({
+      where: { id },
+      data: {
+        unitId: input.unitId ?? null,
+        parentAssetId: input.parentAssetId ?? null,
+        storageLocationId: input.storageLocationId ?? null,
+        name: input.name,
+        category: input.category ?? null,
+        manufacturer: input.manufacturer ?? null,
+        model: input.model ?? null,
+        serialNumber: input.serialNumber ?? null,
+        assetTag: input.assetTag ?? null,
+        purchaseDate: input.purchaseDate ?? null,
+        vendor: input.vendor ?? null,
+        status: input.status,
+        condition: input.condition,
+        notes: input.notes ?? null,
+      },
+    });
+    log({
+      event: "asset.updated",
+      subsystem: "domain",
+      entityType: "Asset",
+      entityId: asset.id,
+      organizationId,
+    });
+    return asset;
   });
-  log({
-    event: "asset.updated",
-    subsystem: "domain",
-    entityType: "Asset",
-    entityId: asset.id,
-    organizationId: existing.organizationId,
-  });
-  return asset;
 }
 
 /* ------------------------------------------------------------------ */

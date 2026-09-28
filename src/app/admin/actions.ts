@@ -119,6 +119,15 @@ function mapDomainError(error: unknown): ActionState {
     if (error.code === "P2025") {
       return { message: "Record not found. It may have been removed." };
     }
+    if (error.code === "P2034") {
+      // Transaction-level write conflict. Containment writes serialize
+      // on the org advisory lock, so this is a raced placement — safe,
+      // retryable, and not a leak.
+      return {
+        message:
+          "That change conflicted with another update in progress. Please try again.",
+      };
+    }
   }
   if (error instanceof CrossOrganizationAssignmentError) {
     return { message: error.message };

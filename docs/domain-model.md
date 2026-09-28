@@ -297,13 +297,18 @@ is the smallest coherent split.
 
 A place things physically live, arbitrarily nested —
 `SAR Building > Workshop > Shelf A > Cabinet 2`. A location sits inside
-exactly **one** container: a parent location (`parentLocationId`)
+**at most one** container: a parent location (`parentLocationId`)
 **or** an asset it is physically part of (`containingAssetId` —
-"Forward locker" inside "Rescue Boat 1"). The XOR is a domain rule
-(Prisma cannot express it); a single container select in the UI makes
-it unrepresentable in the form. Letting an asset contain locations is
-what makes vessel lockers hang off the boat's single identity rather
-than a shadow location named after the boat.
+"Forward locker" inside "Rescue Boat 1"); a top-level location has
+neither. The XOR is enforced at both layers — the domain rejects a
+dual container for a friendly error, and the
+`StorageLocation_single_container` CHECK constraint rejects the row at
+the database level, so direct writes, import scripts, and future code
+paths cannot persist it either (Prisma cannot express CHECK, so the
+constraint lives in its own migration). A single container select in
+the UI makes it unrepresentable in the form. Letting an asset contain
+locations is what makes vessel lockers hang off the boat's single
+identity rather than a shadow location named after the boat.
 
 Because assets can also be _stored in_ locations, the "is inside / is
 part of" edges form one union graph (location → parentLocation |
@@ -313,6 +318,20 @@ rejects any placement that would contain a record inside itself —
 which also prevents the subtler "boat stored in its own locker" loop.
 The same walk renders `locationPath` deterministically and is
 cycle-safe even against bad data.
+
+The union-graph check is read-then-write, so without serialization two
+concurrent admins could each validate against the same stale graph and
+commit a cycle (A inside B while B inside A). Every mutation that
+writes a containment edge — create/update of `StorageLocation` and
+`Asset` — therefore runs inside a transaction holding a
+**per-organization** PostgreSQL advisory lock (`pg_advisory_xact_lock`
+keyed by `hashtextextended` of the organization id). Contenders
+serialize: the loser re-reads the graph after the winner commits and
+its cycle check fails cleanly with a hierarchy error, never an opaque 500. The lock is transaction-scoped (released automatically on commit
+or rollback), holds across server instances — unlike an in-process
+mutex — and never blocks other organizations or ordinary reads.
+`InventoryItem` writes stay unlocked; items are graph leaves, never
+containers.
 
 ### Asset parent-child
 

@@ -115,6 +115,53 @@ describe.skipIf(!hasDb)("assets / inventory / locations", () => {
       ).rejects.toThrow(AssetHierarchyError);
     });
 
+    it("rejects a dual-container row at the database level (CHECK)", async () => {
+      const org = await createTestOrg("loc-xor-db");
+      const parent = await createStorageLocation(org.id, {
+        name: uniqueName("parent"),
+        status: "ACTIVE",
+      });
+      const boat = await createAsset(org.id, {
+        name: uniqueName("container"),
+        status: "ACTIVE",
+        condition: "UNKNOWN",
+      });
+      const locker = await createStorageLocation(org.id, {
+        name: uniqueName("locker"),
+        containingAssetId: boat.id,
+        status: "ACTIVE",
+      });
+
+      // Raw INSERT bypassing the domain helper entirely — the
+      // StorageLocation_single_container CHECK constraint is the
+      // database backstop for direct writes, imports, and future code
+      // paths.
+      await expect(
+        prisma.$executeRaw`
+          INSERT INTO "StorageLocation"
+            ("id", "organizationId", "parentLocationId", "containingAssetId", "name", "updatedAt")
+          VALUES
+            (${`${PREFIX}raw-${locker.id}`}, ${org.id}, ${parent.id}, ${boat.id}, ${uniqueName("dual")}, now())
+        `,
+      ).rejects.toThrow(/StorageLocation_single_container/);
+
+      // A raw UPDATE into the dual-container state is rejected too.
+      await expect(
+        prisma.$executeRaw`
+          UPDATE "StorageLocation"
+          SET "parentLocationId" = ${parent.id}
+          WHERE "id" = ${locker.id}
+        `,
+      ).rejects.toThrow(/StorageLocation_single_container/);
+
+      // And the row is untouched afterward — still asset-contained only.
+      const persisted = await prisma.storageLocation.findUniqueOrThrow({
+        where: { id: locker.id },
+      });
+      expect(persisted.containingAssetId).toBe(boat.id);
+      expect(persisted.parentLocationId).toBeNull();
+    });
+
     it("rejects a cross-organization parent location", async () => {
       const orgA = await createTestOrg("loc-xa");
       const orgB = await createTestOrg("loc-xb");
