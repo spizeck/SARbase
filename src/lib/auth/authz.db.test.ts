@@ -54,13 +54,18 @@ import { prisma } from "@/lib/prisma";
 import { getAuthContext } from "@/lib/auth/context";
 import {
   createMemberAction,
+  createMemberQualificationAction,
+  createQualificationDefinitionAction,
   createUnitAction,
   linkIdentityToMemberAction,
   setMemberStatusAction,
   setMemberUnitsAction,
+  setQualificationDefinitionStatusAction,
   unlinkIdentityFromMemberAction,
   updateMemberAction,
+  updateMemberQualificationAction,
   updateOrganizationAction,
+  updateQualificationDefinitionAction,
   updateUnitAction,
 } from "@/app/admin/actions";
 
@@ -162,6 +167,12 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
     });
     await prisma.authIdentity.deleteMany({
       where: { providerUid: { startsWith: PREFIX } },
+    });
+    await prisma.memberQualification.deleteMany({
+      where: { member: { organization: { name: { startsWith: PREFIX } } } },
+    });
+    await prisma.qualificationDefinition.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.memberUnit.deleteMany({
       where: { member: { organization: { name: { startsWith: PREFIX } } } },
@@ -662,6 +673,216 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
         where: { organizationId: org.id },
       });
       await prisma.organization.delete({ where: { id: org.id } });
+    });
+  });
+
+  describe("qualification administration", () => {
+    let defA: { id: string };
+    let defB: { id: string };
+    let recordA: { id: string };
+    let recordB: { id: string };
+
+    beforeAll(async () => {
+      defA = await prisma.qualificationDefinition.create({
+        data: { organizationId: orgA.id, name: uniq("def-a") },
+      });
+      defB = await prisma.qualificationDefinition.create({
+        data: { organizationId: orgB.id, name: uniq("def-b") },
+      });
+      recordA = await prisma.memberQualification.create({
+        data: {
+          organizationId: orgA.id,
+          memberId: memberA.id,
+          definitionId: defA.id,
+        },
+      });
+      recordB = await prisma.memberQualification.create({
+        data: {
+          organizationId: orgB.id,
+          memberId: memberB.id,
+          definitionId: defB.id,
+        },
+      });
+    });
+
+    it("admin A creates, edits and deactivates definitions in A", async () => {
+      signInAs(adminAUid);
+      const created = await createQualificationDefinitionAction(
+        orgA.id,
+        {},
+        form({ name: uniq("via-action") }),
+      );
+      expect(created).toEqual({});
+
+      expect(
+        await updateQualificationDefinitionAction(
+          defA.id,
+          {},
+          form({ name: uniq("renamed") }),
+        ),
+      ).toEqual({});
+
+      await expect(
+        setQualificationDefinitionStatusAction(defA.id, "INACTIVE"),
+      ).resolves.toBeUndefined();
+      const after = await prisma.qualificationDefinition.findUnique({
+        where: { id: defA.id },
+      });
+      expect(after?.status).toBe("INACTIVE");
+      // Reactivate so later tests in this suite can add records under defA.
+      await setQualificationDefinitionStatusAction(defA.id, "ACTIVE");
+    });
+
+    it("admin A cannot create a definition in org B by supplying its id", async () => {
+      signInAs(adminAUid);
+      const result = await createQualificationDefinitionAction(
+        orgB.id,
+        {},
+        form({ name: uniq("intruder") }),
+      );
+      expect(result).toEqual({ message: "Not found." });
+      expect(
+        await prisma.qualificationDefinition.count({
+          where: { organizationId: orgB.id, name: { startsWith: PREFIX } },
+        }),
+      ).toBe(1); // only defB, created directly
+    });
+
+    it("admin A cannot edit or deactivate a definition in org B", async () => {
+      signInAs(adminAUid);
+      expect(
+        await updateQualificationDefinitionAction(
+          defB.id,
+          {},
+          form({ name: "hijacked" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      await expect(
+        setQualificationDefinitionStatusAction(defB.id, "INACTIVE"),
+      ).rejects.toThrow("Not found or not permitted.");
+      const unchanged = await prisma.qualificationDefinition.findUnique({
+        where: { id: defB.id },
+      });
+      expect(unchanged?.status).toBe("ACTIVE");
+    });
+
+    it("admin A adds a qualification record to a member in A", async () => {
+      signInAs(adminAUid);
+      const result = await createMemberQualificationAction(
+        memberA.id,
+        {},
+        form({
+          definitionId: defA.id,
+          issuedOn: "2026-01-15",
+          expiresOn: "2028-01-15",
+          issuer: "Synthetic Issuer",
+          reference: "REF-1",
+          notes: "",
+        }),
+      );
+      expect(result).toEqual({});
+      const saved = await prisma.memberQualification.findFirst({
+        where: {
+          memberId: memberA.id,
+          definitionId: defA.id,
+          issuer: "Synthetic Issuer",
+        },
+      });
+      expect(saved).toBeTruthy();
+    });
+
+    it("admin A cannot add a record to a member in org B", async () => {
+      signInAs(adminAUid);
+      const result = await createMemberQualificationAction(
+        memberB.id,
+        {},
+        form({ definitionId: defB.id }),
+      );
+      expect(result).toEqual({ message: "Not found." });
+    });
+
+    it("admin A cannot attach an org-B definition to an org-A member", async () => {
+      signInAs(adminAUid);
+      // defB.id is a valid-looking selector; the record's real org
+      // mismatch is caught and reported opaquely.
+      const result = await createMemberQualificationAction(
+        memberA.id,
+        {},
+        form({ definitionId: defB.id }),
+      );
+      expect(result).toEqual({ message: "Not found." });
+      expect(
+        await prisma.memberQualification.count({
+          where: { memberId: memberA.id, definitionId: defB.id },
+        }),
+      ).toBe(0);
+    });
+
+    it("admin A cannot modify a qualification record in org B by id", async () => {
+      signInAs(adminAUid);
+      const result = await updateMemberQualificationAction(
+        recordB.id,
+        {},
+        form({ issuer: "Forged Issuer" }),
+      );
+      expect(result).toEqual({ message: "Not found." });
+      const unchanged = await prisma.memberQualification.findUnique({
+        where: { id: recordB.id },
+      });
+      expect(unchanged?.issuer).toBeNull();
+    });
+
+    it("admin B is equally fenced from org A records", async () => {
+      signInAs(adminBUid);
+      expect(
+        await updateMemberQualificationAction(
+          recordA.id,
+          {},
+          form({ issuer: "Forged" }),
+        ),
+      ).toEqual({ message: "Not found." });
+    });
+
+    it("MEMBER role cannot perform any qualification administration", async () => {
+      signInAs(memberRoleUid); // MEMBER of org A
+      expect(
+        await createQualificationDefinitionAction(
+          orgA.id,
+          {},
+          form({ name: uniq("member-attempt") }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateQualificationDefinitionAction(
+          defA.id,
+          {},
+          form({ name: "member-attempt" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await createMemberQualificationAction(
+          memberA.id,
+          {},
+          form({ definitionId: defA.id }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateMemberQualificationAction(
+          recordA.id,
+          {},
+          form({ issuer: "x" }),
+        ),
+      ).toEqual({ message: "Not found." });
+    });
+
+    it("unauthenticated qualification calls redirect to /login", async () => {
+      signInAs(null);
+      await expect(
+        createQualificationDefinitionAction(orgA.id, {}, form({ name: "x" })),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
+      await expect(
+        updateMemberQualificationAction(recordA.id, {}, form({})),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
     });
   });
 });

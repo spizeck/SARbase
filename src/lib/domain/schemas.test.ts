@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  dateOnlySchema,
   memberInputSchema,
+  memberQualificationInputSchema,
   memberStatusSchema,
   organizationInputSchema,
+  qualificationDefinitionInputSchema,
 } from "./schemas";
 
 describe("organizationInputSchema", () => {
@@ -67,5 +70,88 @@ describe("memberStatusSchema", () => {
     expect(memberStatusSchema.safeParse("ACTIVE").success).toBe(true);
     expect(memberStatusSchema.safeParse("INACTIVE").success).toBe(true);
     expect(memberStatusSchema.safeParse("SUSPENDED").success).toBe(false);
+  });
+});
+
+describe("dateOnlySchema", () => {
+  it("parses YYYY-MM-DD into a UTC-midnight Date", () => {
+    const parsed = dateOnlySchema.parse("2027-11-14");
+    expect(parsed).toBeInstanceOf(Date);
+    expect(parsed!.toISOString()).toBe("2027-11-14T00:00:00.000Z");
+  });
+
+  it("treats blank input as absent", () => {
+    expect(dateOnlySchema.parse("")).toBeUndefined();
+    expect(dateOnlySchema.parse("   ")).toBeUndefined();
+    expect(dateOnlySchema.parse(undefined)).toBeUndefined();
+  });
+
+  it("rejects malformed and impossible dates", () => {
+    expect(dateOnlySchema.safeParse("11/14/2027").success).toBe(false);
+    expect(dateOnlySchema.safeParse("2027-13-40").success).toBe(false);
+    expect(dateOnlySchema.safeParse("2027-02-30").success).toBe(false);
+  });
+});
+
+describe("qualificationDefinitionInputSchema", () => {
+  it("accepts a trimmed name with optional description", () => {
+    const parsed = qualificationDefinitionInputSchema.parse({
+      name: "  First aid  ",
+      description: "",
+    });
+    expect(parsed.name).toBe("First aid");
+    expect(parsed.description).toBeUndefined();
+  });
+
+  it("rejects a blank name", () => {
+    expect(
+      qualificationDefinitionInputSchema.safeParse({ name: "  " }).success,
+    ).toBe(false);
+  });
+});
+
+describe("memberQualificationInputSchema", () => {
+  const base = { definitionId: "def-1" };
+
+  it("accepts a record with no dates at all", () => {
+    const parsed = memberQualificationInputSchema.parse(base);
+    expect(parsed.issuedOn).toBeUndefined();
+    expect(parsed.expiresOn).toBeUndefined();
+  });
+
+  it("accepts expiry without issue date", () => {
+    const parsed = memberQualificationInputSchema.parse({
+      ...base,
+      expiresOn: "2029-05-01",
+    });
+    expect(parsed.expiresOn!.toISOString()).toBe("2029-05-01T00:00:00.000Z");
+  });
+
+  it("rejects expiry earlier than the issue date", () => {
+    const result = memberQualificationInputSchema.safeParse({
+      ...base,
+      issuedOn: "2027-06-01",
+      expiresOn: "2027-05-31",
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.path).toEqual(["expiresOn"]);
+    }
+  });
+
+  it("accepts expiry equal to the issue date", () => {
+    expect(
+      memberQualificationInputSchema.safeParse({
+        ...base,
+        issuedOn: "2027-06-01",
+        expiresOn: "2027-06-01",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("requires a definition id", () => {
+    expect(
+      memberQualificationInputSchema.safeParse({ definitionId: "" }).success,
+    ).toBe(false);
   });
 });

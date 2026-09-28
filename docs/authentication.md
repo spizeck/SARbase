@@ -113,6 +113,9 @@ Centralized helpers in `src/lib/auth/`:
 - `requireOrgAdminForMember(ctx, memberId)` /
   `requireOrgAdminForUnit(ctx, unitId)` — resolve the record, take its
   **real** `organizationId`, then check the caller's grants
+- `requireOrgAdminForDefinition(ctx, definitionId)` /
+  `requireOrgAdminForQualification(ctx, qualificationId)` — same
+  pattern for the qualification domain (issue #8)
 
 Every `/admin` server action follows this shape. For example
 `updateMemberAction(memberId, …)` resolves the member server-side and

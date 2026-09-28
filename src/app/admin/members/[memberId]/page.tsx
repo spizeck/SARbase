@@ -3,6 +3,13 @@ import { notFound } from "next/navigation";
 
 import { getMember } from "@/lib/domain/member";
 import { listUnits } from "@/lib/domain/unit";
+import {
+  listMemberQualifications,
+  listQualificationDefinitions,
+  expiryLabel,
+  formatDateOnly,
+  todayUtc,
+} from "@/lib/domain/qualification";
 import { requireAuth, isOrgAdmin } from "@/lib/auth/authorize";
 
 import {
@@ -11,8 +18,15 @@ import {
   setMemberUnitsAction,
   linkIdentityToMemberAction,
   unlinkIdentityFromMemberAction,
+  createMemberQualificationAction,
+  updateMemberQualificationAction,
 } from "../../actions";
-import { MemberForm, MemberUnitsForm, LinkIdentityForm } from "../../forms";
+import {
+  MemberForm,
+  MemberUnitsForm,
+  LinkIdentityForm,
+  MemberQualificationForm,
+} from "../../forms";
 
 export const metadata = { title: "Member" };
 
@@ -34,6 +48,10 @@ export default async function MemberPage({
   const units = await listUnits(orgId);
   const assignedUnitIds = member.memberUnits.map((mu) => mu.unitId);
   const isActive = member.status === "ACTIVE";
+
+  const today = todayUtc();
+  const qualifications = await listMemberQualifications(member.id);
+  const activeDefinitions = await listQualificationDefinitions(orgId);
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
@@ -138,6 +156,110 @@ export default async function MemberPage({
             assignedUnitIds={assignedUnitIds}
           />
         </div>
+      </section>
+
+      <section aria-labelledby="qualifications-heading" className="mt-8">
+        <h2 id="qualifications-heading" className="text-lg font-medium">
+          Qualifications &amp; certifications
+        </h2>
+        <p className="mt-1 text-sm text-neutral-600">
+          Certificates and qualification records held by this member. Renewals
+          are added as new records so history is preserved.
+        </p>
+        {qualifications.length > 0 ? (
+          <ul className="mt-3 space-y-2">
+            {qualifications.map((record) => (
+              <li
+                key={record.id}
+                className="rounded-md border border-neutral-200 p-3"
+              >
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-sm font-medium text-neutral-900">
+                    {record.definition.name}
+                  </span>
+                  <span className="text-xs text-neutral-600">
+                    {expiryLabel(record.expiresOn, today)}
+                  </span>
+                </div>
+                <dl className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-neutral-600 sm:grid-cols-4">
+                  <div>
+                    <dt className="text-xs text-neutral-500">Issued</dt>
+                    <dd>{formatDateOnly(record.issuedOn) ?? "Not recorded"}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-neutral-500">Expires</dt>
+                    <dd>{formatDateOnly(record.expiresOn) ?? "No expiry"}</dd>
+                  </div>
+                  {record.issuer && (
+                    <div>
+                      <dt className="text-xs text-neutral-500">Issuer</dt>
+                      <dd>{record.issuer}</dd>
+                    </div>
+                  )}
+                  {record.reference && (
+                    <div>
+                      <dt className="text-xs text-neutral-500">Reference</dt>
+                      <dd>{record.reference}</dd>
+                    </div>
+                  )}
+                </dl>
+                {record.notes && (
+                  <p className="mt-1 text-sm text-neutral-600">
+                    {record.notes}
+                  </p>
+                )}
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-xs font-medium text-neutral-600 hover:text-neutral-900">
+                    Correct record
+                  </summary>
+                  <div className="mt-2">
+                    <MemberQualificationForm
+                      action={updateMemberQualificationAction.bind(
+                        null,
+                        record.id,
+                      )}
+                      definitionName={record.definition.name}
+                      defaults={{
+                        issuedOn: formatDateOnly(record.issuedOn),
+                        expiresOn: formatDateOnly(record.expiresOn),
+                        issuer: record.issuer,
+                        reference: record.reference,
+                        notes: record.notes,
+                      }}
+                      submitLabel="Save correction"
+                    />
+                  </div>
+                </details>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-3 text-sm text-neutral-500">
+            No qualification records yet.
+          </p>
+        )}
+        {activeDefinitions.length > 0 ? (
+          <div className="mt-3 rounded-md border border-neutral-200 p-4">
+            <h3 className="text-sm font-medium text-neutral-800">
+              Add qualification record
+            </h3>
+            <div className="mt-2">
+              <MemberQualificationForm
+                action={createMemberQualificationAction.bind(null, member.id)}
+                definitions={activeDefinitions.map((d) => ({
+                  id: d.id,
+                  name: d.name,
+                }))}
+                submitLabel="Add record"
+              />
+            </div>
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-neutral-500">
+            Define qualifications on the organization page before adding member
+            records.
+          </p>
+        )}
       </section>
 
       <section

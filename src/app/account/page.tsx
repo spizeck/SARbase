@@ -3,6 +3,12 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { requireAuth } from "@/lib/auth/authorize";
 import { signOutAction } from "@/app/login/actions";
+import {
+  listMemberQualifications,
+  expiryLabel,
+  formatDateOnly,
+  todayUtc,
+} from "@/lib/domain/qualification";
 
 export const metadata = { title: "Account" };
 
@@ -28,6 +34,16 @@ export default async function AccountPage() {
     orgs.find((o) => o.id === id)?.name ?? "Unknown organization";
 
   const adminOrgs = ctx.access.filter((a) => a.role === "ADMIN");
+
+  // Qualification records for the caller's own linked member records only —
+  // member ids come from ctx.members (server-resolved), never from the client.
+  const today = todayUtc();
+  const ownQualifications = await Promise.all(
+    ctx.members.map(async (member) => ({
+      member,
+      records: await listMemberQualifications(member.id),
+    })),
+  );
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
@@ -81,6 +97,42 @@ export default async function AccountPage() {
           </ul>
         )}
       </section>
+
+      {ownQualifications.some((g) => g.records.length > 0) && (
+        <section aria-labelledby="qualifications-heading" className="mt-8">
+          <h2 id="qualifications-heading" className="text-lg font-medium">
+            My qualifications &amp; certifications
+          </h2>
+          {ownQualifications.map(({ member, records }) =>
+            records.length === 0 ? null : (
+              <div key={member.id} className="mt-3">
+                <h3 className="text-sm font-medium text-neutral-500">
+                  {orgName(member.organizationId)}
+                </h3>
+                <ul className="mt-1 divide-y divide-neutral-200 rounded-md border border-neutral-200">
+                  {records.map((record) => (
+                    <li key={record.id} className="px-4 py-3 text-sm">
+                      <div className="flex items-baseline justify-between gap-3">
+                        <span className="font-medium text-neutral-900">
+                          {record.definition.name}
+                        </span>
+                        <span className="text-xs text-neutral-600">
+                          {expiryLabel(record.expiresOn, today)}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-xs text-neutral-500">
+                        Issued{" "}
+                        {formatDateOnly(record.issuedOn) ?? "not recorded"}
+                        {record.issuer ? ` · ${record.issuer}` : ""}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ),
+          )}
+        </section>
+      )}
 
       <section aria-labelledby="access-heading" className="mt-8">
         <h2 id="access-heading" className="text-lg font-medium">

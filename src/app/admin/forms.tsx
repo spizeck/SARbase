@@ -315,3 +315,221 @@ export function MemberUnitsForm({
     </form>
   );
 }
+
+export function QualificationDefinitionForm({
+  action,
+  defaults,
+  submitLabel,
+}: {
+  action: BoundAction;
+  defaults?: { name: string; description: string | null };
+  submitLabel: string;
+}) {
+  const [state, formAction, pending] = useActionState(action, {});
+  return (
+    <form action={formAction} className="space-y-3">
+      <div>
+        <label htmlFor="qual-name" className={labelClass}>
+          Qualification name
+        </label>
+        <input
+          id="qual-name"
+          name="name"
+          type="text"
+          required
+          maxLength={120}
+          defaultValue={defaults?.name}
+          placeholder="e.g. First aid certificate"
+          aria-invalid={Boolean(state.fieldErrors?.name)}
+          aria-describedby="qual-name-error"
+          className={inputClass}
+        />
+        <FieldError id="qual-name-error" errors={state.fieldErrors?.name} />
+      </div>
+      <div>
+        <label htmlFor="qual-description" className={labelClass}>
+          Description{" "}
+          <span className="font-normal text-neutral-500">(optional)</span>
+        </label>
+        <textarea
+          id="qual-description"
+          name="description"
+          rows={2}
+          maxLength={500}
+          defaultValue={defaults?.description ?? undefined}
+          aria-invalid={Boolean(state.fieldErrors?.description)}
+          aria-describedby="qual-description-error"
+          className={inputClass}
+        />
+        <FieldError
+          id="qual-description-error"
+          errors={state.fieldErrors?.description}
+        />
+      </div>
+      {state.message && (
+        <p className={errorClass} role="alert">
+          {state.message}
+        </p>
+      )}
+      <button type="submit" disabled={pending} className={buttonClass}>
+        {pending ? "Saving…" : submitLabel}
+      </button>
+    </form>
+  );
+}
+
+interface QualificationRecordDefaults {
+  definitionId?: string;
+  issuedOn: string | null;
+  expiresOn: string | null;
+  issuer: string | null;
+  reference: string | null;
+  notes: string | null;
+}
+
+export function MemberQualificationForm({
+  action,
+  definitions,
+  definitionName,
+  defaults,
+  submitLabel,
+}: {
+  action: BoundAction;
+  /** Active definitions — shown only when creating a new record. */
+  definitions?: { id: string; name: string }[];
+  /** Shown read-only when editing (the definition is immutable). */
+  definitionName?: string;
+  defaults?: QualificationRecordDefaults;
+  submitLabel: string;
+}) {
+  const [state, formAction, pending] = useActionState(action, {});
+  return (
+    <form action={formAction} className="space-y-3">
+      {definitions ? (
+        <div>
+          <label htmlFor="mq-definition" className={labelClass}>
+            Qualification
+          </label>
+          <select
+            id="mq-definition"
+            name="definitionId"
+            required
+            defaultValue={defaults?.definitionId ?? ""}
+            aria-invalid={Boolean(state.fieldErrors?.definitionId)}
+            aria-describedby="mq-definition-error"
+            className={inputClass}
+          >
+            <option value="" disabled>
+              Choose a qualification…
+            </option>
+            {definitions.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+              </option>
+            ))}
+          </select>
+          <FieldError
+            id="mq-definition-error"
+            errors={state.fieldErrors?.definitionId}
+          />
+        </div>
+      ) : (
+        <p className="text-sm text-neutral-600">
+          Qualification:{" "}
+          <span className="font-medium text-neutral-900">{definitionName}</span>
+        </p>
+      )}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label htmlFor="mq-issued" className={labelClass}>
+            Issued on{" "}
+            <span className="font-normal text-neutral-500">(optional)</span>
+          </label>
+          <input
+            id="mq-issued"
+            name="issuedOn"
+            type="date"
+            defaultValue={defaults?.issuedOn ?? undefined}
+            aria-invalid={Boolean(state.fieldErrors?.issuedOn)}
+            aria-describedby="mq-issued-error"
+            className={inputClass}
+          />
+          <FieldError
+            id="mq-issued-error"
+            errors={state.fieldErrors?.issuedOn}
+          />
+        </div>
+        <div>
+          <label htmlFor="mq-expires" className={labelClass}>
+            Expires on{" "}
+            <span className="font-normal text-neutral-500">(optional)</span>
+          </label>
+          <input
+            id="mq-expires"
+            name="expiresOn"
+            type="date"
+            defaultValue={defaults?.expiresOn ?? undefined}
+            aria-invalid={Boolean(state.fieldErrors?.expiresOn)}
+            aria-describedby="mq-expires-error"
+            className={inputClass}
+          />
+          <FieldError
+            id="mq-expires-error"
+            errors={state.fieldErrors?.expiresOn}
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label htmlFor="mq-issuer" className={labelClass}>
+            Issuer{" "}
+            <span className="font-normal text-neutral-500">(optional)</span>
+          </label>
+          <input
+            id="mq-issuer"
+            name="issuer"
+            type="text"
+            maxLength={120}
+            defaultValue={defaults?.issuer ?? undefined}
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <label htmlFor="mq-reference" className={labelClass}>
+            Reference no.{" "}
+            <span className="font-normal text-neutral-500">(optional)</span>
+          </label>
+          <input
+            id="mq-reference"
+            name="reference"
+            type="text"
+            maxLength={120}
+            defaultValue={defaults?.reference ?? undefined}
+            className={inputClass}
+          />
+        </div>
+      </div>
+      <div>
+        <label htmlFor="mq-notes" className={labelClass}>
+          Notes <span className="font-normal text-neutral-500">(optional)</span>
+        </label>
+        <textarea
+          id="mq-notes"
+          name="notes"
+          rows={2}
+          maxLength={2000}
+          defaultValue={defaults?.notes ?? undefined}
+          className={inputClass}
+        />
+      </div>
+      {state.message && (
+        <p className={errorClass} role="alert">
+          {state.message}
+        </p>
+      )}
+      <button type="submit" disabled={pending} className={buttonClass}>
+        {pending ? "Saving…" : submitLabel}
+      </button>
+    </form>
+  );
+}
