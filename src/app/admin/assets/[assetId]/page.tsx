@@ -8,11 +8,49 @@ import {
 } from "@/lib/domain/assets";
 import { getOrganization } from "@/lib/domain/organization";
 import { listUnits } from "@/lib/domain/unit";
+import { listMembers } from "@/lib/domain/member";
+import {
+  listInspectionDefinitions,
+  listAssetInspections,
+  listAssetMaintenancePlans,
+  listAssetMaintenanceRecords,
+  listAssetDefects,
+  listAssetMeters,
+  organizationToday,
+  dateDueLabel,
+} from "@/lib/domain/maintenance";
 import { formatDateOnly } from "@/lib/dates";
 import { requireAuth, isOrgAdmin } from "@/lib/auth/authorize";
 
-import { updateAssetAction } from "../../actions";
+import {
+  updateAssetAction,
+  recordInspectionAction,
+  updateInspectionRecordAction,
+  createMaintenancePlanAction,
+  updateMaintenancePlanAction,
+  setMaintenancePlanStatusAction,
+  recordMaintenanceAction,
+  updateMaintenanceRecordAction,
+  reportDefectAction,
+  updateDefectAction,
+  transitionDefectAction,
+  createAssetMeterAction,
+  updateAssetMeterAction,
+  setAssetMeterStatusAction,
+  recordMeterReadingAction,
+} from "../../actions";
 import { AssetForm } from "../../asset-forms";
+import {
+  InspectionRecordForm,
+  InspectionRecordEditForm,
+  MaintenancePlanForm,
+  MaintenanceRecordForm,
+  MaintenanceRecordEditForm,
+  DefectForm,
+  DefectTransitionForm,
+  AssetMeterForm,
+  MeterReadingForm,
+} from "../../maintenance-forms";
 
 export const metadata = { title: "Asset" };
 
@@ -43,13 +81,50 @@ export default async function AssetPage({
   if (!asset || !isOrgAdmin(ctx, asset.organizationId)) notFound();
 
   const orgId = asset.organizationId;
-  const [organization, units, locations, siblings] = await Promise.all([
+  const [
+    organization,
+    units,
+    locations,
+    siblings,
+    members,
+    inspectionDefinitions,
+    inspectionRecords,
+    maintenancePlans,
+    maintenanceRecords,
+    defects,
+    meters,
+    today,
+  ] = await Promise.all([
     getOrganization(orgId),
     listUnits(orgId),
     listStorageLocations(orgId),
     listAssets(orgId, { includeRetired: true }),
+    listMembers(orgId),
+    listInspectionDefinitions(orgId),
+    listAssetInspections(assetId),
+    listAssetMaintenancePlans(assetId, { includeInactive: true }),
+    listAssetMaintenanceRecords(assetId),
+    listAssetDefects(assetId),
+    listAssetMeters(assetId),
+    organizationToday(orgId),
   ]);
   if (!organization) notFound();
+
+  const memberOptions = members.map((m) => ({
+    id: m.id,
+    displayName: m.displayName,
+  }));
+  const meterOptions = meters
+    .filter((m) => m.status === "ACTIVE")
+    .map((m) => ({ id: m.id, name: m.name, unit: m.unit }));
+  const todayString = formatDateOnly(today) ?? undefined;
+
+  const INTERVAL_LABELS: Record<string, string> = {
+    NONE: "No recurrence",
+    CALENDAR_DAYS: "days",
+    CALENDAR_MONTHS: "months",
+    METER_INTERVAL: "meter units",
+  };
 
   const locationPath = asset.storageLocationId
     ? locations.find((l) => l.id === asset.storageLocationId)?.path
@@ -201,6 +276,563 @@ export default async function AssetPage({
           )}
         </section>
       )}
+
+      {/* Issue #11 — meters, inspections, maintenance, defects. All
+          labels are factual: dates, readings, and statuses only. */}
+
+      <section aria-labelledby="meters-heading" className="mt-10">
+        <h2 id="meters-heading" className="text-lg font-medium">
+          Meters
+        </h2>
+        <p className="mt-1 text-sm text-neutral-600">
+          Manually recorded counters (engine hours, odometer, cycles). Readings
+          are append-only; a wrong value is corrected by recording a new one.
+        </p>
+        {meters.length > 0 ? (
+          <ul className="mt-3 space-y-2">
+            {meters.map((meter) => {
+              const latest = meter.readings[0];
+              return (
+                <li
+                  key={meter.id}
+                  className="rounded-md border border-neutral-200 p-3"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <span className="text-sm font-medium text-neutral-900">
+                        {meter.name}
+                      </span>
+                      <span className="ml-2 text-xs text-neutral-500">
+                        {latest
+                          ? `${latest.reading} ${meter.unit} (recorded ${formatDateOnly(latest.recordedOn)})`
+                          : `No readings yet — ${meter.unit}`}
+                      </span>
+                      {meter.status === "ARCHIVED" && (
+                        <span className="ml-2 inline-block rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-600">
+                          Archived
+                        </span>
+                      )}
+                    </div>
+                    <form
+                      action={setAssetMeterStatusAction.bind(
+                        null,
+                        meter.id,
+                        meter.status === "ACTIVE" ? "ARCHIVED" : "ACTIVE",
+                      )}
+                    >
+                      <button
+                        type="submit"
+                        className="rounded-md border border-neutral-300 px-3 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50"
+                      >
+                        {meter.status === "ACTIVE" ? "Archive" : "Reactivate"}
+                      </button>
+                    </form>
+                  </div>
+                  <div className="mt-2 flex gap-4 text-xs">
+                    {meter.status === "ACTIVE" && (
+                      <details>
+                        <summary className="cursor-pointer font-medium text-neutral-600 hover:text-neutral-900">
+                          Add reading
+                        </summary>
+                        <div className="mt-2">
+                          <MeterReadingForm
+                            action={recordMeterReadingAction.bind(
+                              null,
+                              meter.id,
+                            )}
+                            formId={meter.id}
+                            members={memberOptions}
+                            defaultDate={todayString}
+                            submitLabel="Record reading"
+                          />
+                        </div>
+                      </details>
+                    )}
+                    <details>
+                      <summary className="cursor-pointer font-medium text-neutral-600 hover:text-neutral-900">
+                        Edit
+                      </summary>
+                      <div className="mt-2">
+                        <AssetMeterForm
+                          action={updateAssetMeterAction.bind(null, meter.id)}
+                          formId={meter.id}
+                          defaults={{ name: meter.name, unit: meter.unit }}
+                          submitLabel="Save meter"
+                        />
+                      </div>
+                    </details>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="mt-3 text-sm text-neutral-600">
+            No meters recorded on this asset.
+          </p>
+        )}
+        <div className="mt-3 rounded-md border border-neutral-200 p-4">
+          <h3 className="text-sm font-medium text-neutral-800">Add meter</h3>
+          <div className="mt-2">
+            <AssetMeterForm
+              action={createAssetMeterAction.bind(null, asset.id)}
+              formId="new"
+              submitLabel="Add meter"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="inspections-heading" className="mt-10">
+        <h2 id="inspections-heading" className="text-lg font-medium">
+          Inspections
+        </h2>
+        <p className="mt-1 text-sm text-neutral-600">
+          Factual inspection occurrences — that an inspection happened, on which
+          date, by whom, and any recorded next-due date.
+        </p>
+        {inspectionRecords.length > 0 ? (
+          <ul className="mt-3 space-y-2">
+            {inspectionRecords.map((record) => (
+              <li
+                key={record.id}
+                className="rounded-md border border-neutral-200 p-3"
+              >
+                <div className="text-sm font-medium text-neutral-900">
+                  {record.definition.name}
+                  <span className="ml-2 text-xs font-normal text-neutral-500">
+                    performed {formatDateOnly(record.performedOn)}
+                  </span>
+                </div>
+                <dl className="mt-1 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-neutral-600 sm:grid-cols-3">
+                  <div>
+                    <dt className="inline text-neutral-500">Inspector: </dt>
+                    <dd className="inline">
+                      {record.inspectorMember?.displayName ??
+                        record.inspectorName ??
+                        "Not recorded"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="inline text-neutral-500">Condition: </dt>
+                    <dd className="inline">
+                      {record.conditionObserved
+                        ? (CONDITION_LABELS[record.conditionObserved] ??
+                          record.conditionObserved)
+                        : "Not recorded"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="inline text-neutral-500">Next due: </dt>
+                    <dd className="inline">
+                      {dateDueLabel(record.nextDueOn, today)}
+                    </dd>
+                  </div>
+                  {record.meterReading != null && (
+                    <div>
+                      <dt className="inline text-neutral-500">Meter: </dt>
+                      <dd className="inline">
+                        {record.meter?.name}: {String(record.meterReading)}{" "}
+                        {record.meter?.unit}
+                      </dd>
+                    </div>
+                  )}
+                </dl>
+                {record.notes && (
+                  <p className="mt-1 text-xs text-neutral-600">
+                    {record.notes}
+                  </p>
+                )}
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-xs font-medium text-neutral-600 hover:text-neutral-900">
+                    Correct this record
+                  </summary>
+                  <div className="mt-2">
+                    <InspectionRecordEditForm
+                      action={updateInspectionRecordAction.bind(
+                        null,
+                        record.id,
+                      )}
+                      formId={record.id}
+                      members={memberOptions}
+                      defaults={{
+                        performedOn: formatDateOnly(record.performedOn)!,
+                        inspectorMemberId: record.inspectorMemberId,
+                        inspectorName: record.inspectorName,
+                        conditionObserved: record.conditionObserved,
+                        nextDueOn: formatDateOnly(record.nextDueOn),
+                        notes: record.notes,
+                      }}
+                      submitLabel="Save correction"
+                    />
+                  </div>
+                </details>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-3 text-sm text-neutral-600">
+            No inspections recorded on this asset.
+          </p>
+        )}
+        <div className="mt-3 rounded-md border border-neutral-200 p-4">
+          <h3 className="text-sm font-medium text-neutral-800">
+            Record an inspection
+          </h3>
+          {inspectionDefinitions.length > 0 ? (
+            <div className="mt-2">
+              <InspectionRecordForm
+                action={recordInspectionAction.bind(null, asset.id)}
+                formId="new"
+                definitions={inspectionDefinitions.map((d) => ({
+                  id: d.id,
+                  name: d.name,
+                }))}
+                members={memberOptions}
+                meters={meterOptions}
+                defaultDate={todayString}
+                submitLabel="Record inspection"
+              />
+            </div>
+          ) : (
+            <p className="mt-2 text-sm text-neutral-600">
+              No active inspection types — define them under{" "}
+              <Link
+                href={`/admin/organizations/${orgId}/maintenance`}
+                className="font-medium text-neutral-800 hover:underline"
+              >
+                Maintenance
+              </Link>
+              .
+            </p>
+          )}
+        </div>
+      </section>
+
+      <section aria-labelledby="maintenance-heading" className="mt-10">
+        <h2 id="maintenance-heading" className="text-lg font-medium">
+          Maintenance
+        </h2>
+        <p className="mt-1 text-sm text-neutral-600">
+          Recurring requirements and the factual service history against them.
+        </p>
+        {maintenancePlans.length > 0 && (
+          <>
+            <h3 className="mt-4 text-sm font-medium text-neutral-800">Plans</h3>
+            <ul className="mt-2 space-y-2">
+              {maintenancePlans.map((plan) => (
+                <li
+                  key={plan.id}
+                  className="rounded-md border border-neutral-200 p-3"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <span className="text-sm font-medium text-neutral-900">
+                        {plan.name}
+                      </span>
+                      <span className="ml-2 text-xs text-neutral-500">
+                        {plan.intervalType === "METER_INTERVAL"
+                          ? `Every ${plan.meterInterval} ${plan.meter?.unit ?? "units"} (${plan.meter?.name})`
+                          : plan.intervalType === "NONE"
+                            ? INTERVAL_LABELS.NONE
+                            : `Every ${plan.intervalValue} ${INTERVAL_LABELS[plan.intervalType]}`}
+                      </span>
+                      {plan.status === "INACTIVE" && (
+                        <span className="ml-2 inline-block rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-600">
+                          Inactive
+                        </span>
+                      )}
+                    </div>
+                    <form
+                      action={setMaintenancePlanStatusAction.bind(
+                        null,
+                        plan.id,
+                        plan.status === "ACTIVE" ? "INACTIVE" : "ACTIVE",
+                      )}
+                    >
+                      <button
+                        type="submit"
+                        className="rounded-md border border-neutral-300 px-3 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50"
+                      >
+                        {plan.status === "ACTIVE" ? "Deactivate" : "Reactivate"}
+                      </button>
+                    </form>
+                  </div>
+                  {plan.description && (
+                    <p className="mt-1 text-xs text-neutral-600">
+                      {plan.description}
+                    </p>
+                  )}
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-xs font-medium text-neutral-600 hover:text-neutral-900">
+                      Edit
+                    </summary>
+                    <div className="mt-2">
+                      <MaintenancePlanForm
+                        action={updateMaintenancePlanAction.bind(null, plan.id)}
+                        formId={plan.id}
+                        meters={meterOptions}
+                        defaults={{
+                          name: plan.name,
+                          description: plan.description,
+                          intervalType: plan.intervalType,
+                          intervalValue: plan.intervalValue,
+                          meterId: plan.meterId,
+                          meterInterval: plan.meterInterval?.toString() ?? null,
+                        }}
+                        submitLabel="Save plan"
+                      />
+                    </div>
+                  </details>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        <div className="mt-3 rounded-md border border-neutral-200 p-4">
+          <h3 className="text-sm font-medium text-neutral-800">
+            Add a maintenance plan
+          </h3>
+          <div className="mt-2">
+            <MaintenancePlanForm
+              action={createMaintenancePlanAction.bind(null, asset.id)}
+              formId="new"
+              meters={meterOptions}
+              submitLabel="Add plan"
+            />
+          </div>
+        </div>
+
+        <h3 className="mt-6 text-sm font-medium text-neutral-800">
+          Service history
+        </h3>
+        {maintenanceRecords.length > 0 ? (
+          <ul className="mt-2 space-y-2">
+            {maintenanceRecords.map((record) => (
+              <li
+                key={record.id}
+                className="rounded-md border border-neutral-200 p-3"
+              >
+                <div className="text-sm font-medium text-neutral-900">
+                  {record.title}
+                  <span className="ml-2 text-xs font-normal text-neutral-500">
+                    performed {formatDateOnly(record.performedOn)}
+                    {record.plan ? ` — ${record.plan.name}` : " — ad-hoc"}
+                  </span>
+                </div>
+                <dl className="mt-1 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-neutral-600 sm:grid-cols-3">
+                  <div>
+                    <dt className="inline text-neutral-500">By: </dt>
+                    <dd className="inline">
+                      {record.performedByMember?.displayName ??
+                        record.providerName ??
+                        "Not recorded"}
+                    </dd>
+                  </div>
+                  {record.meterReading != null && (
+                    <div>
+                      <dt className="inline text-neutral-500">Meter: </dt>
+                      <dd className="inline">
+                        {record.meter?.name}: {String(record.meterReading)}{" "}
+                        {record.meter?.unit}
+                      </dd>
+                    </div>
+                  )}
+                  <div>
+                    <dt className="inline text-neutral-500">Next due: </dt>
+                    <dd className="inline">
+                      {dateDueLabel(record.nextDueOn, today)}
+                    </dd>
+                  </div>
+                </dl>
+                {record.workPerformed && (
+                  <p className="mt-1 text-xs text-neutral-600">
+                    {record.workPerformed}
+                  </p>
+                )}
+                {record.notes && (
+                  <p className="mt-1 text-xs text-neutral-600">
+                    {record.notes}
+                  </p>
+                )}
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-xs font-medium text-neutral-600 hover:text-neutral-900">
+                    Correct this record
+                  </summary>
+                  <div className="mt-2">
+                    <MaintenanceRecordEditForm
+                      action={updateMaintenanceRecordAction.bind(
+                        null,
+                        record.id,
+                      )}
+                      formId={record.id}
+                      members={memberOptions}
+                      defaults={{
+                        title: record.title,
+                        performedOn: formatDateOnly(record.performedOn)!,
+                        workPerformed: record.workPerformed,
+                        providerName: record.providerName,
+                        performedByMemberId: record.performedByMemberId,
+                        nextDueOn: formatDateOnly(record.nextDueOn),
+                        notes: record.notes,
+                      }}
+                      submitLabel="Save correction"
+                    />
+                  </div>
+                </details>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-3 text-sm text-neutral-600">
+            No service recorded on this asset.
+          </p>
+        )}
+        <div className="mt-3 rounded-md border border-neutral-200 p-4">
+          <h3 className="text-sm font-medium text-neutral-800">
+            Record service or repair
+          </h3>
+          <div className="mt-2">
+            <MaintenanceRecordForm
+              action={recordMaintenanceAction.bind(null, asset.id)}
+              formId="new"
+              plans={maintenancePlans
+                .filter((p) => p.status === "ACTIVE")
+                .map((p) => ({ id: p.id, name: p.name }))}
+              members={memberOptions}
+              meters={meterOptions}
+              defaultDate={todayString}
+              submitLabel="Record service"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="defects-heading" className="mt-10">
+        <h2 id="defects-heading" className="text-lg font-medium">
+          Defects
+        </h2>
+        <p className="mt-1 text-sm text-neutral-600">
+          Human-reported issues. A defect records that someone reported a
+          problem and whether it has been resolved — it does not mark the asset
+          unsafe or unavailable.
+        </p>
+        {defects.length > 0 ? (
+          <ul className="mt-3 space-y-2">
+            {defects.map((defect) => (
+              <li
+                key={defect.id}
+                className="rounded-md border border-neutral-200 p-3"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-medium text-neutral-900">
+                    {defect.title}
+                    <span
+                      className={`ml-2 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+                        defect.status === "OPEN"
+                          ? "bg-amber-100 text-amber-800"
+                          : "bg-neutral-100 text-neutral-600"
+                      }`}
+                    >
+                      {defect.status === "OPEN" ? "Open" : "Resolved"}
+                    </span>
+                  </div>
+                </div>
+                <dl className="mt-1 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-neutral-600 sm:grid-cols-3">
+                  <div>
+                    <dt className="inline text-neutral-500">Reported: </dt>
+                    <dd className="inline">
+                      {formatDateOnly(defect.reportedOn)}
+                      {(defect.reportedByMember?.displayName ??
+                        defect.reporterName) &&
+                        ` by ${defect.reportedByMember?.displayName ?? defect.reporterName}`}
+                    </dd>
+                  </div>
+                  {defect.resolvedOn && (
+                    <div>
+                      <dt className="inline text-neutral-500">Resolved: </dt>
+                      <dd className="inline">
+                        {formatDateOnly(defect.resolvedOn)}
+                      </dd>
+                    </div>
+                  )}
+                  <div>
+                    <dt className="inline text-neutral-500">History: </dt>
+                    <dd className="inline">
+                      {defect._count.changes} change
+                      {defect._count.changes === 1 ? "" : "s"}
+                    </dd>
+                  </div>
+                </dl>
+                {defect.description && (
+                  <p className="mt-1 text-xs text-neutral-600">
+                    {defect.description}
+                  </p>
+                )}
+                {defect.resolutionNotes && (
+                  <p className="mt-1 text-xs text-neutral-600">
+                    Resolution: {defect.resolutionNotes}
+                  </p>
+                )}
+                <div className="mt-2 flex gap-4">
+                  <details>
+                    <summary className="cursor-pointer text-xs font-medium text-neutral-600 hover:text-neutral-900">
+                      Edit
+                    </summary>
+                    <div className="mt-2">
+                      <DefectForm
+                        action={updateDefectAction.bind(null, defect.id)}
+                        formId={defect.id}
+                        members={memberOptions}
+                        defaults={{
+                          title: defect.title,
+                          description: defect.description,
+                          reportedOn: formatDateOnly(defect.reportedOn)!,
+                          reportedByMemberId: defect.reportedByMemberId,
+                          reporterName: defect.reporterName,
+                        }}
+                        submitLabel="Save correction"
+                      />
+                    </div>
+                  </details>
+                  <details>
+                    <summary className="cursor-pointer text-xs font-medium text-neutral-600 hover:text-neutral-900">
+                      {defect.status === "OPEN" ? "Resolve" : "Reopen"}
+                    </summary>
+                    <div className="mt-2">
+                      <DefectTransitionForm
+                        action={transitionDefectAction.bind(null, defect.id)}
+                        formId={defect.id}
+                        target={defect.status === "OPEN" ? "RESOLVED" : "OPEN"}
+                        defaultDate={todayString}
+                      />
+                    </div>
+                  </details>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-3 text-sm text-neutral-600">
+            No defects recorded on this asset.
+          </p>
+        )}
+        <div className="mt-3 rounded-md border border-neutral-200 p-4">
+          <h3 className="text-sm font-medium text-neutral-800">
+            Report a defect
+          </h3>
+          <div className="mt-2">
+            <DefectForm
+              action={reportDefectAction.bind(null, asset.id)}
+              formId="new"
+              members={memberOptions}
+              defaultDate={todayString}
+              showMarkOutOfService={asset.status !== "OUT_OF_SERVICE"}
+              submitLabel="Report defect"
+            />
+          </div>
+        </div>
+      </section>
 
       <section aria-labelledby="edit-heading" className="mt-8">
         <details className="rounded-md border border-neutral-200 p-4">

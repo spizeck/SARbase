@@ -78,6 +78,19 @@ import {
   updateAssetAction,
   createInventoryItemAction,
   updateInventoryItemAction,
+  createInspectionDefinitionAction,
+  updateInspectionDefinitionAction,
+  setInspectionDefinitionStatusAction,
+  recordInspectionAction,
+  updateInspectionRecordAction,
+  createMaintenancePlanAction,
+  recordMaintenanceAction,
+  updateMaintenanceRecordAction,
+  reportDefectAction,
+  updateDefectAction,
+  transitionDefectAction,
+  createAssetMeterAction,
+  recordMeterReadingAction,
 } from "@/app/admin/actions";
 import TrainingEventPage from "@/app/admin/training/[eventId]/page";
 import AssetPage from "@/app/admin/assets/[assetId]/page";
@@ -121,6 +134,15 @@ let adminBUid: string;
 let memberRoleUid: string;
 let noAccessUid: string;
 let adminAIdentityId: string;
+// Issue #11 fixtures — records that live in org B and must be opaque to A.
+let assetA: { id: string };
+let assetB: { id: string };
+let inspectionDefinitionB: { id: string };
+let inspectionRecordB: { id: string };
+let maintenancePlanB: { id: string };
+let maintenanceRecordB: { id: string };
+let defectB: { id: string };
+let meterB: { id: string };
 
 describe.skipIf(!hasDb)("organization-scoped authorization", () => {
   beforeAll(async () => {
@@ -170,6 +192,57 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
     });
     adminAIdentityId = adminA!.id;
     void noAccess;
+
+    // Issue #11 fixtures in each org.
+    assetA = await prisma.asset.create({
+      data: { organizationId: orgA.id, name: uniq("asset-a") },
+    });
+    assetB = await prisma.asset.create({
+      data: { organizationId: orgB.id, name: uniq("asset-b") },
+    });
+    inspectionDefinitionB = await prisma.inspectionDefinition.create({
+      data: { organizationId: orgB.id, name: uniq("def-b") },
+    });
+    inspectionRecordB = await prisma.inspectionRecord.create({
+      data: {
+        organizationId: orgB.id,
+        assetId: assetB.id,
+        definitionId: inspectionDefinitionB.id,
+        performedOn: new Date("2026-09-15T00:00:00.000Z"),
+      },
+    });
+    maintenancePlanB = await prisma.maintenancePlan.create({
+      data: {
+        organizationId: orgB.id,
+        assetId: assetB.id,
+        name: uniq("plan-b"),
+      },
+    });
+    maintenanceRecordB = await prisma.maintenanceRecord.create({
+      data: {
+        organizationId: orgB.id,
+        assetId: assetB.id,
+        planId: maintenancePlanB.id,
+        title: uniq("svc-b"),
+        performedOn: new Date("2026-09-15T00:00:00.000Z"),
+      },
+    });
+    defectB = await prisma.defect.create({
+      data: {
+        organizationId: orgB.id,
+        assetId: assetB.id,
+        reportedOn: new Date("2026-09-15T00:00:00.000Z"),
+        title: uniq("defect-b"),
+      },
+    });
+    meterB = await prisma.assetMeter.create({
+      data: {
+        organizationId: orgB.id,
+        assetId: assetB.id,
+        name: uniq("meter-b"),
+        unit: "hours",
+      },
+    });
   });
 
   afterAll(async () => {
@@ -179,6 +252,32 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
     });
     await prisma.organizationAccess.deleteMany({
       where: { authIdentity: { providerUid: { startsWith: PREFIX } } },
+    });
+    // Issue #11 fixtures — readings and change rows first (they carry
+    // provenance + member + identity FKs), then records, then parents.
+    await prisma.assetMeterReading.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.defectChange.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.defect.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.maintenanceRecord.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.inspectionRecord.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.maintenancePlan.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.inspectionDefinition.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.assetMeter.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.authIdentity.deleteMany({
       where: { providerUid: { startsWith: PREFIX } },
@@ -1523,6 +1622,299 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       ).rejects.toThrow("NEXT_REDIRECT /login");
       await expect(
         createInventoryItemAction(orgA.id, {}, form({ name: "x" })),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
+    });
+  });
+
+  describe("issue #11 — inspections, maintenance, defects, meters", () => {
+    const recordDate = "2026-09-15";
+
+    it("admin A manages org A records end to end", async () => {
+      signInAs(adminAUid);
+      expect(
+        await createInspectionDefinitionAction(
+          orgA.id,
+          {},
+          form({
+            name: uniq("def-a"),
+            recurrenceType: "CALENDAR_DAYS",
+            intervalValue: "30",
+          }),
+        ),
+      ).toEqual({});
+      const defA = await prisma.inspectionDefinition.findFirst({
+        where: { organizationId: orgA.id },
+      });
+      expect(defA).not.toBeNull();
+      expect(
+        await recordInspectionAction(
+          assetA.id,
+          {},
+          form({
+            definitionId: defA!.id,
+            performedOn: recordDate,
+            inspectorMemberId: "",
+            inspectorName: "",
+            conditionObserved: "",
+            nextDueOn: "",
+            meterId: "",
+            meterReading: "",
+            notes: "",
+          }),
+        ),
+      ).toEqual({});
+
+      expect(
+        await createAssetMeterAction(
+          assetA.id,
+          {},
+          form({ name: uniq("meter-a"), unit: "hours" }),
+        ),
+      ).toEqual({});
+      const meterA = await prisma.assetMeter.findFirst({
+        where: { assetId: assetA.id },
+      });
+      expect(
+        await recordMeterReadingAction(
+          meterA!.id,
+          {},
+          form({
+            reading: "42.5",
+            recordedOn: recordDate,
+            recordedByMemberId: "",
+            notes: "",
+          }),
+        ),
+      ).toEqual({});
+
+      expect(
+        await createMaintenancePlanAction(
+          assetA.id,
+          {},
+          form({
+            name: uniq("plan-a"),
+            description: "",
+            intervalType: "METER_INTERVAL",
+            intervalValue: "",
+            meterId: meterA!.id,
+            meterInterval: "100",
+          }),
+        ),
+      ).toEqual({});
+      const planA = await prisma.maintenancePlan.findFirst({
+        where: { assetId: assetA.id },
+      });
+      expect(
+        await recordMaintenanceAction(
+          assetA.id,
+          {},
+          form({
+            planId: planA!.id,
+            title: uniq("service-a"),
+            performedOn: recordDate,
+            providerName: "",
+            performedByMemberId: "",
+            meterId: meterA!.id,
+            meterReading: "50",
+            nextDueOn: "",
+            workPerformed: "",
+            notes: "",
+          }),
+        ),
+      ).toEqual({});
+
+      expect(
+        await reportDefectAction(
+          assetA.id,
+          {},
+          form({
+            title: uniq("defect-a"),
+            description: "",
+            reportedOn: recordDate,
+            reportedByMemberId: "",
+            reporterName: "",
+          }),
+        ),
+      ).toEqual({});
+      const defectA = await prisma.defect.findFirst({
+        where: { assetId: assetA.id },
+      });
+      expect(
+        await transitionDefectAction(
+          defectA!.id,
+          {},
+          form({
+            status: "RESOLVED",
+            resolvedOn: "2026-09-20",
+            resolutionNotes: "Fixed",
+            note: "",
+          }),
+        ),
+      ).toEqual({});
+      expect(
+        (await prisma.defect.findUnique({ where: { id: defectA!.id } }))
+          ?.status,
+      ).toBe("RESOLVED");
+    });
+
+    it("admin A cannot touch organization B records — opaque failures", async () => {
+      signInAs(adminAUid);
+      // Org B as the target organization id.
+      expect(
+        await createInspectionDefinitionAction(
+          orgB.id,
+          {},
+          form({ name: uniq("hijack"), recurrenceType: "NONE" }),
+        ),
+      ).toEqual({ message: "Not found." });
+
+      // Foreign record ids — identical to nonexistent ones.
+      expect(
+        await updateInspectionDefinitionAction(
+          inspectionDefinitionB.id,
+          {},
+          form({ name: "x", recurrenceType: "NONE" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      await expect(
+        setInspectionDefinitionStatusAction(
+          inspectionDefinitionB.id,
+          "INACTIVE",
+        ),
+      ).rejects.toThrow("Not found or not permitted.");
+
+      expect(
+        await recordInspectionAction(
+          assetB.id,
+          {},
+          form({
+            definitionId: inspectionDefinitionB.id,
+            performedOn: recordDate,
+          }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateInspectionRecordAction(
+          inspectionRecordB.id,
+          {},
+          form({ performedOn: recordDate }),
+        ),
+      ).toEqual({ message: "Not found." });
+
+      expect(
+        await createMaintenancePlanAction(
+          assetB.id,
+          {},
+          form({ name: uniq("hijack-plan"), intervalType: "NONE" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateMaintenanceRecordAction(
+          maintenanceRecordB.id,
+          {},
+          form({ title: "hijack", performedOn: recordDate }),
+        ),
+      ).toEqual({ message: "Not found." });
+
+      expect(
+        await reportDefectAction(
+          assetB.id,
+          {},
+          form({ title: "hijack", reportedOn: recordDate }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateDefectAction(
+          defectB.id,
+          {},
+          form({ title: "hijack", reportedOn: recordDate }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await transitionDefectAction(
+          defectB.id,
+          {},
+          form({ status: "RESOLVED", resolvedOn: "2026-09-20" }),
+        ),
+      ).toEqual({ message: "Not found." });
+
+      expect(
+        await createAssetMeterAction(
+          assetB.id,
+          {},
+          form({ name: "hijack", unit: "hours" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await recordMeterReadingAction(
+          meterB.id,
+          {},
+          form({ reading: "1", recordedOn: recordDate }),
+        ),
+      ).toEqual({ message: "Not found." });
+
+      // Nothing in org B changed.
+      expect(
+        (await prisma.defect.findUnique({ where: { id: defectB.id } }))?.status,
+      ).toBe("OPEN");
+      expect(
+        (
+          await prisma.inspectionDefinition.findUnique({
+            where: { id: inspectionDefinitionB.id },
+          })
+        )?.status,
+      ).toBe("ACTIVE");
+    });
+
+    it("treats nonexistent and foreign ids identically", async () => {
+      signInAs(adminAUid);
+      const missing = await updateInspectionRecordAction(
+        "nonexistent-id",
+        {},
+        form({ performedOn: recordDate }),
+      );
+      const foreign = await updateInspectionRecordAction(
+        inspectionRecordB.id,
+        {},
+        form({ performedOn: recordDate }),
+      );
+      expect(missing).toEqual({ message: "Not found." });
+      expect(missing).toEqual(foreign);
+    });
+
+    it("MEMBER role cannot mutate maintenance records", async () => {
+      signInAs(memberRoleUid);
+      expect(
+        await reportDefectAction(
+          assetA.id,
+          {},
+          form({ title: "member attempt", reportedOn: recordDate }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await createInspectionDefinitionAction(
+          orgA.id,
+          {},
+          form({ name: uniq("member-def"), recurrenceType: "NONE" }),
+        ),
+      ).toEqual({ message: "Not found." });
+    });
+
+    it("unauthenticated callers are redirected before any write", async () => {
+      signInAs(null);
+      await expect(
+        reportDefectAction(
+          assetA.id,
+          {},
+          form({ title: "x", reportedOn: recordDate }),
+        ),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
+      await expect(
+        createInspectionDefinitionAction(
+          orgA.id,
+          {},
+          form({ name: "x", recurrenceType: "NONE" }),
+        ),
       ).rejects.toThrow("NEXT_REDIRECT /login");
     });
   });

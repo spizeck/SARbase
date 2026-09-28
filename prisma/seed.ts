@@ -165,9 +165,133 @@ async function main() {
     },
   });
 
+  // Issue #11 fixture — an inspection type + record, an engine-hours
+  // meter with a reading, a meter-interval maintenance plan with one
+  // service record, and one open defect. Factual rows only.
+  const monthlyInspection = await prisma.inspectionDefinition.upsert({
+    where: { id: "seed-inspection-monthly" },
+    update: {},
+    create: {
+      id: "seed-inspection-monthly",
+      organizationId: organization.id,
+      name: "Monthly vessel visual inspection",
+      description: "Hull, fittings, and fittings-adjacent checks.",
+      recurrenceType: "CALENDAR_DAYS",
+      intervalValue: 30,
+    },
+  });
+  await prisma.inspectionRecord.upsert({
+    where: { id: "seed-inspection-record-1" },
+    update: {},
+    create: {
+      id: "seed-inspection-record-1",
+      organizationId: organization.id,
+      assetId: boat.id,
+      definitionId: monthlyInspection.id,
+      performedOn: new Date("2026-09-15T00:00:00.000Z"),
+      inspectorMemberId: member.id,
+      nextDueOn: new Date("2026-10-15T00:00:00.000Z"),
+      conditionObserved: "GOOD",
+    },
+  });
+  const engineMeter = await prisma.assetMeter.upsert({
+    where: { id: "seed-meter-engine-hours" },
+    update: {},
+    create: {
+      id: "seed-meter-engine-hours",
+      organizationId: organization.id,
+      assetId: boat.id,
+      name: "Engine hours",
+      unit: "hours",
+    },
+  });
+  const servicePlan = await prisma.maintenancePlan.upsert({
+    where: { id: "seed-plan-oil" },
+    update: {},
+    create: {
+      id: "seed-plan-oil",
+      organizationId: organization.id,
+      assetId: boat.id,
+      name: "Engine oil change",
+      intervalType: "METER_INTERVAL",
+      meterId: engineMeter.id,
+      meterInterval: "100",
+    },
+  });
+  const serviceRecord = await prisma.maintenanceRecord.upsert({
+    where: { id: "seed-maintenance-oil-1" },
+    update: {},
+    create: {
+      id: "seed-maintenance-oil-1",
+      organizationId: organization.id,
+      assetId: boat.id,
+      planId: servicePlan.id,
+      performedOn: new Date("2026-09-01T00:00:00.000Z"),
+      title: "Engine oil change",
+      providerName: "Example Marine Services",
+      meterId: engineMeter.id,
+      meterReading: "812.4",
+    },
+  });
+  await prisma.assetMeterReading.upsert({
+    where: { id: "seed-reading-service-1" },
+    update: {},
+    create: {
+      id: "seed-reading-service-1",
+      organizationId: organization.id,
+      meterId: engineMeter.id,
+      reading: "812.4",
+      recordedOn: new Date("2026-09-01T00:00:00.000Z"),
+      maintenanceRecordId: serviceRecord.id,
+    },
+  });
+  const seedDefect = await prisma.defect.upsert({
+    where: { id: "seed-defect-bilge" },
+    update: {},
+    create: {
+      id: "seed-defect-bilge",
+      organizationId: organization.id,
+      assetId: boat.id,
+      reportedOn: new Date("2026-09-20T00:00:00.000Z"),
+      reportedByMemberId: member.id,
+      title: "Bilge pump intermittent",
+      description: "Pump runs, then stalls after a few minutes.",
+    },
+  });
+  // Seed-time actor rows have no real sign-in identity; use a dedicated
+  // synthetic identity so the append-only change history stays honest.
+  const seedIdentity = await prisma.authIdentity.upsert({
+    where: {
+      provider_providerUid: {
+        provider: "seed",
+        providerUid: "seed-fixture",
+      },
+    },
+    update: {},
+    create: {
+      id: "seed-identity",
+      provider: "seed",
+      providerUid: "seed-fixture",
+      email: "seed@example.test",
+    },
+  });
+  await prisma.defectChange.upsert({
+    where: { id: "seed-defect-change-1" },
+    update: {},
+    create: {
+      id: "seed-defect-change-1",
+      organizationId: organization.id,
+      defectId: seedDefect.id,
+      action: "REPORTED",
+      actorAuthIdentityId: seedIdentity.id,
+    },
+  });
+
   console.log(
     `Seeded organization (${organization.id}) with 1 unit, 1 member, ` +
-      `2 assets, 3 locations, and 2 inventory items.`,
+      `2 assets, 3 locations, 2 inventory items, 1 inspection type + ` +
+      `record, 1 meter + reading, 1 maintenance plan + record, and ` +
+      `1 open defect.`,
   );
 }
 
