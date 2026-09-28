@@ -714,7 +714,13 @@ export async function setTrainingAttendanceAction(
   if (!parsed.success) return zodErrors(parsed.error);
 
   try {
-    await setTrainingAttendance(eventId, parsed.data.memberIds);
+    // The audit actor is the verified session's AuthIdentity — derived
+    // here from server auth context, never accepted as client input.
+    await setTrainingAttendance(
+      eventId,
+      parsed.data.memberIds,
+      ctx.identity.id,
+    );
   } catch (error) {
     return mapDomainError(error);
   }

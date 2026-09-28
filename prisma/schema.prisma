@@ -117,9 +117,11 @@ model Member {
   memberQualifications MemberQualification[]
 
   // Training participation history + optional "led by" pointer on
-  // events. Restrict on attendance: history is preserved.
-  trainingAttendances TrainingAttendance[]
-  ledTrainingEvents   TrainingEvent[]       @relation("TrainingLead")
+  // events. Restrict on attendance and its change history: history is
+  // preserved.
+  trainingAttendances        TrainingAttendance[]
+  trainingAttendanceChanges  TrainingAttendanceChange[]
+  ledTrainingEvents          TrainingEvent[]             @relation("TrainingLead")
 
   // Optional link to a login identity. Nullable — most members never sign
   // in. SetNull on identity deletion: removing a login must never destroy
@@ -309,11 +311,12 @@ model TrainingEvent {
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
 
-  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  unit         Unit?           @relation(fields: [unitId, organizationId], references: [id, organizationId], onDelete: Restrict)
-  leadMember   Member?         @relation("TrainingLead", fields: [leadMemberId, organizationId], references: [id, organizationId], onDelete: SetNull)
-  attendances  TrainingAttendance[]
-  topics       TrainingTopic[]
+  organization      Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  unit              Unit?           @relation(fields: [unitId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  leadMember        Member?         @relation("TrainingLead", fields: [leadMemberId, organizationId], references: [id, organizationId], onDelete: SetNull)
+  attendances       TrainingAttendance[]
+  attendanceChanges TrainingAttendanceChange[]
+  topics            TrainingTopic[]
 
   // Composite-FK target for attendance/topics.
   @@unique([id, organizationId])
@@ -357,4 +360,53 @@ model TrainingAttendance {
 
   @@unique([trainingEventId, memberId])
   @@index([memberId])
+}
+
+// Immutable attendance-history action. A TrainingAttendanceChange row
+// is an append-only fact — the application exposes no update or delete
+// path for it.
+enum TrainingAttendanceAction {
+  ADDED
+  REMOVED
+}
+
+// Append-only domain audit record for attendance edits — the durable
+// who/what/when behind "attendance edits are auditable" (issue #9).
+// Every member added to or removed from an event's attendance writes
+// one row here inside the same transaction as the attendance mutation
+// itself. This is deliberately NOT the deferred generic audit
+// framework — a small immutable history for this one fact only.
+//
+// Preservation choices:
+// - Composite FKs to TrainingEvent(id, organizationId) and
+//   Member(id, organizationId) enforce same-organization integrity at
+//   the database level — a cross-organization audit row is physically
+//   impossible — and are Restrict: an event or member row with audit
+//   history cannot be hard-deleted underneath it. Removing the CURRENT
+//   TrainingAttendance row never touches these rows, so re-adding a
+//   member produces a second immutable entry rather than rewriting
+//   history.
+// - actorAuthIdentityId is deliberately a PLAIN reference, not a
+//   foreign key. An FK would either pin identities forever (Restrict)
+//   or erase the actor on identity removal (SetNull) — and audit
+//   history that disappears with the actor is not audit history. The
+//   stored id remains a stable forensic reference after the
+//   AuthIdentity is disabled or deleted; while the row exists the UI
+//   resolves it to a friendly name, and after removal it renders as a
+//   safe fallback identifier.
+model TrainingAttendanceChange {
+  id                  String                     @id @default(cuid())
+  organizationId      String
+  trainingEventId     String
+  memberId            String
+  actorAuthIdentityId String
+  action              TrainingAttendanceAction
+  createdAt           DateTime                   @default(now())
+
+  event  TrainingEvent @relation(fields: [trainingEventId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  member Member        @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@index([trainingEventId, createdAt])
+  @@index([memberId])
+  @@index([organizationId])
 }

@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { getTrainingEvent } from "@/lib/domain/training";
+import {
+  getTrainingEvent,
+  listTrainingAttendanceChanges,
+} from "@/lib/domain/training";
 import { listMembers } from "@/lib/domain/member";
 import { listUnits } from "@/lib/domain/unit";
 import { formatDateOnly } from "@/lib/dates";
@@ -33,6 +36,9 @@ export default async function TrainingEventPage({
   const orgId = event.organizationId;
   const units = await listUnits(orgId);
   const members = await listMembers(orgId);
+  // Immutable attendance edit history (issue #9 audit) — shown to org
+  // admins only; this page already notFound()s for anyone else.
+  const attendanceChanges = await listTrainingAttendanceChanges(event.id);
   const attendedIds = event.attendances.map((a) => a.memberId);
   const isCancelled = event.status === "CANCELLED";
 
@@ -166,6 +172,45 @@ export default async function TrainingEventPage({
             Recorded attendees:{" "}
             {event.attendances.map((a) => a.member.displayName).join(", ")}
           </p>
+        )}
+
+        {attendanceChanges.length > 0 && (
+          <div className="mt-4">
+            <h3 className="text-sm font-medium text-neutral-800">
+              Attendance history
+            </h3>
+            <p className="mt-1 text-xs text-neutral-500">
+              Every attendance change on this event — who was added or removed,
+              by whom, and when.
+            </p>
+            <ul className="mt-2 divide-y divide-neutral-200 rounded-md border border-neutral-200">
+              {attendanceChanges.map((change) => {
+                const iso = change.createdAt.toISOString();
+                return (
+                  <li
+                    key={change.id}
+                    className="px-4 py-2 text-sm text-neutral-700"
+                  >
+                    <span className="font-medium text-neutral-900">
+                      {change.member.displayName}
+                    </span>{" "}
+                    {change.action === "ADDED"
+                      ? "added to attendance"
+                      : "removed from attendance"}{" "}
+                    by{" "}
+                    <span className="font-medium text-neutral-900">
+                      {change.actorDisplayName ??
+                        `account ${change.actorAuthIdentityId.slice(0, 8)}`}
+                    </span>{" "}
+                    ·{" "}
+                    <time dateTime={iso}>
+                      {iso.slice(0, 16).replace("T", " ")} UTC
+                    </time>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         )}
       </section>
 

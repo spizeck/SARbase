@@ -22,9 +22,10 @@ import type { TrainingEventInput, TrainingEventStatusInput } from "./schemas";
  *   (it happened) or CANCELLED (it did not); a cancelled event keeps its
  *   rows for history but contributes nothing to participation views.
  * - TrainingAttendance — "this member was there". Row existence is the
- *   fact; there is no excused/unavailable taxonomy. Durable who/what/
- *   when audit of edits is deferred to the audit-history work —
- *   timestamps and structured logs exist today.
+ *   fact; there is no excused/unavailable taxonomy. Every add/remove
+ *   appends an immutable TrainingAttendanceChange row naming the
+ *   authenticated actor — the durable audit of attendance edits (a
+ *   domain-specific record, not the deferred generic audit framework).
  */
 
 export class CrossOrganizationTrainingError extends Error {
@@ -93,10 +94,23 @@ function dedupeTopics(topics: string[]) {
 /* TrainingEvent                                                      */
 /* ------------------------------------------------------------------ */
 
+/**
+ * List an organization's training events, newest first.
+ *
+ * Filters (all optional, all additive):
+ * - `unitId` — a unit id narrows to that unit's events; the explicit
+ *   `null` selects organization-wide events only (unitId IS NULL);
+ *   `undefined` means no unit filter. A unit id from another
+ *   organization matches nothing — the composite FKs guarantee no
+ *   event can carry it here, so filtering can never leak cross-org.
+ * - `from` / `to` — inclusive bounds on the event's date-only `date`
+ *   (@db.Date calendar semantics, same as qualification dates).
+ * - `includeCancelled` — cancelled events are excluded unless set.
+ */
 export function listTrainingEvents(
   organizationId: string,
   options: {
-    unitId?: string;
+    unitId?: string | null;
     from?: Date;
     to?: Date;
     includeCancelled?: boolean;
@@ -106,7 +120,7 @@ export function listTrainingEvents(
     where: {
       organizationId,
       ...(options.includeCancelled ? {} : { status: "COMPLETED" }),
-      ...(options.unitId ? { unitId: options.unitId } : {}),
+      ...(options.unitId === undefined ? {} : { unitId: options.unitId }),
       ...(options.from || options.to
         ? {
             date: {
@@ -258,10 +272,19 @@ export async function setTrainingEventStatus(
  * present are untouched (per-attendee notes survive a re-sync).
  * All memberIds must belong to the event's organization; the composite
  * FKs enforce that at the database level as well.
+ *
+ * Every member actually added or removed appends an immutable
+ * TrainingAttendanceChange row in the same transaction — durable
+ * who/what/when audit for attendance edits. `actorAuthIdentityId` is
+ * the authenticated caller's AuthIdentity id, derived from server-side
+ * auth context — it must NEVER come from client input. No-op re-syncs
+ * write no rows; removing and re-adding a member produces a second
+ * ADDED row rather than rewriting history.
  */
 export async function setTrainingAttendance(
   eventId: string,
   memberIds: string[],
+  actorAuthIdentityId: string,
 ) {
   const event = await prisma.trainingEvent.findUniqueOrThrow({
     where: { id: eventId },
@@ -280,6 +303,18 @@ export async function setTrainingAttendance(
   }
 
   await prisma.$transaction(async (tx) => {
+    const before = new Set(
+      (
+        await tx.trainingAttendance.findMany({
+          where: { trainingEventId: eventId },
+          select: { memberId: true },
+        })
+      ).map((a) => a.memberId),
+    );
+    const wanted = new Set(uniqueIds);
+    const added = uniqueIds.filter((id) => !before.has(id));
+    const removed = [...before].filter((id) => !wanted.has(id));
+
     await tx.trainingAttendance.deleteMany({
       where: { trainingEventId: eventId, memberId: { notIn: uniqueIds } },
     });
@@ -296,6 +331,30 @@ export async function setTrainingAttendance(
         update: {},
       });
     }
+    await tx.trainingAttendanceChange.createMany({
+      data: [
+        ...added.map(
+          (memberId) =>
+            ({
+              organizationId: event.organizationId,
+              trainingEventId: eventId,
+              memberId,
+              actorAuthIdentityId,
+              action: "ADDED",
+            }) as const,
+        ),
+        ...removed.map(
+          (memberId) =>
+            ({
+              organizationId: event.organizationId,
+              trainingEventId: eventId,
+              memberId,
+              actorAuthIdentityId,
+              action: "REMOVED",
+            }) as const,
+        ),
+      ],
+    });
   });
   log({
     event: "training.attendance_set",
@@ -305,6 +364,52 @@ export async function setTrainingAttendance(
     organizationId: event.organizationId,
     attendeeCount: uniqueIds.length,
   });
+}
+
+/**
+ * The immutable change history for one event's attendance, oldest
+ * first — "who was added/removed, by whom, when". Actor display is
+ * resolved best-effort: the member record linked to the acting
+ * identity in this organization, else the identity's sign-in email,
+ * else null (the caller renders a safe fallback — the raw
+ * actorAuthIdentityId is always on the row).
+ */
+export async function listTrainingAttendanceChanges(trainingEventId: string) {
+  const changes = await prisma.trainingAttendanceChange.findMany({
+    where: { trainingEventId },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    include: {
+      member: { select: { id: true, displayName: true } },
+    },
+  });
+  const organizationId = changes[0]?.organizationId;
+  const actorIds = [...new Set(changes.map((c) => c.actorAuthIdentityId))];
+  const [identities, actorMembers] = await Promise.all([
+    prisma.authIdentity.findMany({
+      where: { id: { in: actorIds } },
+      select: { id: true, email: true },
+    }),
+    organizationId
+      ? prisma.member.findMany({
+          where: {
+            organizationId,
+            authIdentityId: { in: actorIds },
+          },
+          select: { authIdentityId: true, displayName: true },
+        })
+      : [],
+  ]);
+  const memberNameByIdentity = new Map(
+    actorMembers.map((m) => [m.authIdentityId, m.displayName]),
+  );
+  const emailByIdentity = new Map(identities.map((i) => [i.id, i.email]));
+  return changes.map((change) => ({
+    ...change,
+    actorDisplayName:
+      memberNameByIdentity.get(change.actorAuthIdentityId) ??
+      emailByIdentity.get(change.actorAuthIdentityId) ??
+      null,
+  }));
 }
 
 /* ------------------------------------------------------------------ */

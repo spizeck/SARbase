@@ -73,6 +73,7 @@ import {
   updateQualificationDefinitionAction,
   updateUnitAction,
 } from "@/app/admin/actions";
+import TrainingEventPage from "@/app/admin/training/[eventId]/page";
 
 const hasDb = Boolean(process.env.DATABASE_URL);
 const PREFIX = "authztest-";
@@ -112,6 +113,7 @@ let adminAUid: string;
 let adminBUid: string;
 let memberRoleUid: string;
 let noAccessUid: string;
+let adminAIdentityId: string;
 
 describe.skipIf(!hasDb)("organization-scoped authorization", () => {
   beforeAll(async () => {
@@ -159,6 +161,7 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
         },
       ],
     });
+    adminAIdentityId = adminA!.id;
     void noAccess;
   });
 
@@ -172,6 +175,9 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
     });
     await prisma.authIdentity.deleteMany({
       where: { providerUid: { startsWith: PREFIX } },
+    });
+    await prisma.trainingAttendanceChange.deleteMany({
+      where: { event: { organization: { name: { startsWith: PREFIX } } } },
     });
     await prisma.trainingAttendance.deleteMany({
       where: { member: { organization: { name: { startsWith: PREFIX } } } },
@@ -1213,6 +1219,78 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       await expect(
         setTrainingAttendanceAction(eventA.id, {}, form({})),
       ).rejects.toThrow("NEXT_REDIRECT /login");
+    });
+
+    it("attendance edits record the authenticated admin as audit actor", async () => {
+      signInAs(adminAUid);
+      const newMember = await prisma.member.create({
+        data: { organizationId: orgA.id, displayName: uniq("auditee") },
+      });
+      const before = await prisma.trainingAttendanceChange.count({
+        where: { trainingEventId: eventA.id },
+      });
+      const result = await setTrainingAttendanceAction(
+        eventA.id,
+        {},
+        form({ memberIds: [memberA.id, newMember.id] }),
+      );
+      expect(result).toEqual({});
+
+      const rows = await prisma.trainingAttendanceChange.findMany({
+        where: { trainingEventId: eventA.id },
+        orderBy: { createdAt: "asc" },
+      });
+      expect(rows.length).toBeGreaterThan(before);
+      // The actor came from the verified session — no client input can
+      // reach this column.
+      expect(rows.at(-1)?.actorAuthIdentityId).toBe(adminAIdentityId);
+      expect(rows.at(-1)?.organizationId).toBe(orgA.id);
+    });
+
+    it("MEMBER role cannot create attendance audit rows", async () => {
+      signInAs(memberRoleUid); // MEMBER of org A
+      const before = await prisma.trainingAttendanceChange.count({
+        where: { trainingEventId: eventA.id },
+      });
+      const result = await setTrainingAttendanceAction(
+        eventA.id,
+        {},
+        form({ memberIds: [memberA.id] }),
+      );
+      expect(result).toEqual({ message: "Not found." });
+      expect(
+        await prisma.trainingAttendanceChange.count({
+          where: { trainingEventId: eventA.id },
+        }),
+      ).toBe(before);
+    });
+
+    it("admin A cannot inspect organization B attendance history", async () => {
+      // Seed org-B audit history directly, then prove the page-level
+      // authorization boundary: an org-A admin gets the opaque
+      // notFound, not the event — and therefore never the history.
+      await prisma.trainingAttendanceChange.create({
+        data: {
+          organizationId: orgB.id,
+          trainingEventId: eventB.id,
+          memberId: memberB.id,
+          actorAuthIdentityId: "any-actor",
+          action: "ADDED",
+        },
+      });
+      signInAs(adminAUid);
+      await expect(
+        TrainingEventPage({
+          params: Promise.resolve({ eventId: eventB.id }),
+        }),
+      ).rejects.toThrow("NEXT_NOT_FOUND");
+
+      // The org-B admin renders it — including the audit section.
+      signInAs(adminBUid);
+      const page = await TrainingEventPage({
+        params: Promise.resolve({ eventId: eventB.id }),
+      });
+      expect(page).toBeTruthy();
     });
   });
 });
