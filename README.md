@@ -199,6 +199,7 @@ Inherited from the foundation baseline, working today:
 - **Authentication and organization-scoped authorization**: Firebase Auth → server-verified HTTP-only session cookie; separate `AuthIdentity` login model linked to `Member` records; explicit `OrganizationAccess` grants with `MEMBER`/`ADMIN` roles; centralized server-side authorization helpers; admin bootstrap via `npm run admin:provision` (see `docs/authentication.md`)
 - Sign-in/sign-out UI plus an `/account` page showing identity, linked member records, granted organization access, and the member's own qualification records
 - **Qualifications and certifications**: organization-defined qualification definitions (active/inactive lifecycle), append-only member certificate records with issue/expiry dates, issuer and reference, deterministic expiry-state labels, and upcoming-expiry admin views — factual records only, with same-organization integrity enforced by composite foreign keys (see `docs/domain-model.md`)
+- **Training events and attendance**: organization training events with date/duration/location/instructor/topics, member attendance history, factual "last attended" summaries, and a read-only personal training view on `/account` — administrative records only, never an operational-readiness conclusion
 
 ### Not yet implemented
 

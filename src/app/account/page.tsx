@@ -7,6 +7,7 @@ import {
   listMemberQualifications,
   expiryLabel,
 } from "@/lib/domain/qualification";
+import { listMemberTraining } from "@/lib/domain/training";
 import { calendarDateInZone, formatDateOnly } from "@/lib/dates";
 
 export const metadata = { title: "Account" };
@@ -41,12 +42,19 @@ export default async function AccountPage() {
 
   const adminOrgs = ctx.access.filter((a) => a.role === "ADMIN");
 
-  // Qualification records for the caller's own linked member records only —
-  // member ids come from the server-resolved context, never the client.
+  // Qualification + training records for the caller's own linked member
+  // records only — member ids come from the server-resolved context and
+  // the access boundary above, never from the client.
   const ownQualifications = await Promise.all(
     linkedMembers.map(async (member) => ({
       member,
       records: await listMemberQualifications(member.id),
+    })),
+  );
+  const ownTraining = await Promise.all(
+    linkedMembers.map(async (member) => ({
+      member,
+      records: await listMemberTraining(member.id),
     })),
   );
 
@@ -132,6 +140,47 @@ export default async function AccountPage() {
                         Issued{" "}
                         {formatDateOnly(record.issuedOn) ?? "not recorded"}
                         {record.issuer ? ` · ${record.issuer}` : ""}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ),
+          )}
+        </section>
+      )}
+
+      {ownTraining.some((g) => g.records.length > 0) && (
+        <section aria-labelledby="training-heading" className="mt-8">
+          <h2 id="training-heading" className="text-lg font-medium">
+            My training
+          </h2>
+          {ownTraining.map(({ member, records }) =>
+            records.length === 0 ? null : (
+              <div key={member.id} className="mt-3">
+                <h3 className="text-sm font-medium text-neutral-500">
+                  {orgName(member.organizationId)}
+                </h3>
+                <ul className="mt-1 divide-y divide-neutral-200 rounded-md border border-neutral-200">
+                  {records.map((attendance) => (
+                    <li key={attendance.id} className="px-4 py-3 text-sm">
+                      <div className="flex items-baseline justify-between gap-3">
+                        <span className="font-medium text-neutral-900">
+                          {attendance.event.title}
+                        </span>
+                        <span className="text-xs text-neutral-600">
+                          {formatDateOnly(attendance.event.date)}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-xs text-neutral-500">
+                        {attendance.event.status === "CANCELLED"
+                          ? "Cancelled — did not occur"
+                          : attendance.event.durationMinutes != null
+                            ? `${attendance.event.durationMinutes} minutes`
+                            : ""}
+                        {attendance.event.location
+                          ? ` ${attendance.event.location}`
+                          : ""}
                       </p>
                     </li>
                   ))}

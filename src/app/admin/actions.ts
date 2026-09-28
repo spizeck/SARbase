@@ -23,6 +23,9 @@ import {
   qualificationDefinitionInputSchema,
   qualificationDefinitionStatusSchema,
   memberQualificationInputSchema,
+  trainingEventInputSchema,
+  trainingEventStatusSchema,
+  trainingAttendanceSchema,
 } from "@/lib/domain/schemas";
 import {
   requireAuth,
@@ -31,7 +34,16 @@ import {
   requireOrgAdminForUnit,
   requireOrgAdminForDefinition,
   requireOrgAdminForQualification,
+  requireOrgAdminForTrainingEvent,
 } from "@/lib/auth/authorize";
+import {
+  createTrainingEvent,
+  updateTrainingEvent,
+  setTrainingEventStatus,
+  setTrainingAttendance,
+  CrossOrganizationTrainingError,
+  CancelledTrainingError,
+} from "@/lib/domain/training";
 import {
   createQualificationDefinition,
   updateQualificationDefinition,
@@ -102,6 +114,13 @@ function mapDomainError(error: unknown): ActionState {
   }
   if (error instanceof InactiveQualificationError) {
     return { message: error.message };
+  }
+  if (error instanceof CancelledTrainingError) {
+    return { message: error.message };
+  }
+  if (error instanceof CrossOrganizationTrainingError) {
+    // Opaque — foreign-org unit/member ids must not leak existence.
+    return { message: "Not found." };
   }
   throw error;
 }
@@ -587,5 +606,124 @@ export async function updateMemberQualificationAction(
     return mapDomainError(error);
   }
   revalidatePath(`/admin/members/${record.memberId}`);
+  return {};
+}
+
+/* ------------------------------------------------------------------ */
+/* Training — same model: ids are untrusted selectors; the real        */
+/* organization is resolved server-side from the target record.        */
+/* ------------------------------------------------------------------ */
+
+function parseTrainingForm(formData: FormData) {
+  return trainingEventInputSchema.safeParse({
+    title: formData.get("title"),
+    date: formData.get("date"),
+    unitId: formData.get("unitId"),
+    durationMinutes: formData.get("durationMinutes"),
+    location: formData.get("location"),
+    instructorName: formData.get("instructorName"),
+    leadMemberId: formData.get("leadMemberId"),
+    notes: formData.get("notes"),
+    followUp: formData.get("followUp"),
+    topics: formData.getAll("topics").flatMap((v) => String(v).split(",")),
+  });
+}
+
+export async function createTrainingEventAction(
+  organizationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = parseTrainingForm(formData);
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await createTrainingEvent(organizationId, parsed.data);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/organizations/${organizationId}`);
+  return {};
+}
+
+export async function updateTrainingEventAction(
+  eventId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let event;
+  try {
+    event = await requireOrgAdminForTrainingEvent(ctx, eventId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = parseTrainingForm(formData);
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await updateTrainingEvent(eventId, parsed.data);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/training/${eventId}`);
+  revalidatePath(`/admin/organizations/${event.organizationId}`);
+  return {};
+}
+
+export async function setTrainingEventStatusAction(
+  eventId: string,
+  status: string,
+): Promise<void> {
+  const ctx = await requireAuth();
+  // Propagates the opaque AuthorizationError — a void action has no
+  // error state to return.
+  const event = await requireOrgAdminForTrainingEvent(ctx, eventId);
+
+  const parsed = trainingEventStatusSchema.safeParse(status);
+  if (!parsed.success) return;
+
+  await setTrainingEventStatus(eventId, parsed.data);
+  revalidatePath(`/admin/training/${eventId}`);
+  revalidatePath(`/admin/organizations/${event.organizationId}`);
+}
+
+export async function setTrainingAttendanceAction(
+  eventId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    await requireOrgAdminForTrainingEvent(ctx, eventId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = trainingAttendanceSchema.safeParse({
+    memberIds: formData.getAll("memberIds"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    // The audit actor is the verified session's AuthIdentity — derived
+    // here from server auth context, never accepted as client input.
+    await setTrainingAttendance(
+      eventId,
+      parsed.data.memberIds,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/training/${eventId}`);
   return {};
 }

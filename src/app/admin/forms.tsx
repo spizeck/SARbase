@@ -560,3 +560,269 @@ export function MemberQualificationForm({
     </form>
   );
 }
+
+interface TrainingEventDefaults {
+  title: string;
+  date: string;
+  unitId: string | null;
+  durationMinutes: number | null;
+  location: string | null;
+  instructorName: string | null;
+  leadMemberId: string | null;
+  notes: string | null;
+  followUp: string | null;
+  topics: string;
+}
+
+export function TrainingEventForm({
+  action,
+  units,
+  members,
+  defaults,
+  submitLabel,
+}: {
+  action: BoundAction;
+  units: { id: string; name: string }[];
+  members: { id: string; displayName: string }[];
+  defaults?: Partial<TrainingEventDefaults>;
+  submitLabel: string;
+}) {
+  const [state, formAction, pending] = useActionState(action, {});
+  return (
+    <form action={formAction} className="space-y-3">
+      <div>
+        <label htmlFor="te-title" className={labelClass}>
+          Title
+        </label>
+        <input
+          id="te-title"
+          name="title"
+          type="text"
+          required
+          maxLength={120}
+          defaultValue={defaults?.title}
+          aria-invalid={Boolean(state.fieldErrors?.title)}
+          aria-describedby="te-title-error"
+          className={inputClass}
+        />
+        <FieldError id="te-title-error" errors={state.fieldErrors?.title} />
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label htmlFor="te-date" className={labelClass}>
+            Date
+          </label>
+          <input
+            id="te-date"
+            name="date"
+            type="date"
+            required
+            defaultValue={defaults?.date}
+            aria-invalid={Boolean(state.fieldErrors?.date)}
+            aria-describedby="te-date-error"
+            className={inputClass}
+          />
+          <FieldError id="te-date-error" errors={state.fieldErrors?.date} />
+        </div>
+        <div>
+          <label htmlFor="te-duration" className={labelClass}>
+            Duration (minutes){" "}
+            <span className="font-normal text-neutral-500">(optional)</span>
+          </label>
+          <input
+            id="te-duration"
+            name="durationMinutes"
+            type="number"
+            min={1}
+            max={1440}
+            defaultValue={defaults?.durationMinutes ?? undefined}
+            aria-invalid={Boolean(state.fieldErrors?.durationMinutes)}
+            aria-describedby="te-duration-error"
+            className={inputClass}
+          />
+          <FieldError
+            id="te-duration-error"
+            errors={state.fieldErrors?.durationMinutes}
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label htmlFor="te-unit" className={labelClass}>
+            Unit{" "}
+            <span className="font-normal text-neutral-500">(optional)</span>
+          </label>
+          <select
+            id="te-unit"
+            name="unitId"
+            defaultValue={defaults?.unitId ?? ""}
+            className={inputClass}
+          >
+            <option value="">Organization-wide</option>
+            {units.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="te-lead" className={labelClass}>
+            Lead member{" "}
+            <span className="font-normal text-neutral-500">(optional)</span>
+          </label>
+          <select
+            id="te-lead"
+            name="leadMemberId"
+            defaultValue={defaults?.leadMemberId ?? ""}
+            className={inputClass}
+          >
+            <option value="">None / external</option>
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.displayName}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label htmlFor="te-location" className={labelClass}>
+            Location{" "}
+            <span className="font-normal text-neutral-500">(optional)</span>
+          </label>
+          <input
+            id="te-location"
+            name="location"
+            type="text"
+            maxLength={160}
+            defaultValue={defaults?.location ?? undefined}
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <label htmlFor="te-instructor" className={labelClass}>
+            Instructor{" "}
+            <span className="font-normal text-neutral-500">(optional)</span>
+          </label>
+          <input
+            id="te-instructor"
+            name="instructorName"
+            type="text"
+            maxLength={120}
+            defaultValue={defaults?.instructorName ?? undefined}
+            placeholder="External instructor or agency name"
+            className={inputClass}
+          />
+        </div>
+      </div>
+      <div>
+        <label htmlFor="te-topics" className={labelClass}>
+          Topics practiced{" "}
+          <span className="font-normal text-neutral-500">
+            (optional, comma-separated)
+          </span>
+        </label>
+        <input
+          id="te-topics"
+          name="topics"
+          type="text"
+          defaultValue={defaults?.topics ?? undefined}
+          placeholder="anchor handling, radio procedure"
+          className={inputClass}
+        />
+      </div>
+      <div>
+        <label htmlFor="te-notes" className={labelClass}>
+          Notes <span className="font-normal text-neutral-500">(optional)</span>
+        </label>
+        <textarea
+          id="te-notes"
+          name="notes"
+          rows={2}
+          maxLength={2000}
+          defaultValue={defaults?.notes ?? undefined}
+          className={inputClass}
+        />
+      </div>
+      <div>
+        <label htmlFor="te-followup" className={labelClass}>
+          Follow-up{" "}
+          <span className="font-normal text-neutral-500">(optional)</span>
+        </label>
+        <textarea
+          id="te-followup"
+          name="followUp"
+          rows={2}
+          maxLength={2000}
+          defaultValue={defaults?.followUp ?? undefined}
+          className={inputClass}
+        />
+      </div>
+      {state.message && (
+        <p className={errorClass} role="alert">
+          {state.message}
+        </p>
+      )}
+      <button type="submit" disabled={pending} className={buttonClass}>
+        {pending ? "Saving…" : submitLabel}
+      </button>
+    </form>
+  );
+}
+
+export function TrainingAttendanceForm({
+  action,
+  members,
+  attendedMemberIds,
+}: {
+  action: BoundAction;
+  members: { id: string; displayName: string }[];
+  attendedMemberIds: string[];
+}) {
+  const [state, formAction, pending] = useActionState(action, {});
+  const attended = new Set(attendedMemberIds);
+
+  if (members.length === 0) {
+    return (
+      <p className="text-sm text-neutral-500">
+        This organization has no members yet.
+      </p>
+    );
+  }
+
+  return (
+    <form action={formAction} className="space-y-3">
+      <fieldset>
+        <legend className="text-sm font-medium text-neutral-800">
+          Attendees
+        </legend>
+        <ul className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {members.map((member) => (
+            <li key={member.id}>
+              <label className="flex items-center gap-2 text-sm text-neutral-800">
+                <input
+                  type="checkbox"
+                  name="memberIds"
+                  value={member.id}
+                  defaultChecked={attended.has(member.id)}
+                  className="h-4 w-4 rounded border-neutral-300"
+                />
+                {member.displayName}
+              </label>
+            </li>
+          ))}
+        </ul>
+      </fieldset>
+      {state.message && (
+        <p className={errorClass} role="alert">
+          {state.message}
+        </p>
+      )}
+      <button type="submit" disabled={pending} className={buttonClass}>
+        {pending ? "Saving…" : "Save attendance"}
+      </button>
+    </form>
+  );
+}

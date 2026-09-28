@@ -59,16 +59,21 @@ import {
   createQualificationDefinitionAction,
   createUnitAction,
   linkIdentityToMemberAction,
+  createTrainingEventAction,
   setMemberStatusAction,
   setMemberUnitsAction,
   setQualificationDefinitionStatusAction,
+  setTrainingAttendanceAction,
+  setTrainingEventStatusAction,
   unlinkIdentityFromMemberAction,
   updateMemberAction,
+  updateTrainingEventAction,
   updateMemberQualificationAction,
   updateOrganizationAction,
   updateQualificationDefinitionAction,
   updateUnitAction,
 } from "@/app/admin/actions";
+import TrainingEventPage from "@/app/admin/training/[eventId]/page";
 
 const hasDb = Boolean(process.env.DATABASE_URL);
 const PREFIX = "authztest-";
@@ -108,6 +113,7 @@ let adminAUid: string;
 let adminBUid: string;
 let memberRoleUid: string;
 let noAccessUid: string;
+let adminAIdentityId: string;
 
 describe.skipIf(!hasDb)("organization-scoped authorization", () => {
   beforeAll(async () => {
@@ -155,6 +161,7 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
         },
       ],
     });
+    adminAIdentityId = adminA!.id;
     void noAccess;
   });
 
@@ -168,6 +175,22 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
     });
     await prisma.authIdentity.deleteMany({
       where: { providerUid: { startsWith: PREFIX } },
+    });
+    await prisma.trainingAttendanceChange.deleteMany({
+      where: { event: { organization: { name: { startsWith: PREFIX } } } },
+    });
+    await prisma.trainingAttendance.deleteMany({
+      where: { member: { organization: { name: { startsWith: PREFIX } } } },
+    });
+    await prisma.trainingTopic.deleteMany({
+      where: { event: { organization: { name: { startsWith: PREFIX } } } },
+    });
+    await prisma.trainingEvent.updateMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+      data: { leadMemberId: null },
+    });
+    await prisma.trainingEvent.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.memberQualification.deleteMany({
       where: { member: { organization: { name: { startsWith: PREFIX } } } },
@@ -1012,6 +1035,262 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
           .map((m) => m.id)
           .sort(),
       ).toEqual([memberInA.id, memberInB.id].sort());
+    });
+  });
+
+  describe("training administration", () => {
+    let eventA: { id: string };
+    let eventB: { id: string };
+
+    beforeAll(async () => {
+      eventA = await prisma.trainingEvent.create({
+        data: {
+          organizationId: orgA.id,
+          title: uniq("event-a"),
+          date: new Date("2027-03-01T00:00:00.000Z"),
+        },
+      });
+      eventB = await prisma.trainingEvent.create({
+        data: {
+          organizationId: orgB.id,
+          title: uniq("event-b"),
+          date: new Date("2027-03-01T00:00:00.000Z"),
+        },
+      });
+    });
+
+    it("admin A manages events and attendance in A", async () => {
+      signInAs(adminAUid);
+      const created = await createTrainingEventAction(
+        orgA.id,
+        {},
+        form({
+          title: uniq("via-action"),
+          date: "2027-05-10",
+          durationMinutes: "90",
+          topics: "anchors, radio",
+        }),
+      );
+      expect(created).toEqual({});
+
+      expect(
+        await updateTrainingEventAction(
+          eventA.id,
+          {},
+          form({ title: "renamed", date: "2027-03-01" }),
+        ),
+      ).toEqual({});
+
+      expect(
+        await setTrainingAttendanceAction(
+          eventA.id,
+          {},
+          form({ memberIds: [memberA.id] }),
+        ),
+      ).toEqual({});
+      const rows = await prisma.trainingAttendance.findMany({
+        where: { trainingEventId: eventA.id },
+      });
+      expect(rows.map((r) => r.memberId)).toEqual([memberA.id]);
+
+      await expect(
+        setTrainingEventStatusAction(eventA.id, "CANCELLED"),
+      ).resolves.toBeUndefined();
+      const after = await prisma.trainingEvent.findUnique({
+        where: { id: eventA.id },
+      });
+      expect(after?.status).toBe("CANCELLED");
+      await setTrainingEventStatusAction(eventA.id, "COMPLETED");
+    });
+
+    it("admin A cannot create an event in org B", async () => {
+      signInAs(adminAUid);
+      expect(
+        await createTrainingEventAction(
+          orgB.id,
+          {},
+          form({ title: "intruder", date: "2027-01-01" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await prisma.trainingEvent.count({
+          where: { organizationId: orgB.id, title: "intruder" },
+        }),
+      ).toBe(0);
+    });
+
+    it("admin A cannot edit, cancel, or set attendance on org-B events", async () => {
+      signInAs(adminAUid);
+      expect(
+        await updateTrainingEventAction(
+          eventB.id,
+          {},
+          form({ title: "hijacked", date: "2027-03-01" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      await expect(
+        setTrainingEventStatusAction(eventB.id, "CANCELLED"),
+      ).rejects.toThrow("Not found or not permitted.");
+      expect(
+        await setTrainingAttendanceAction(
+          eventB.id,
+          {},
+          form({ memberIds: [memberA.id] }),
+        ),
+      ).toEqual({ message: "Not found." });
+      const unchanged = await prisma.trainingEvent.findUnique({
+        where: { id: eventB.id },
+      });
+      expect(unchanged?.title).not.toBe("hijacked");
+      expect(unchanged?.status).toBe("COMPLETED");
+    });
+
+    it("admin A cannot add an org-B member to an org-A event", async () => {
+      signInAs(adminAUid);
+      const result = await setTrainingAttendanceAction(
+        eventA.id,
+        {},
+        form({ memberIds: [memberB.id] }),
+      );
+      expect(result).toEqual({ message: "Not found." });
+      expect(
+        await prisma.trainingAttendance.count({
+          where: { trainingEventId: eventA.id, memberId: memberB.id },
+        }),
+      ).toBe(0);
+    });
+
+    it("admin A cannot reference an org-B unit or lead when creating", async () => {
+      signInAs(adminAUid);
+      expect(
+        await createTrainingEventAction(
+          orgA.id,
+          {},
+          form({
+            title: "x",
+            date: "2027-01-01",
+            unitId: unitB.id,
+          }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await createTrainingEventAction(
+          orgA.id,
+          {},
+          form({
+            title: "x",
+            date: "2027-01-01",
+            leadMemberId: memberB.id,
+          }),
+        ),
+      ).toEqual({ message: "Not found." });
+    });
+
+    it("MEMBER role cannot mutate training records", async () => {
+      signInAs(memberRoleUid); // MEMBER of org A
+      expect(
+        await createTrainingEventAction(
+          orgA.id,
+          {},
+          form({ title: "x", date: "2027-01-01" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateTrainingEventAction(
+          eventA.id,
+          {},
+          form({ title: "x", date: "2027-01-01" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await setTrainingAttendanceAction(
+          eventA.id,
+          {},
+          form({ memberIds: [memberA.id] }),
+        ),
+      ).toEqual({ message: "Not found." });
+    });
+
+    it("unauthenticated training calls redirect to /login", async () => {
+      signInAs(null);
+      await expect(
+        createTrainingEventAction(orgA.id, {}, form({})),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
+      await expect(
+        setTrainingAttendanceAction(eventA.id, {}, form({})),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
+    });
+
+    it("attendance edits record the authenticated admin as audit actor", async () => {
+      signInAs(adminAUid);
+      const newMember = await prisma.member.create({
+        data: { organizationId: orgA.id, displayName: uniq("auditee") },
+      });
+      const before = await prisma.trainingAttendanceChange.count({
+        where: { trainingEventId: eventA.id },
+      });
+      const result = await setTrainingAttendanceAction(
+        eventA.id,
+        {},
+        form({ memberIds: [memberA.id, newMember.id] }),
+      );
+      expect(result).toEqual({});
+
+      const rows = await prisma.trainingAttendanceChange.findMany({
+        where: { trainingEventId: eventA.id },
+        orderBy: { createdAt: "asc" },
+      });
+      expect(rows.length).toBeGreaterThan(before);
+      // The actor came from the verified session — no client input can
+      // reach this column.
+      expect(rows.at(-1)?.actorAuthIdentityId).toBe(adminAIdentityId);
+      expect(rows.at(-1)?.organizationId).toBe(orgA.id);
+    });
+
+    it("MEMBER role cannot create attendance audit rows", async () => {
+      signInAs(memberRoleUid); // MEMBER of org A
+      const before = await prisma.trainingAttendanceChange.count({
+        where: { trainingEventId: eventA.id },
+      });
+      const result = await setTrainingAttendanceAction(
+        eventA.id,
+        {},
+        form({ memberIds: [memberA.id] }),
+      );
+      expect(result).toEqual({ message: "Not found." });
+      expect(
+        await prisma.trainingAttendanceChange.count({
+          where: { trainingEventId: eventA.id },
+        }),
+      ).toBe(before);
+    });
+
+    it("admin A cannot inspect organization B attendance history", async () => {
+      // Seed org-B audit history directly, then prove the page-level
+      // authorization boundary: an org-A admin gets the opaque
+      // notFound, not the event — and therefore never the history.
+      await prisma.trainingAttendanceChange.create({
+        data: {
+          organizationId: orgB.id,
+          trainingEventId: eventB.id,
+          memberId: memberB.id,
+          actorAuthIdentityId: "any-actor",
+          action: "ADDED",
+        },
+      });
+      signInAs(adminAUid);
+      await expect(
+        TrainingEventPage({
+          params: Promise.resolve({ eventId: eventB.id }),
+        }),
+      ).rejects.toThrow("NEXT_NOT_FOUND");
+
+      // The org-B admin renders it — including the audit section.
+      signInAs(adminBUid);
+      const page = await TrainingEventPage({
+        params: Promise.resolve({ eventId: eventB.id }),
+      });
+      expect(page).toBeTruthy();
     });
   });
 });

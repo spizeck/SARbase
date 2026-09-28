@@ -8,7 +8,9 @@ import {
   listExpiringQualifications,
   expiryLabel,
 } from "@/lib/domain/qualification";
-import { calendarDateInZone } from "@/lib/dates";
+import { listTrainingEvents } from "@/lib/domain/training";
+import { dateOnlySchema } from "@/lib/domain/schemas";
+import { calendarDateInZone, formatDateOnly } from "@/lib/dates";
 import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
 
 import {
@@ -19,6 +21,7 @@ import {
   createQualificationDefinitionAction,
   updateQualificationDefinitionAction,
   setQualificationDefinitionStatusAction,
+  createTrainingEventAction,
 } from "../../actions";
 import {
   OrganizationForm,
@@ -26,6 +29,7 @@ import {
   UnitRenameForm,
   MemberForm,
   QualificationDefinitionForm,
+  TrainingEventForm,
 } from "../../forms";
 
 export const metadata = { title: "Organization" };
@@ -37,13 +41,46 @@ export default async function OrganizationPage({
   searchParams,
 }: {
   params: Promise<{ orgId: string }>;
-  searchParams: Promise<{ unit?: string; expiring?: string }>;
+  searchParams: Promise<{
+    unit?: string;
+    expiring?: string;
+    trainingUnit?: string;
+    trainingFrom?: string;
+    trainingTo?: string;
+  }>;
 }) {
   const { orgId } = await params;
   // orgId from the URL is an untrusted selector: requireOrgAdminOrNotFound
   // checks the caller's OrganizationAccess rows, then resolves the org.
   await requireOrgAdminOrNotFound(orgId);
-  const { unit: unitFilter, expiring } = await searchParams;
+  const {
+    unit: unitFilter,
+    expiring,
+    trainingUnit,
+    trainingFrom,
+    trainingTo,
+  } = await searchParams;
+
+  // Every filter control on this page rebuilds the URL through this
+  // helper so unrelated query parameters (member unit filter, expiry
+  // window, training filters) survive each other's changes instead of
+  // being clobbered.
+  const pageQuery = (overrides: Record<string, string | undefined>) => {
+    const merged: Record<string, string | undefined> = {
+      unit: unitFilter,
+      expiring,
+      trainingUnit,
+      trainingFrom,
+      trainingTo,
+      ...overrides,
+    };
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(merged)) {
+      if (value) params.set(key, value);
+    }
+    const qs = params.toString();
+    return `/admin/organizations/${orgId}${qs ? `?${qs}` : ""}`;
+  };
 
   const organization = await getOrganization(orgId);
   if (!organization) notFound();
@@ -69,6 +106,35 @@ export default async function OrganizationPage({
     today,
     includeExpired: true,
   });
+
+  // Training history filters (issue #9): unit and date range. Values
+  // are validated server-side — a unit id that is not one of this
+  // organization's units (foreign or fabricated) matches nothing, so
+  // filtering can never expose cross-org data; the sentinel "org"
+  // selects organization-wide events (unitId IS NULL). Date params
+  // must be real YYYY-MM-DD calendar dates; invalid input is ignored
+  // rather than widening or narrowing the result silently.
+  const trainingUnitId =
+    trainingUnit === "org"
+      ? null
+      : trainingUnit && trainingUnit.trim().length > 0
+        ? trainingUnit
+        : undefined;
+  const parsedFrom = dateOnlySchema.safeParse(trainingFrom);
+  const parsedTo = dateOnlySchema.safeParse(trainingTo);
+  const trainingFromDate = parsedFrom.success ? parsedFrom.data : undefined;
+  const trainingToDate = parsedTo.success ? parsedTo.data : undefined;
+  const trainingFiltered = Boolean(
+    trainingUnitId !== undefined || trainingFromDate || trainingToDate,
+  );
+
+  const trainingEvents = await listTrainingEvents(orgId, {
+    includeCancelled: true,
+    unitId: trainingUnitId,
+    from: trainingFromDate,
+    to: trainingToDate,
+  });
+  const allMembers = await listMembers(orgId);
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
@@ -228,7 +294,7 @@ export default async function OrganizationPage({
             {[30, 60, 90].map((days) => (
               <Link
                 key={days}
-                href={`/admin/organizations/${orgId}?expiring=${days}`}
+                href={pageQuery({ expiring: String(days) })}
                 aria-current={expiryWindow === days ? "true" : undefined}
                 className={`ml-3 ${
                   expiryWindow === days
@@ -277,6 +343,184 @@ export default async function OrganizationPage({
         )}
       </section>
 
+      <section aria-labelledby="training-heading" className="mt-10">
+        <h2 id="training-heading" className="text-lg font-medium">
+          Training
+        </h2>
+        <p className="mt-1 text-sm text-neutral-600">
+          Training events and attendance history. Cancelled events are kept for
+          the record but do not count as attended.
+        </p>
+
+        <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+          <nav
+            aria-label="Filter training by unit"
+            className="text-sm whitespace-nowrap"
+          >
+            <Link
+              href={pageQuery({ trainingUnit: undefined })}
+              aria-current={!trainingUnit ? "true" : undefined}
+              className={
+                !trainingUnit
+                  ? "font-medium text-neutral-900"
+                  : "text-neutral-500 hover:underline"
+              }
+            >
+              All units
+            </Link>
+            <Link
+              href={pageQuery({ trainingUnit: "org" })}
+              aria-current={trainingUnit === "org" ? "true" : undefined}
+              className={`ml-3 ${
+                trainingUnit === "org"
+                  ? "font-medium text-neutral-900"
+                  : "text-neutral-500 hover:underline"
+              }`}
+            >
+              Organization-wide
+            </Link>
+            {organization.units.map((unit) => (
+              <Link
+                key={unit.id}
+                href={pageQuery({ trainingUnit: unit.id })}
+                aria-current={trainingUnit === unit.id ? "true" : undefined}
+                className={`ml-3 ${
+                  trainingUnit === unit.id
+                    ? "font-medium text-neutral-900"
+                    : "text-neutral-500 hover:underline"
+                }`}
+              >
+                {unit.name}
+              </Link>
+            ))}
+          </nav>
+
+          <form
+            method="get"
+            action={`/admin/organizations/${orgId}`}
+            className="flex flex-wrap items-end gap-3"
+          >
+            {unitFilter && (
+              <input type="hidden" name="unit" value={unitFilter} />
+            )}
+            {expiring && (
+              <input type="hidden" name="expiring" value={expiring} />
+            )}
+            {trainingUnit && (
+              <input type="hidden" name="trainingUnit" value={trainingUnit} />
+            )}
+            <div>
+              <label
+                htmlFor="training-from"
+                className="block text-xs font-medium text-neutral-700"
+              >
+                From
+              </label>
+              <input
+                id="training-from"
+                name="trainingFrom"
+                type="date"
+                defaultValue={
+                  trainingFromDate ? formatDateOnly(trainingFromDate)! : ""
+                }
+                className="mt-1 rounded-md border border-neutral-300 px-2 py-1 text-sm"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="training-to"
+                className="block text-xs font-medium text-neutral-700"
+              >
+                To
+              </label>
+              <input
+                id="training-to"
+                name="trainingTo"
+                type="date"
+                defaultValue={
+                  trainingToDate ? formatDateOnly(trainingToDate)! : ""
+                }
+                className="mt-1 rounded-md border border-neutral-300 px-2 py-1 text-sm"
+              />
+            </div>
+            <button
+              type="submit"
+              className="rounded-md border border-neutral-300 px-3 py-1 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
+            >
+              Filter
+            </button>
+            {(trainingFrom || trainingTo) && (
+              <Link
+                href={pageQuery({
+                  trainingFrom: undefined,
+                  trainingTo: undefined,
+                })}
+                className="text-sm text-neutral-500 hover:underline"
+              >
+                Clear dates
+              </Link>
+            )}
+          </form>
+        </div>
+
+        {trainingEvents.length === 0 ? (
+          <p className="mt-3 text-sm text-neutral-500">
+            {trainingFiltered
+              ? "No training events match the selected filters."
+              : "No training events recorded yet."}
+          </p>
+        ) : (
+          <ul className="mt-3 divide-y divide-neutral-200 rounded-md border border-neutral-200">
+            {trainingEvents.map((event) => (
+              <li
+                key={event.id}
+                className="flex items-center justify-between gap-3 px-4 py-2 text-sm"
+              >
+                <span>
+                  <Link
+                    href={`/admin/training/${event.id}`}
+                    className="font-medium text-neutral-900 hover:underline"
+                  >
+                    {event.title}
+                  </Link>
+                  <span className="text-neutral-500">
+                    {event.unit ? ` · ${event.unit.name}` : ""}
+                  </span>
+                </span>
+                <span className="flex items-center gap-3 text-neutral-600">
+                  <span>
+                    {event._count.attendances} attendee
+                    {event._count.attendances === 1 ? "" : "s"}
+                  </span>
+                  <span>{formatDateOnly(event.date)}</span>
+                  {event.status === "CANCELLED" && (
+                    <span className="inline-block rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-600">
+                      Cancelled
+                    </span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <details className="mt-3 rounded-md border border-neutral-200 p-4">
+          <summary className="cursor-pointer text-sm font-medium text-neutral-800">
+            Record a training event
+          </summary>
+          <div className="mt-3">
+            <TrainingEventForm
+              action={createTrainingEventAction.bind(null, orgId)}
+              units={organization.units}
+              members={allMembers.map((m) => ({
+                id: m.id,
+                displayName: m.displayName,
+              }))}
+              submitLabel="Save event"
+            />
+          </div>
+        </details>
+      </section>
+
       <section aria-labelledby="members-heading" className="mt-10">
         <div className="flex items-baseline justify-between gap-4">
           <h2 id="members-heading" className="text-lg font-medium">
@@ -285,7 +529,7 @@ export default async function OrganizationPage({
           {organization.units.length > 0 && (
             <nav aria-label="Filter members by unit" className="text-sm">
               <Link
-                href={`/admin/organizations/${orgId}`}
+                href={pageQuery({ unit: undefined })}
                 aria-current={!filterUnit ? "true" : undefined}
                 className={
                   filterUnit
@@ -298,7 +542,7 @@ export default async function OrganizationPage({
               {organization.units.map((unit) => (
                 <Link
                   key={unit.id}
-                  href={`/admin/organizations/${orgId}?unit=${unit.id}`}
+                  href={pageQuery({ unit: unit.id })}
                   aria-current={filterUnit?.id === unit.id ? "true" : undefined}
                   className={`ml-3 ${
                     filterUnit?.id === unit.id

@@ -192,3 +192,22 @@ export async function requireOrgAdminForQualification(
   }
   return record;
 }
+
+/**
+ * TrainingEvent lookup — the event id is an untrusted selector; the
+ * event's own organizationId decides which grant must exist. Attendance
+ * is managed through the event, so this covers it too.
+ */
+export async function requireOrgAdminForTrainingEvent(
+  ctx: AuthContext,
+  eventId: string,
+) {
+  const event = await prisma.trainingEvent.findUnique({
+    where: { id: eventId },
+  });
+  if (!event || !isOrgAdmin(ctx, event.organizationId)) {
+    logDenial("authz.training_scope_denied", ctx, { entityId: eventId });
+    throw new AuthorizationError();
+  }
+  return event;
+}

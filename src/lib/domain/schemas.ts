@@ -161,3 +161,54 @@ export const memberQualificationInputSchema = z
 export type MemberQualificationInput = z.infer<
   typeof memberQualificationInputSchema
 >;
+
+/**
+ * Required calendar-date input ("YYYY-MM-DD") → a Date pinned to UTC
+ * midnight. Same rule as dateOnlySchema, but a value is mandatory —
+ * used for training event dates, which are the org's local calendar
+ * date, not an instant.
+ */
+export const requiredDateOnlySchema = z
+  .string({ error: "Date is required." })
+  .trim()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD.")
+  .refine((value) => {
+    const d = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
+  }, "Enter a real calendar date.")
+  .transform((value) => new Date(`${value}T00:00:00.000Z`));
+
+/** Optional entity id (blank form value → absent). */
+const optionalId = z.preprocess(emptyToUndefined, z.string().min(1).optional());
+
+export const trainingEventInputSchema = z.object({
+  title: nameSchema,
+  date: requiredDateOnlySchema,
+  unitId: optionalId,
+  durationMinutes: z.preprocess(
+    emptyToUndefined,
+    z.coerce
+      .number()
+      .int("Whole minutes only.")
+      .min(1, "Duration must be at least 1 minute.")
+      .max(24 * 60, "Duration cannot exceed 24 hours.")
+      .optional(),
+  ),
+  location: optionalText(160),
+  instructorName: optionalText(120),
+  leadMemberId: optionalId,
+  notes: optionalText(2000),
+  followUp: optionalText(2000),
+  topics: z.array(z.string().trim().min(1).max(60)).max(24).default([]),
+});
+export type TrainingEventInput = z.infer<typeof trainingEventInputSchema>;
+
+export const trainingEventStatusSchema = z.enum(["COMPLETED", "CANCELLED"]);
+export type TrainingEventStatusInput = z.infer<
+  typeof trainingEventStatusSchema
+>;
+
+export const trainingAttendanceSchema = z.object({
+  memberIds: z.array(z.string().min(1)).max(500),
+});
+export type TrainingAttendanceInput = z.infer<typeof trainingAttendanceSchema>;

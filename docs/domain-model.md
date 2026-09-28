@@ -162,6 +162,105 @@ this model or UI concludes operational readiness, competence, mission
 eligibility, or crew sufficiency — labels state date facts ("Expired
 2027-11-01", "Expires in 28 days"), never "qualified".
 
+## Training events and attendance
+
+Issue #9 adds durable records of training activity and participation.
+
+### `TrainingEvent`
+
+One factual training activity: `organizationId`, optional `unitId`,
+`title`, `date` (the organization's local calendar date, `@db.Date` —
+same org-timezone semantics as qualification dates), optional
+`durationMinutes`, `location`, `instructorName` (free text — external
+instructors need no entity), optional `leadMemberId` (internal lead,
+same-org enforced), `notes`, `followUp` (free text — deliberately not
+a task-management system), `status`, timestamps.
+
+- **Lifecycle:** `COMPLETED` (the training happened) or `CANCELLED`
+  (it was recorded/planned but did not occur). No DRAFT — SARbase does
+  historical recordkeeping, not scheduling. A cancelled event keeps its
+  rows for history but is excluded from participation counts and
+  "last attended"; its attendees are never presented as having
+  attended something that did not happen. Attendance cannot be edited
+  while an event is cancelled.
+- **No operational fields** — no scores, pass/fail, rank, eligibility,
+  attendance targets, or qualification outcomes. Attendance never
+  creates a `MemberQualification`; training ≠ certification.
+- **Edits preserve identity.** Corrections update the row in place;
+  durable who/what/when change history for event-detail edits remains
+  deferred to the generic audit work (attendance edits are already
+  audited — see `TrainingAttendanceChange`).
+- **Unit association is optional.** Org-wide training (`unitId` null),
+  one unit's training, and mixed attendance are all expressible;
+  `MemberUnit` is never an authorization input.
+- **Duration** is the whole event length; every attendee's hours derive
+  from it. Per-attendee duration is deferred until a real need exists —
+  future reporting (#19) can sum `durationMinutes` over attendances.
+
+### `TrainingTopic`
+
+One row per practiced topic (`label`), `@@unique([trainingEventId,
+label])`, case-insensitive dedupe preserving the organization's own
+vocabulary — no fixed taxonomy, no comma-separated blobs, so future
+search (#18) and reporting (#19) stay relational.
+
+### `TrainingAttendance`
+
+"This member attended this event" — row existence is the fact; there is
+deliberately no excused/unavailable taxonomy in v1 (a cancelled event
+already covers "it did not happen"). `@@unique([trainingEventId,
+memberId])` prevents duplicates; optional per-attendee `notes`.
+Participation views filter `event.status = COMPLETED`.
+
+### `TrainingAttendanceChange`
+
+The durable audit record behind issue #9's "attendance edits are
+auditable". Every member added to or removed from an event's
+attendance appends one immutable row — `organizationId`,
+`trainingEventId`, `memberId`, `actorAuthIdentityId`, `action`
+(`ADDED`/`REMOVED`), `createdAt` — written inside the same transaction
+as the attendance mutation itself, so attendance can never change
+without history. There is no update or delete path for these rows.
+
+- **Scope is deliberately narrow.** This is a domain-specific change
+  log for one fact (attendance add/remove), NOT the deferred generic
+  audit/change-history framework. Structured runtime logs remain an
+  observability aid only — they are not the durable audit record.
+- **Actor is server-derived.** `actorAuthIdentityId` comes from the
+  authenticated request's `AuthIdentity` (`ctx.identity.id`), never
+  from client input.
+- **Actor history is preserved, not pinned.** `actorAuthIdentityId` is
+  deliberately a plain column, not a foreign key: a hard FK would
+  either block AuthIdentity deletion forever (`Restrict`) or erase the
+  actor when the identity is removed (`SetNull`). The stored id remains
+  a stable forensic reference; while the identity row exists the UI
+  resolves it to the linked member's display name or sign-in email,
+  and afterwards renders a safe fallback identifier.
+- **Same-organization integrity is DB-enforced** via the issue #5
+  mechanism — denormalized `organizationId` plus composite FKs to
+  `TrainingEvent(id, organizationId)` and `Member(id, organizationId)`,
+  both `Restrict`. A cross-organization audit row is physically
+  impossible, and an event or member row that has history cannot be
+  hard-deleted underneath it.
+- **Re-adding is a new row.** Removing then re-adding a member produces
+  a second `ADDED` entry; deleting the current `TrainingAttendance`
+  row never touches the change history.
+
+### Same-organization integrity
+
+`TrainingAttendance`, `TrainingAttendanceChange`, and `TrainingTopic`
+carry denormalized `organizationId` plus composite FKs to
+`TrainingEvent(id, organizationId)` and (attendance rows)
+`Member(id, organizationId)` — PostgreSQL rejects cross-org pairings.
+`TrainingEvent.unitId`/`leadMemberId` use nullable composite FKs the
+same way. All deletes are `Restrict` (topics cascade — they are part of
+the event record, not independent history).
+
+**Deferred:** reminders/notifications (#11/#13), attachments (#16 —
+training documents/attendance sheets hang off the event id), the
+generic audit/change-history framework for event-detail and other
+record edits, reporting (#19), global search (#18).
+
 ## Lifecycle and history
 
 - Members are **deactivated/reactivated**, never deleted through the
@@ -171,10 +270,13 @@ eligibility, or crew sufficiency — labels state date facts ("Expired
 - Units and organizations have no app-level deletion workflow at all in
   this issue; the `Restrict` FKs make even administrative deletion
   conservative.
-- Status changes are ordinary column updates today. **Deferred:** the
-  audit-history work (a later issue) is expected to strengthen material
-  history — who changed status, when — into durable audit records rather
-  than relying on `updatedAt`.
+- Status changes are ordinary column updates today. Training
+  **attendance** edits are the exception — they append immutable
+  `TrainingAttendanceChange` rows (see above). **Deferred:** the generic
+  audit-history work (a later issue) is expected to strengthen other
+  material history — who changed status, event details, when — into
+  durable audit records rather than relying on `updatedAt` and runtime
+  logs.
 
 ## Authentication and authorization
 
@@ -224,3 +326,14 @@ Server-side Zod schemas (`src/lib/domain/schemas.ts`):
   optional `YYYY-MM-DD` calendar dates (impossible dates rejected; expiry
   may not precede issue when both exist); `issuer`/`reference` optional
   ≤120; `notes` optional ≤2000. Blank fields are absent, not errors.
+- Training event: `title` required (1–120); `date` required real
+  calendar date; `durationMinutes` optional int 1–1440; `location`
+  ≤160, `instructorName` ≤120, `notes`/`followUp` ≤2000; `topics`
+  ≤24 labels × ≤60 chars, deduped; `unitId`/`leadMemberId` must resolve
+  to same-organization records; attendance `memberIds` deduped and
+  same-organization.
+- Training history filters (org admin page query params):
+  `trainingUnit` is `org` (organization-wide events) or a unit id —
+  unknown/cross-org ids simply match nothing; `trainingFrom`/
+  `trainingTo` are optional `YYYY-MM-DD` calendar dates validated with
+  the same date-only rules — invalid values are ignored.
