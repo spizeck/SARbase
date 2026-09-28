@@ -212,3 +212,89 @@ export const trainingAttendanceSchema = z.object({
   memberIds: z.array(z.string().min(1)).max(500),
 });
 export type TrainingAttendanceInput = z.infer<typeof trainingAttendanceSchema>;
+
+/* ------------------------------------------------------------------ */
+/* Assets, inventory, storage locations (issue #10)                    */
+/* ------------------------------------------------------------------ */
+
+export const storageLocationStatusSchema = z.enum(["ACTIVE", "ARCHIVED"]);
+export const assetStatusSchema = z.enum([
+  "ACTIVE",
+  "INACTIVE",
+  "OUT_OF_SERVICE",
+  "RETIRED",
+]);
+export const conditionStatusSchema = z.enum([
+  "UNKNOWN",
+  "GOOD",
+  "FAIR",
+  "DAMAGED",
+]);
+export const inventoryItemStatusSchema = z.enum(["ACTIVE", "ARCHIVED"]);
+
+/**
+ * A location's container: top-level, inside another location, or
+ * inside an asset (a vessel's locker). The domain additionally rejects
+ * supplying both parents — they are mutually exclusive by model.
+ */
+export const storageLocationInputSchema = z
+  .object({
+    name: nameSchema,
+    description: optionalText(500),
+    parentLocationId: optionalId,
+    containingAssetId: optionalId,
+    status: storageLocationStatusSchema.default("ACTIVE"),
+  })
+  .refine((v) => !(v.parentLocationId && v.containingAssetId), {
+    message:
+      "A location sits inside either a parent location or an asset — not both.",
+    path: ["parentLocationId"],
+  });
+export type StorageLocationInput = z.infer<typeof storageLocationInputSchema>;
+
+export const assetInputSchema = z.object({
+  name: nameSchema,
+  category: optionalText(60),
+  manufacturer: optionalText(120),
+  model: optionalText(120),
+  serialNumber: optionalText(120),
+  assetTag: optionalText(60),
+  purchaseDate: dateOnlySchema,
+  vendor: optionalText(120),
+  unitId: optionalId,
+  parentAssetId: optionalId,
+  storageLocationId: optionalId,
+  condition: conditionStatusSchema.default("UNKNOWN"),
+  status: assetStatusSchema.default("ACTIVE"),
+  notes: optionalText(2000),
+});
+export type AssetInput = z.infer<typeof assetInputSchema>;
+
+/**
+ * Exact quantity for stock items — a string like "3" or "2.5" that the
+ * domain stores as DECIMAL(14,3). No floats, no negatives, no NaN.
+ */
+const quantitySchema = z.preprocess(
+  emptyToUndefined,
+  z
+    .string({ error: "Quantity is required." })
+    .trim()
+    .regex(
+      /^\d{1,9}(\.\d{1,3})?$/,
+      "Enter a non-negative quantity (e.g. 3 or 2.5).",
+    ),
+);
+
+export const inventoryItemInputSchema = z.object({
+  name: nameSchema,
+  category: optionalText(60),
+  quantity: quantitySchema,
+  unitOfMeasure: optionalText(30),
+  vendor: optionalText(120),
+  unitId: optionalId,
+  storageLocationId: optionalId,
+  condition: conditionStatusSchema.default("UNKNOWN"),
+  status: inventoryItemStatusSchema.default("ACTIVE"),
+  notes: optionalText(2000),
+});
+export type InventoryItemInput = z.infer<typeof inventoryItemInputSchema>;

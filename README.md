@@ -81,8 +81,8 @@ The organization defines its procedures and requirements. SARbase helps remember
 
 ### Vessels and equipment
 
-- Vessels, engines, trailers, radios, safety equipment, and other assets
-- Equipment locations
+- Vessels, engines, trailers, radios, safety equipment, and other assets _(basic records implemented)_
+- Equipment locations _(hierarchical storage implemented)_
 - Inspection history
 - Next inspection dates
 - Expiration dates
@@ -200,10 +200,11 @@ Inherited from the foundation baseline, working today:
 - Sign-in/sign-out UI plus an `/account` page showing identity, linked member records, granted organization access, and the member's own qualification records
 - **Qualifications and certifications**: organization-defined qualification definitions (active/inactive lifecycle), append-only member certificate records with issue/expiry dates, issuer and reference, deterministic expiry-state labels, and upcoming-expiry admin views — factual records only, with same-organization integrity enforced by composite foreign keys (see `docs/domain-model.md`)
 - **Training events and attendance**: organization training events with date/duration/location/instructor/topics, member attendance history, factual "last attended" summaries, and a read-only personal training view on `/account` — administrative records only, never an operational-readiness conclusion
+- **Assets, inventory, and storage locations**: durable assets (boats, engines, radios — serial/tag/manufacturer/model, purchase date, recorded condition and lifecycle status), quantity-tracked stock items (exact decimal quantity + unit of measure), and arbitrarily nested storage locations — including lockers inside a vessel asset — plus physical parent-child asset containment. Admin-managed, same-organization integrity enforced by composite foreign keys; the location container XOR is also a database CHECK constraint, and containment writes serialize per organization on a Postgres advisory lock so concurrent placements can't race a cycle into the graph (see `docs/domain-model.md`). Status and condition are recorded facts only — SARbase never infers readiness or safety from them
 
 ### Not yet implemented
 
-Notifications, attachments, audit history, background jobs, member self-service beyond `/account`, and the remaining SAR domain functionality (availability, callouts, incidents, equipment, expenses, search) are **planned, not built**. `/admin` requires an authenticated identity with an explicit `ADMIN` grant for the target organization. Qualification records state certificate facts only — they never conclude SAR operational readiness.
+Notifications, attachments, durable audit history beyond training attendance, background jobs, member self-service beyond `/account`, and the remaining SAR domain functionality (availability, callouts, incidents, inspections/maintenance, expenses, search) are **planned, not built**. `/admin` requires an authenticated identity with an explicit `ADMIN` grant for the target organization. Qualification and equipment records state facts only — they never conclude SAR operational readiness.
 
 ## Status
 

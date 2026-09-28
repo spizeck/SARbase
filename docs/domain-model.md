@@ -261,6 +261,135 @@ training documents/attendance sheets hang off the event id), the
 generic audit/change-history framework for event-detail and other
 record edits, reporting (#19), global search (#18).
 
+## Assets, inventory, and storage locations
+
+Issue #10 adds lightweight operational inventory and asset
+recordkeeping — institutional memory about **what the organization
+owns and where it physically is**. It is deliberately not an ERP, a
+warehouse-management system, an accounting ledger, or a readiness
+system: SARbase stores facts a human recorded ("radio serial 1234",
+"3 lifejackets in the forward locker", "condition: damaged") and never
+infers that a boat is safe, a unit is ready, stock is sufficient, or a
+launch should happen. Humans decide operational meaning.
+
+### Two record families, deliberately not unified
+
+- **`Asset`** — a durable, individually identifiable thing (rescue
+  boat, engine, VHF radio, AED, toolbox). Optional identity fields:
+  `category` (free text — the organization's own vocabulary, no enum
+  churn), `manufacturer`, `model`, `serialNumber`, `assetTag`,
+  `purchaseDate` (date-only), `vendor` (free-text purchase memory only;
+  real vendors are #17), `notes`.
+- **`InventoryItem`** — a quantity-tracked stock item (rope, flares,
+  gloves, batteries, consumables). `quantity` is an exact
+  `DECIMAL(14,3)` — "25 m of line" and "1.5 gallons cleaner" are
+  legitimate facts that floats would corrupt — plus a free-text
+  `unitOfMeasure` ("rolls", "each", "m"). No lot tracking, reorder
+  points, FIFO, or stock transactions; quantity is "how many we have
+  now", not a judgement of sufficiency.
+
+Forcing both into one table would make serial/tag/parent null-noise on
+stock and quantity meaningless on unique assets; separate subtype
+tables per equipment kind would be premature schema. Two flat tables
+is the smallest coherent split.
+
+### `StorageLocation`
+
+A place things physically live, arbitrarily nested —
+`SAR Building > Workshop > Shelf A > Cabinet 2`. A location sits inside
+**at most one** container: a parent location (`parentLocationId`)
+**or** an asset it is physically part of (`containingAssetId` —
+"Forward locker" inside "Rescue Boat 1"); a top-level location has
+neither. The XOR is enforced at both layers — the domain rejects a
+dual container for a friendly error, and the
+`StorageLocation_single_container` CHECK constraint rejects the row at
+the database level, so direct writes, import scripts, and future code
+paths cannot persist it either (Prisma cannot express CHECK, so the
+constraint lives in its own migration). A single container select in
+the UI makes it unrepresentable in the form. Letting an asset contain
+locations is what makes vessel lockers hang off the boat's single
+identity rather than a shadow location named after the boat.
+
+Because assets can also be _stored in_ locations, the "is inside / is
+part of" edges form one union graph (location → parentLocation |
+containingAsset; asset → storageLocation | parentAsset). Cycles cannot
+be expressed as foreign keys; the domain walks that union graph and
+rejects any placement that would contain a record inside itself —
+which also prevents the subtler "boat stored in its own locker" loop.
+The same walk renders `locationPath` deterministically and is
+cycle-safe even against bad data.
+
+The union-graph check is read-then-write, so without serialization two
+concurrent admins could each validate against the same stale graph and
+commit a cycle (A inside B while B inside A). Every mutation that
+writes a containment edge — create/update of `StorageLocation` and
+`Asset` — therefore runs inside a transaction holding a
+**per-organization** PostgreSQL advisory lock (`pg_advisory_xact_lock`
+keyed by `hashtextextended` of the organization id). Contenders
+serialize: the loser re-reads the graph after the winner commits and
+its cycle check fails cleanly with a hierarchy error, never an opaque 500. The lock is transaction-scoped (released automatically on commit
+or rollback), holds across server instances — unlike an in-process
+mutex — and never blocks other organizations or ordinary reads.
+`InventoryItem` writes stay unlocked; items are graph leaves, never
+containers.
+
+### Asset parent-child
+
+`Asset.parentAssetId` is optional physical/administrative containment —
+"port engine is part of Rescue Boat 1", "radio is in the kit bag".
+Children keep independent identities and their own optional storage
+locations (an engine can be part of a boat and temporarily sit in the
+workshop). It is not an operational dependency graph and asserts
+nothing about fitness. Same-organization and acyclic; without it,
+engines would be orphaned records whose boat relationship could only
+live in free text.
+
+### Status, condition, lifecycle
+
+- `AssetStatus`: `ACTIVE` (in use), `INACTIVE` (stored/spare/seasonal —
+  not currently in use), `OUT_OF_SERVICE` (a person explicitly marked
+  it so — **not** an inspection result), `RETIRED` (permanently
+  withdrawn). Every transition is an explicit human choice; nothing is
+  derived from dates, quantities, or defects.
+- `ConditionStatus` (`UNKNOWN`/`GOOD`/`FAIR`/`DAMAGED`): a clerk's
+  note about what someone observed — never inspection-derived, never a
+  safety grade. `UNKNOWN` is the default so no record pretends to a
+  condition nobody stated. Structured condition evidence belongs to
+  inspections (#11).
+- `StorageLocationStatus` / `InventoryItemStatus`: `ACTIVE` |
+  `ARCHIVED`. Archival preserves the row and every reference to it;
+  the application exposes no delete path for any of these records —
+  future maintenance, inspection, incident, expense, and attachment
+  records will point at them (`Restrict` FKs are the backstop).
+
+**Location history is deferred.** Current `storageLocationId` is a
+mutable fact; `updatedAt` plus structured logs capture that a change
+happened but not where-from/where-to. A narrow `AssetLocationChange`
+ledger was considered and deliberately not built — durable move history
+fits the generic audit-history work rather than a per-entity
+one-off.
+
+### Same-organization integrity
+
+Same mechanism as elsewhere: denormalized `organizationId` +
+composite FKs. A location's parent location or containing asset, an
+asset's unit/location/parent, and an item's unit/location are all
+enforced same-organization **at the database level** —
+`StorageLocation(id, organizationId)` and `Asset(id, organizationId)`
+are composite-FK targets, so a cross-org pairing is a P2003 rejection,
+not just an app check. `assetTag` is `@@unique([organizationId,
+assetTag])` — org-scoped when present; NULLs are distinct so untagged
+assets never collide. `serialNumber` is indexed but deliberately not
+unique (manufacturers can reuse them).
+
+**Deferred to later issues:** inspections/defects/maintenance and
+engine hours (#11 — `Asset`/`InventoryItem` already expose
+`(id, organizationId)` targets for them), attachments (#16 — stable
+ids, no URL/blob stand-ins), real Vendor/Expense records (#17 —
+`vendor` free text may migrate onto them), global search (#18 — the
+identifier/category indexes are the preparation), reporting (#19),
+durable location/movement history (generic audit work).
+
 ## Lifecycle and history
 
 - Members are **deactivated/reactivated**, never deleted through the
@@ -337,3 +466,18 @@ Server-side Zod schemas (`src/lib/domain/schemas.ts`):
   unknown/cross-org ids simply match nothing; `trainingFrom`/
   `trainingTo` are optional `YYYY-MM-DD` calendar dates validated with
   the same date-only rules — invalid values are ignored.
+- Storage location: `name` required (1–120, trimmed); `description`
+  optional ≤500; at most one of `parentLocationId`/`containingAssetId`
+  (both must resolve same-organization; self-parenting and
+  container-graph cycles rejected by the domain).
+- Asset: `name` required; `category` ≤60, `manufacturer`/`model`/
+  `serialNumber`/`vendor` ≤120, `assetTag` ≤60 (unique per
+  organization when present), `notes` ≤2000 — all optional;
+  `purchaseDate` optional `YYYY-MM-DD` calendar date; `unitId`,
+  `parentAssetId` (not self, acyclic), `storageLocationId` must
+  resolve same-organization; `status`/`condition` bounded enums.
+- Inventory item: `name` required; `quantity` required — a
+  non-negative decimal string (≤9 integer digits, ≤3 decimal places)
+  stored as exact `DECIMAL(14,3)`; `unitOfMeasure` ≤30; `unitId` and
+  `storageLocationId` same-organization; bounded `condition`/`status`
+  enums; `notes` ≤2000.
