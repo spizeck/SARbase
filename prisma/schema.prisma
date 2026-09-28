@@ -37,18 +37,34 @@ enum OrgRole {
   ADMIN
 }
 
+// Administrative lifecycle for a qualification definition. INACTIVE
+// means the organization no longer assigns new records under the
+// definition — it does NOT invalidate or hide historical records.
+enum QualificationDefinitionStatus {
+  ACTIVE
+  INACTIVE
+}
+
 // The independent SAR organization that owns its records. Deliberately
 // minimal — no billing, federation, or regional hierarchy concepts.
+//
+// timezone is an IANA identifier (e.g. "America/Puerto_Rico") that
+// defines the organization's local calendar date. Qualification and
+// other date-only facts compare "today" against this zone — see
+// src/lib/dates.ts. Rows migrated before the column existed hold "UTC";
+// an org admin should set the real zone in organization settings.
 model Organization {
   id        String   @id @default(cuid())
   name      String
+  timezone  String   @default("UTC")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   units   Unit[]
   members Member[]
 
-  organizationAccesses OrganizationAccess[]
+  organizationAccesses     OrganizationAccess[]
+  qualificationDefinitions QualificationDefinition[]
 }
 
 // An internal operational/administrative grouping within an organization
@@ -92,6 +108,11 @@ model Member {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   memberUnits  MemberUnit[]
+
+  // Qualification evidence rows. Restrict on the composite FK below:
+  // a member row can never be hard-deleted while qualification history
+  // references it — records are preserved, not convenience-deleted.
+  memberQualifications MemberQualification[]
 
   // Optional link to a login identity. Nullable — most members never sign
   // in. SetNull on identity deletion: removing a login must never destroy
@@ -155,6 +176,70 @@ model OrganizationAccess {
 
   @@unique([authIdentityId, organizationId])
   @@index([organizationId])
+}
+
+// An organization-defined qualification/certification type — the org's
+// own policy about what it tracks ("we record CPR certificates"), NOT
+// any member's evidence. Deliberately minimal: no rank, competency
+// score, mission eligibility, minimum-crew, or readiness semantics —
+// SARbase records facts; it does not judge fitness for a mission.
+// INACTIVE stops new assignment; historical records are untouched.
+model QualificationDefinition {
+  id             String                        @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  status         QualificationDefinitionStatus @default(ACTIVE)
+  createdAt      DateTime                      @default(now())
+  updatedAt      DateTime                      @updatedAt
+
+  organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  memberQualifications MemberQualification[]
+
+  // Definition names are unique within an organization (not globally).
+  @@unique([organizationId, name])
+  // Composite-FK target so MemberQualification can enforce
+  // same-organization rows at the database level.
+  @@unique([id, organizationId])
+  @@index([organizationId])
+}
+
+// One certificate/qualification record linking a Member to a
+// QualificationDefinition — "Nicky received this CPR certificate on X
+// date, issued by Y, expiring Z". This is an APPEND-ONLY history row:
+// renewals create a new record rather than overwriting, and the
+// (memberId, definitionId) pair may therefore repeat. Corrections to
+// clerical detail edit the row in place (durable who/what/when history
+// is deferred to the audit-history work). Dates are date-only
+// (@db.Date) — a certificate's expiry is a calendar date, not an
+// instant, so timezone cannot shift it a day early or late.
+//
+// The denormalized organizationId plus composite FKs make a definition
+// from another organization physically unassignable — the same
+// mechanism as MemberUnit.
+//
+// Issue #16 attachments: certificate files will later hang off this
+// record's id — deliberately no URL/blob column stands in for that.
+model MemberQualification {
+  id             String   @id @default(cuid())
+  organizationId String
+  memberId       String
+  definitionId   String
+  issuedOn       DateTime? @db.Date
+  expiresOn      DateTime? @db.Date
+  issuer         String?
+  reference      String?
+  notes          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  member     Member                  @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  definition QualificationDefinition @relation(fields: [definitionId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@index([memberId])
+  @@index([definitionId])
+  // Expiry-window queries (expiring-soon lists, future reminders).
+  @@index([organizationId, expiresOn])
 }
 
 // Member ↔ Unit assignment. A member may belong to zero, one, or several

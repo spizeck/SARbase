@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { isValidTimeZone } from "@/lib/dates";
+
 /**
  * Input validation for the organization/unit/member admin surface.
  *
@@ -17,7 +19,9 @@ import { z } from "zod";
  */
 
 const emptyToUndefined = (value: unknown) =>
-  typeof value === "string" && value.trim() === "" ? undefined : value;
+  value == null || (typeof value === "string" && value.trim() === "")
+    ? undefined
+    : value;
 
 export const nameSchema = z
   .string()
@@ -51,8 +55,27 @@ export const phoneSchema = z.preprocess(
     .optional(),
 );
 
+/**
+ * IANA timezone identifier, validated against the runtime's Intl data —
+ * no date library needed. Blank/absent input defaults to "UTC".
+ */
+export const timeZoneSchema = z.preprocess(
+  (value) =>
+    value == null || (typeof value === "string" && value.trim() === "")
+      ? "UTC"
+      : value,
+  z
+    .string()
+    .trim()
+    .refine(
+      isValidTimeZone,
+      "Enter a valid IANA timezone (e.g. America/Puerto_Rico).",
+    ),
+);
+
 export const organizationInputSchema = z.object({
   name: nameSchema,
+  timezone: timeZoneSchema,
 });
 export type OrganizationInput = z.infer<typeof organizationInputSchema>;
 
@@ -75,3 +98,66 @@ export const memberUnitsSchema = z.object({
   unitIds: z.array(z.string().min(1)).max(200),
 });
 export type MemberUnitsInput = z.infer<typeof memberUnitsSchema>;
+
+/**
+ * Calendar-date input ("YYYY-MM-DD") → a Date pinned to UTC midnight.
+ * Qualification issue/expiry are calendar dates, not instants — pinning
+ * to UTC keeps "expired on Nov 14" identical in every server timezone.
+ */
+export const dateOnlySchema = z.preprocess(
+  emptyToUndefined,
+  z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD.")
+    .refine((value) => {
+      // JS normalizes impossible dates (2027-02-30 → Mar 2) instead of
+      // producing NaN — reject them by comparing the round-trip.
+      const d = new Date(`${value}T00:00:00.000Z`);
+      return (
+        !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value
+      );
+    }, "Enter a real calendar date.")
+    .transform((value) => new Date(`${value}T00:00:00.000Z`))
+    .optional(),
+);
+
+const optionalText = (max: number) =>
+  z.preprocess(emptyToUndefined, z.string().trim().max(max).optional());
+
+export const qualificationDefinitionInputSchema = z.object({
+  name: nameSchema,
+  description: optionalText(500),
+});
+export type QualificationDefinitionInput = z.infer<
+  typeof qualificationDefinitionInputSchema
+>;
+
+export const qualificationDefinitionStatusSchema = z.enum([
+  "ACTIVE",
+  "INACTIVE",
+]);
+export type QualificationDefinitionStatusInput = z.infer<
+  typeof qualificationDefinitionStatusSchema
+>;
+
+export const memberQualificationInputSchema = z
+  .object({
+    definitionId: z.string().min(1, "Choose a qualification."),
+    issuedOn: dateOnlySchema,
+    expiresOn: dateOnlySchema,
+    issuer: optionalText(120),
+    reference: optionalText(120),
+    notes: optionalText(2000),
+  })
+  .refine(
+    (value) =>
+      !value.issuedOn || !value.expiresOn || value.expiresOn >= value.issuedOn,
+    {
+      message: "Expiry cannot be earlier than the issue date.",
+      path: ["expiresOn"],
+    },
+  );
+export type MemberQualificationInput = z.infer<
+  typeof memberQualificationInputSchema
+>;

@@ -93,6 +93,19 @@ it cannot resolve a context even while a cookie remains valid.
 New roles are added by extending the enum — the `(identity, org, role)`
 relation needs no schema change.
 
+### The Member link is not an access grant
+
+`Member.authIdentityId` answers "which domain person is this login
+linked to?" — `OrganizationAccess` alone answers "which organizations
+may this login currently access?" Everything `/account` derives from a
+linked member (the member record, its organization's name, its
+qualification records, and any future self-service data) goes through
+`linkedMembersWithAccess(ctx)`, which exposes a member only when the
+context also holds an access row for that member's organization —
+MEMBER or ADMIN. Revoking access hides the member data immediately;
+the link row is left untouched (not deleted) so restoring access
+restores visibility.
+
 ## Authorization rules
 
 The critical rule: **an `organizationId`/`memberId`/`unitId` arriving
@@ -113,6 +126,9 @@ Centralized helpers in `src/lib/auth/`:
 - `requireOrgAdminForMember(ctx, memberId)` /
   `requireOrgAdminForUnit(ctx, unitId)` — resolve the record, take its
   **real** `organizationId`, then check the caller's grants
+- `requireOrgAdminForDefinition(ctx, definitionId)` /
+  `requireOrgAdminForQualification(ctx, qualificationId)` — same
+  pattern for the qualification domain (issue #8)
 
 Every `/admin` server action follows this shape. For example
 `updateMemberAction(memberId, …)` resolves the member server-side and

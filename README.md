@@ -197,11 +197,12 @@ Inherited from the foundation baseline, working today:
 
 - Core records: **Organization → Unit → Member**, with an internal admin UI (`/admin`) for editing organizations and managing units and member contact details; member activation/deactivation; unit assignment; and identity linking. Organization creation and first-admin grants are operator-provisioned via `npm run admin:provision` (see `docs/domain-model.md`)
 - **Authentication and organization-scoped authorization**: Firebase Auth → server-verified HTTP-only session cookie; separate `AuthIdentity` login model linked to `Member` records; explicit `OrganizationAccess` grants with `MEMBER`/`ADMIN` roles; centralized server-side authorization helpers; admin bootstrap via `npm run admin:provision` (see `docs/authentication.md`)
-- Sign-in/sign-out UI plus a minimal `/account` page showing identity, linked member records, and granted organization access
+- Sign-in/sign-out UI plus an `/account` page showing identity, linked member records, granted organization access, and the member's own qualification records
+- **Qualifications and certifications**: organization-defined qualification definitions (active/inactive lifecycle), append-only member certificate records with issue/expiry dates, issuer and reference, deterministic expiry-state labels, and upcoming-expiry admin views — factual records only, with same-organization integrity enforced by composite foreign keys (see `docs/domain-model.md`)
 
 ### Not yet implemented
 
-Notifications, attachments, audit history, background jobs, member self-service beyond `/account`, and the remaining SAR domain functionality (qualifications, availability, callouts, incidents, equipment, expenses, search) are **planned, not built**. `/admin` now requires an authenticated identity with an explicit `ADMIN` grant for the target organization.
+Notifications, attachments, audit history, background jobs, member self-service beyond `/account`, and the remaining SAR domain functionality (availability, callouts, incidents, equipment, expenses, search) are **planned, not built**. `/admin` requires an authenticated identity with an explicit `ADMIN` grant for the target organization. Qualification records state certificate facts only — they never conclude SAR operational readiness.
 
 ## Status
 

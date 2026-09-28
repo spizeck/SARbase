@@ -20,13 +20,27 @@ import {
   memberInputSchema,
   memberStatusSchema,
   memberUnitsSchema,
+  qualificationDefinitionInputSchema,
+  qualificationDefinitionStatusSchema,
+  memberQualificationInputSchema,
 } from "@/lib/domain/schemas";
 import {
   requireAuth,
   requireOrgAdmin,
   requireOrgAdminForMember,
   requireOrgAdminForUnit,
+  requireOrgAdminForDefinition,
+  requireOrgAdminForQualification,
 } from "@/lib/auth/authorize";
+import {
+  createQualificationDefinition,
+  updateQualificationDefinition,
+  setQualificationDefinitionStatus,
+  createMemberQualification,
+  updateMemberQualification,
+  CrossOrganizationQualificationError,
+  InactiveQualificationError,
+} from "@/lib/domain/qualification";
 import { AuthenticationError, AuthorizationError } from "@/lib/auth/context";
 import { emailSchema } from "@/lib/domain/schemas";
 import { log } from "@/lib/logging";
@@ -81,6 +95,14 @@ function mapDomainError(error: unknown): ActionState {
   if (error instanceof CrossOrganizationAssignmentError) {
     return { message: error.message };
   }
+  if (error instanceof CrossOrganizationQualificationError) {
+    // Deliberately opaque — a foreign-org definition id must not leak
+    // that the definition exists.
+    return { message: "Not found." };
+  }
+  if (error instanceof InactiveQualificationError) {
+    return { message: error.message };
+  }
   throw error;
 }
 
@@ -103,6 +125,7 @@ export async function updateOrganizationAction(
 
   const parsed = organizationInputSchema.safeParse({
     name: formData.get("name"),
+    timezone: formData.get("timezone"),
   });
   if (!parsed.success) return zodErrors(parsed.error);
 
@@ -407,4 +430,162 @@ export async function unlinkIdentityFromMemberAction(
     organizationId: member.organizationId,
   });
   revalidatePath(`/admin/members/${memberId}`);
+}
+
+/* ------------------------------------------------------------------ */
+/* Qualifications — same model: ids are untrusted selectors; the real  */
+/* organization is resolved server-side from the target record.        */
+/* ------------------------------------------------------------------ */
+
+export async function createQualificationDefinitionAction(
+  organizationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = qualificationDefinitionInputSchema.safeParse({
+    name: formData.get("name"),
+    description: formData.get("description"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await createQualificationDefinition(organizationId, parsed.data);
+  } catch (error) {
+    const mapped = mapDomainError(error);
+    return mapped.message?.includes("already exists")
+      ? {
+          fieldErrors: {
+            name: [
+              "A qualification with this name already exists in this organization.",
+            ],
+          },
+        }
+      : mapped;
+  }
+  revalidatePath(`/admin/organizations/${organizationId}`);
+  return {};
+}
+
+export async function updateQualificationDefinitionAction(
+  definitionId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let definition;
+  try {
+    definition = await requireOrgAdminForDefinition(ctx, definitionId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = qualificationDefinitionInputSchema.safeParse({
+    name: formData.get("name"),
+    description: formData.get("description"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await updateQualificationDefinition(definitionId, parsed.data);
+  } catch (error) {
+    const mapped = mapDomainError(error);
+    return mapped.message?.includes("already exists")
+      ? {
+          fieldErrors: {
+            name: [
+              "A qualification with this name already exists in this organization.",
+            ],
+          },
+        }
+      : mapped;
+  }
+  revalidatePath(`/admin/organizations/${definition.organizationId}`);
+  return {};
+}
+
+export async function setQualificationDefinitionStatusAction(
+  definitionId: string,
+  status: string,
+): Promise<void> {
+  const ctx = await requireAuth();
+  // Propagates the opaque AuthorizationError — a void action has no
+  // error state to return.
+  const definition = await requireOrgAdminForDefinition(ctx, definitionId);
+
+  const parsed = qualificationDefinitionStatusSchema.safeParse(status);
+  if (!parsed.success) return;
+
+  await setQualificationDefinitionStatus(definitionId, parsed.data);
+  revalidatePath(`/admin/organizations/${definition.organizationId}`);
+}
+
+export async function createMemberQualificationAction(
+  memberId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    await requireOrgAdminForMember(ctx, memberId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = memberQualificationInputSchema.safeParse({
+    definitionId: formData.get("definitionId"),
+    issuedOn: formData.get("issuedOn"),
+    expiresOn: formData.get("expiresOn"),
+    issuer: formData.get("issuer"),
+    reference: formData.get("reference"),
+    notes: formData.get("notes"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await createMemberQualification(memberId, parsed.data);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/members/${memberId}`);
+  return {};
+}
+
+export async function updateMemberQualificationAction(
+  qualificationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let record;
+  try {
+    record = await requireOrgAdminForQualification(ctx, qualificationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = memberQualificationInputSchema
+    .omit({ definitionId: true })
+    .safeParse({
+      issuedOn: formData.get("issuedOn"),
+      expiresOn: formData.get("expiresOn"),
+      issuer: formData.get("issuer"),
+      reference: formData.get("reference"),
+      notes: formData.get("notes"),
+    });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await updateMemberQualification(qualificationId, parsed.data);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/members/${record.memberId}`);
+  return {};
 }

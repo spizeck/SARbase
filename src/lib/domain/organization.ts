@@ -26,9 +26,12 @@ export async function getOrganization(id: string) {
   });
 }
 
-export async function createOrganization(input: OrganizationInput) {
+export async function createOrganization(input: {
+  name: string;
+  timezone?: string;
+}) {
   const organization = await prisma.organization.create({
-    data: { name: input.name },
+    data: { name: input.name, timezone: input.timezone ?? "UTC" },
   });
   log({
     event: "organization.created",
@@ -42,7 +45,7 @@ export async function createOrganization(input: OrganizationInput) {
 export async function updateOrganization(id: string, input: OrganizationInput) {
   const organization = await prisma.organization.update({
     where: { id },
-    data: { name: input.name },
+    data: { name: input.name, timezone: input.timezone },
   });
   log({
     event: "organization.updated",

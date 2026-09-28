@@ -95,6 +95,73 @@ Join rows cascade (`onDelete: Cascade`) when a member or unit row is
 removed at the database level, keeping referential integrity. The
 application surface itself never deletes members — see lifecycle below.
 
+## Qualifications and certifications
+
+Issue #8 adds the first member-record domain: administrative
+qualification records. Two distinct concepts — organizational policy
+vs. member evidence — are deliberately separate.
+
+### `QualificationDefinition`
+
+An organization's own definition of a qualification it tracks ("we
+record first-aid certificates"). Fields: `organizationId`, `name`
+(unique per organization), optional `description`, `status`
+(`ACTIVE`/`INACTIVE`), timestamps.
+
+- No operational fields exist — no rank, score, minimum crew, mission
+  eligibility, or readiness rule. The organization defines what it
+  tracks; SARbase does not interpret it.
+- **Lifecycle:** `INACTIVE` means the org no longer assigns new records
+  under this definition. It does not invalidate, hide, or delete
+  existing member records. There is no delete workflow — the `Restrict`
+  FKs refuse to destroy history.
+- No definitions are seeded or hardcoded; each organization names its
+  own.
+
+### `MemberQualification`
+
+One factual evidence row linking a `Member` to a
+`QualificationDefinition` — "this member received this certificate,
+issued by X on date D, expiring E". Fields: `issuedOn` and `expiresOn`
+(optional date-only `@db.Date`), `issuer`, `reference` (certificate
+number), `notes`, timestamps.
+
+- **History is append-only.** A renewal is a NEW record; the prior
+  certificate row is preserved. `(memberId, definitionId)` may repeat
+  with no uniqueness constraint. Admins may correct clerical details in
+  place — durable who/what/when correction history is deferred to the
+  audit-history work.
+- **"Latest" is deterministic, not a flag:** records sort by
+  `issuedOn` descending (undated last), then `createdAt` descending.
+  History is always listed; nothing supersedes or hides older rows.
+- **Dates are calendar dates.** `@db.Date` stores date-only values —
+  an expiry date is the last day the certificate covers; it is
+  `expired` the following day. Current-date comparisons use the owning
+  organization's IANA `Organization.timezone` ("America/Puerto_Rico",
+  "Pacific/Auckland", …), computed via `calendarDateInZone` in
+  `src/lib/dates.ts` — never UTC and never the server's zone.
+- **Expiry state is derived**, never stored: `no_expiry` / `expired` /
+  `expiring_soon` / `current` from `expiresOn` vs. a supplied date.
+  "Expiring soon" windows (30/60/90 days in the UI) are a presentation
+  filter, not an organizational renewal policy.
+- **Same-organization integrity** uses the issue #5 mechanism:
+  denormalized `organizationId` plus composite FKs to
+  `Member(id, organizationId)` and
+  `QualificationDefinition(id, organizationId)` — PostgreSQL rejects a
+  row pairing parents from different organizations.
+- **Deletion is conservative:** `Restrict` on member, definition, and
+  organization. Member deactivation preserves all records.
+- **Attachments deferred:** issue #16 will hang certificate files off
+  this record's id; no URL/blob column stands in for that.
+- **Reminders deferred:** `listExpiringQualifications` is the
+  deterministic org-scoped query the reminder work (issues #11/#13)
+  will consume; nothing sends notifications.
+
+**Product boundary:** these are administrative records only. Nothing in
+this model or UI concludes operational readiness, competence, mission
+eligibility, or crew sufficiency — labels state date facts ("Expired
+2027-11-01", "Expires in 28 days"), never "qualified".
+
 ## Lifecycle and history
 
 - Members are **deactivated/reactivated**, never deleted through the
@@ -142,9 +209,18 @@ centralized helpers in `src/lib/auth/authorize.ts`.
 Server-side Zod schemas (`src/lib/domain/schemas.ts`):
 
 - `name` (organization, unit): required, trimmed, 1–120 chars.
+- `timezone` (organization): IANA identifier validated via `Intl`;
+  blank → `UTC` (the migration default for pre-existing orgs — set the
+  real zone in organization settings).
 - `displayName` (member): required, trimmed, 1–120 chars.
 - `email`: optional; blank → `null`; trimmed, lowercased, format-checked.
 - `phone`: optional; blank → `null`; permissive `+ digits, spaces,
 ( ) . -` pattern.
 - `status`: `ACTIVE` | `INACTIVE`.
 - Unit assignments: array of unit ids, all verified same-organization.
+- Qualification definition: `name` required (1–120, trimmed),
+  `description` optional ≤500.
+- Member qualification: `definitionId` required; `issuedOn`/`expiresOn`
+  optional `YYYY-MM-DD` calendar dates (impossible dates rejected; expiry
+  may not precede issue when both exist); `issuer`/`reference` optional
+  ≤120; `notes` optional ≤2000. Blank fields are absent, not errors.

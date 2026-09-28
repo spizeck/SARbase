@@ -142,3 +142,53 @@ export async function requireOrgAdminForUnit(ctx: AuthContext, unitId: string) {
   }
   return unit;
 }
+
+/**
+ * QualificationDefinition/MemberQualification lookups — same rule: the
+ * caller-supplied id selects the record; the record's own
+ * organizationId (denormalized + composite-FK-guaranteed on
+ * MemberQualification) decides which grant must exist.
+ */
+/**
+ * The linked member records this identity may actually see. A
+ * Member.authIdentityId link answers "which person is this login?" —
+ * it is NOT an access grant. A member record (and everything derived
+ * from it — qualifications, future self-service data) is visible only
+ * when the caller also holds a current OrganizationAccess row for the
+ * member's organization. Stale links are left in place — access can be
+ * re-granted — but expose nothing while it is absent.
+ */
+export function linkedMembersWithAccess(ctx: AuthContext) {
+  const orgIds = new Set(ctx.access.map((a) => a.organizationId));
+  return ctx.members.filter((m) => orgIds.has(m.organizationId));
+}
+
+export async function requireOrgAdminForDefinition(
+  ctx: AuthContext,
+  definitionId: string,
+) {
+  const definition = await prisma.qualificationDefinition.findUnique({
+    where: { id: definitionId },
+  });
+  if (!definition || !isOrgAdmin(ctx, definition.organizationId)) {
+    logDenial("authz.definition_scope_denied", ctx, { entityId: definitionId });
+    throw new AuthorizationError();
+  }
+  return definition;
+}
+
+export async function requireOrgAdminForQualification(
+  ctx: AuthContext,
+  qualificationId: string,
+) {
+  const record = await prisma.memberQualification.findUnique({
+    where: { id: qualificationId },
+  });
+  if (!record || !isOrgAdmin(ctx, record.organizationId)) {
+    logDenial("authz.qualification_scope_denied", ctx, {
+      entityId: qualificationId,
+    });
+    throw new AuthorizationError();
+  }
+  return record;
+}
