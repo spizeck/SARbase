@@ -52,6 +52,7 @@ vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
 import { prisma } from "@/lib/prisma";
 import { getAuthContext } from "@/lib/auth/context";
+import { linkedMembersWithAccess } from "@/lib/auth/authorize";
 import {
   createMemberAction,
   createMemberQualificationAction,
@@ -883,6 +884,134 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       await expect(
         updateMemberQualificationAction(recordA.id, {}, form({})),
       ).rejects.toThrow("NEXT_REDIRECT /login");
+    });
+  });
+
+  describe("account access boundary", () => {
+    // The /account page must expose linked member records (and their
+    // qualification records) ONLY while an OrganizationAccess row exists
+    // for the member's organization. Member.authIdentityId alone grants
+    // nothing; stale links are hidden, not deleted.
+    it("member visibility follows OrganizationAccess, not the link", async () => {
+      const uid = uniq("uid-linked-a");
+      const identity = await prisma.authIdentity.create({
+        data: { provider: "firebase", providerUid: uid },
+      });
+      const member = await prisma.member.create({
+        data: {
+          organizationId: orgA.id,
+          displayName: uniq("linked-a"),
+          authIdentityId: identity.id,
+        },
+      });
+      const def = await prisma.qualificationDefinition.create({
+        data: { organizationId: orgA.id, name: uniq("def-linked") },
+      });
+      const record = await prisma.memberQualification.create({
+        data: {
+          organizationId: orgA.id,
+          memberId: member.id,
+          definitionId: def.id,
+        },
+      });
+
+      signInAs(uid);
+
+      // Linked but NO access row → the member and its records are hidden.
+      let ctx = await getAuthContext();
+      expect(ctx?.members.map((m) => m.id)).toContain(member.id);
+      expect(linkedMembersWithAccess(ctx!)).toEqual([]);
+
+      // Grant MEMBER access → member visible, qualifications resolvable.
+      const grant = await prisma.organizationAccess.create({
+        data: {
+          authIdentityId: identity.id,
+          organizationId: orgA.id,
+          role: "MEMBER",
+        },
+      });
+      ctx = await getAuthContext();
+      expect(linkedMembersWithAccess(ctx!).map((m) => m.id)).toEqual([
+        member.id,
+      ]);
+      const quals = await prisma.memberQualification.findMany({
+        where: { memberId: member.id },
+      });
+      expect(quals.map((q) => q.id)).toEqual([record.id]);
+
+      // Revoke access → hidden again; the Member link itself is untouched.
+      await prisma.organizationAccess.delete({ where: { id: grant.id } });
+      ctx = await getAuthContext();
+      expect(linkedMembersWithAccess(ctx!)).toEqual([]);
+      const unlinked = await prisma.member.findUnique({
+        where: { id: member.id },
+      });
+      expect(unlinked?.authIdentityId).toBe(identity.id);
+
+      // Restore access → visible again.
+      await prisma.organizationAccess.create({
+        data: {
+          authIdentityId: identity.id,
+          organizationId: orgA.id,
+          role: "MEMBER",
+        },
+      });
+      ctx = await getAuthContext();
+      expect(linkedMembersWithAccess(ctx!).map((m) => m.id)).toEqual([
+        member.id,
+      ]);
+    });
+
+    it("per-organization visibility and role-independent rule", async () => {
+      const uid = uniq("uid-linked-multi");
+      const identity = await prisma.authIdentity.create({
+        data: { provider: "firebase", providerUid: uid },
+      });
+      const memberInA = await prisma.member.create({
+        data: {
+          organizationId: orgA.id,
+          displayName: uniq("multi-a"),
+          authIdentityId: identity.id,
+        },
+      });
+      const memberInB = await prisma.member.create({
+        data: {
+          organizationId: orgB.id,
+          displayName: uniq("multi-b"),
+          authIdentityId: identity.id,
+        },
+      });
+
+      signInAs(uid);
+
+      // Access only to B → only B's member record is visible.
+      await prisma.organizationAccess.create({
+        data: {
+          authIdentityId: identity.id,
+          organizationId: orgB.id,
+          role: "MEMBER",
+        },
+      });
+      let ctx = await getAuthContext();
+      expect(linkedMembersWithAccess(ctx!).map((m) => m.id)).toEqual([
+        memberInB.id,
+      ]);
+      expect(memberInA.id).toBeTruthy();
+
+      // Upgrade A to ADMIN grant → same rule: A becomes visible too.
+      await prisma.organizationAccess.create({
+        data: {
+          authIdentityId: identity.id,
+          organizationId: orgA.id,
+          role: "ADMIN",
+        },
+      });
+      ctx = await getAuthContext();
+      expect(
+        linkedMembersWithAccess(ctx!)
+          .map((m) => m.id)
+          .sort(),
+      ).toEqual([memberInA.id, memberInB.id].sort());
     });
   });
 });

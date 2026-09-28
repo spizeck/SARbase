@@ -7,8 +7,8 @@ import {
   listQualificationDefinitions,
   listExpiringQualifications,
   expiryLabel,
-  todayUtc,
 } from "@/lib/domain/qualification";
+import { calendarDateInZone } from "@/lib/dates";
 import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
 
 import {
@@ -62,7 +62,8 @@ export default async function OrganizationPage({
   const expiryWindow = [30, 60, 90].includes(Number(expiring))
     ? Number(expiring)
     : 30;
-  const today = todayUtc();
+  // "Today" is the organization's own local calendar date.
+  const today = calendarDateInZone(organization.timezone);
   const expiringRecords = await listExpiringQualifications(orgId, {
     withinDays: expiryWindow,
     today,
@@ -90,12 +91,13 @@ export default async function OrganizationPage({
         </h1>
         <div className="mt-4 max-w-sm rounded-md border border-neutral-200 p-4">
           <h2 className="text-sm font-medium text-neutral-800">
-            Rename organization
+            Organization settings
           </h2>
           <div className="mt-2">
             <OrganizationForm
               action={updateOrganizationAction.bind(null, orgId)}
               defaultName={organization.name}
+              defaultTimeZone={organization.timezone}
               submitLabel="Save"
             />
           </div>

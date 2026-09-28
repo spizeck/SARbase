@@ -125,6 +125,7 @@ export async function updateOrganizationAction(
 
   const parsed = organizationInputSchema.safeParse({
     name: formData.get("name"),
+    timezone: formData.get("timezone"),
   });
   if (!parsed.success) return zodErrors(parsed.error);
 

@@ -52,7 +52,7 @@ export async function getMember(id: string) {
   return prisma.member.findUnique({
     where: { id },
     include: {
-      organization: { select: { id: true, name: true } },
+      organization: { select: { id: true, name: true, timezone: true } },
       memberUnits: {
         include: { unit: { select: { id: true, name: true } } },
       },

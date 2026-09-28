@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { isValidTimeZone } from "@/lib/dates";
+
 /**
  * Input validation for the organization/unit/member admin surface.
  *
@@ -53,8 +55,27 @@ export const phoneSchema = z.preprocess(
     .optional(),
 );
 
+/**
+ * IANA timezone identifier, validated against the runtime's Intl data —
+ * no date library needed. Blank/absent input defaults to "UTC".
+ */
+export const timeZoneSchema = z.preprocess(
+  (value) =>
+    value == null || (typeof value === "string" && value.trim() === "")
+      ? "UTC"
+      : value,
+  z
+    .string()
+    .trim()
+    .refine(
+      isValidTimeZone,
+      "Enter a valid IANA timezone (e.g. America/Puerto_Rico).",
+    ),
+);
+
 export const organizationInputSchema = z.object({
   name: nameSchema,
+  timezone: timeZoneSchema,
 });
 export type OrganizationInput = z.infer<typeof organizationInputSchema>;
 

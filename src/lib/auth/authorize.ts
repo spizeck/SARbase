@@ -149,6 +149,20 @@ export async function requireOrgAdminForUnit(ctx: AuthContext, unitId: string) {
  * organizationId (denormalized + composite-FK-guaranteed on
  * MemberQualification) decides which grant must exist.
  */
+/**
+ * The linked member records this identity may actually see. A
+ * Member.authIdentityId link answers "which person is this login?" —
+ * it is NOT an access grant. A member record (and everything derived
+ * from it — qualifications, future self-service data) is visible only
+ * when the caller also holds a current OrganizationAccess row for the
+ * member's organization. Stale links are left in place — access can be
+ * re-granted — but expose nothing while it is absent.
+ */
+export function linkedMembersWithAccess(ctx: AuthContext) {
+  const orgIds = new Set(ctx.access.map((a) => a.organizationId));
+  return ctx.members.filter((m) => orgIds.has(m.organizationId));
+}
+
 export async function requireOrgAdminForDefinition(
   ctx: AuthContext,
   definitionId: string,

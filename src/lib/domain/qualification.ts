@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import { log } from "@/lib/logging";
+import { calendarDateInZone, daysBetween, formatDateOnly } from "@/lib/dates";
 
 import type {
   MemberQualificationInput,
@@ -47,30 +48,17 @@ export class InactiveQualificationError extends Error {
 }
 
 /* ------------------------------------------------------------------ */
-/* Date/expiry helpers (pure, deterministic, timezone-safe)            */
+/* Date/expiry helpers (pure, deterministic)                            */
 /* ------------------------------------------------------------------ */
+/*                                                                    */
+/* Calendar-date primitives (calendarDateInZone, todayUtc, daysBetween, */
+/* formatDateOnly) live in @/lib/dates. "Today" for expiry purposes is  */
+/* always the owning ORGANIZATION's local calendar date — never UTC,    */
+/* never the server's zone.                                           */
+
+export { daysBetween, formatDateOnly, todayUtc } from "@/lib/dates";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-/** Today's calendar date pinned to UTC midnight. */
-export function todayUtc(now: Date = new Date()): Date {
-  return new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-  );
-}
-
-/** Whole days from `from` to `to`, both treated as calendar dates. */
-export function daysBetween(from: Date, to: Date): number {
-  const utc = (d: Date) =>
-    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-  return Math.round((utc(to) - utc(from)) / DAY_MS);
-}
-
-/** "YYYY-MM-DD" — the canonical date-only rendering of a stored date. */
-export function formatDateOnly(d: Date | null | undefined): string | null {
-  if (!d) return null;
-  return d.toISOString().slice(0, 10);
-}
 
 export type ExpiryState = "no_expiry" | "expired" | "expiring_soon" | "current";
 
@@ -93,7 +81,7 @@ export interface ExpiryInfo {
  */
 export function expiryInfo(
   expiresOn: Date | null,
-  today: Date = todayUtc(),
+  today: Date,
   windowDays = 30,
 ): ExpiryInfo {
   if (!expiresOn) return { state: "no_expiry", daysUntil: null };
@@ -109,7 +97,7 @@ export function expiryInfo(
  */
 export function expiryLabel(
   expiresOn: Date | null,
-  today: Date = todayUtc(),
+  today: Date,
   windowDays = 30,
 ): string {
   const { state, daysUntil } = expiryInfo(expiresOn, today, windowDays);
@@ -242,15 +230,24 @@ export function getMemberQualification(id: string) {
 }
 
 /**
- * Records expiring within `withinDays` of `today` (or already expired
- * when includeExpired). Org-scoped, deterministic — also the reusable
- * query the reminder work (issue #11) will build on.
+ * Records expiring within `withinDays` of today (or already expired
+ * when includeExpired). "Today" is the organization's OWN local
+ * calendar date (Organization.timezone) unless overridden — the same
+ * semantics shown in the UI, and the reusable query the reminder work
+ * (issue #11) will build on.
  */
-export function listExpiringQualifications(
+export async function listExpiringQualifications(
   organizationId: string,
   options: { withinDays?: number; today?: Date; includeExpired?: boolean } = {},
 ) {
-  const today = options.today ?? todayUtc();
+  let today = options.today;
+  if (!today) {
+    const org = await prisma.organization.findUniqueOrThrow({
+      where: { id: organizationId },
+      select: { timezone: true },
+    });
+    today = calendarDateInZone(org.timezone);
+  }
   const horizon = new Date(
     today.getTime() + (options.withinDays ?? 30) * DAY_MS,
   );

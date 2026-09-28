@@ -7,9 +7,8 @@ import {
   listMemberQualifications,
   listQualificationDefinitions,
   expiryLabel,
-  formatDateOnly,
-  todayUtc,
 } from "@/lib/domain/qualification";
+import { calendarDateInZone, formatDateOnly } from "@/lib/dates";
 import { requireAuth, isOrgAdmin } from "@/lib/auth/authorize";
 
 import {
@@ -49,7 +48,7 @@ export default async function MemberPage({
   const assignedUnitIds = member.memberUnits.map((mu) => mu.unitId);
   const isActive = member.status === "ACTIVE";
 
-  const today = todayUtc();
+  const today = calendarDateInZone(member.organization.timezone);
   const qualifications = await listMemberQualifications(member.id);
   const activeDefinitions = await listQualificationDefinitions(orgId);
 

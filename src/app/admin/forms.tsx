@@ -33,10 +33,12 @@ type BoundAction = (
 export function OrganizationForm({
   action,
   defaultName,
+  defaultTimeZone,
   submitLabel,
 }: {
   action: BoundAction;
   defaultName?: string;
+  defaultTimeZone?: string;
   submitLabel: string;
 }) {
   const [state, formAction, pending] = useActionState(action, {});
@@ -58,6 +60,31 @@ export function OrganizationForm({
           className={inputClass}
         />
         <FieldError id="org-name-error" errors={state.fieldErrors?.name} />
+      </div>
+      <div>
+        <label htmlFor="org-timezone" className={labelClass}>
+          Timezone
+        </label>
+        <input
+          id="org-timezone"
+          name="timezone"
+          type="text"
+          required
+          maxLength={64}
+          defaultValue={defaultTimeZone ?? "UTC"}
+          placeholder="America/Puerto_Rico"
+          aria-invalid={Boolean(state.fieldErrors?.timezone)}
+          aria-describedby="org-timezone-error org-timezone-hint"
+          className={inputClass}
+        />
+        <p id="org-timezone-hint" className="mt-1 text-xs text-neutral-500">
+          IANA timezone name (e.g. America/Puerto_Rico, Europe/Amsterdam).
+          Qualification expiry dates are evaluated against this zone.
+        </p>
+        <FieldError
+          id="org-timezone-error"
+          errors={state.fieldErrors?.timezone}
+        />
       </div>
       {state.message && (
         <p className={errorClass} role="alert">

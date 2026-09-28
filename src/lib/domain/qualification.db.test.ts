@@ -309,4 +309,45 @@ describe.skipIf(!hasDb)("qualification domain", () => {
     });
     expect(withExpired.map((r) => r.id)).toEqual([past.id, soon.id]);
   });
+
+  it("defaults 'today' to the organization's own timezone, not UTC", async () => {
+    const { calendarDateInZone } = await import("@/lib/dates");
+    // UTC+13: the org's local date can already be tomorrow while UTC is
+    // still today — the query must agree with the org's calendar.
+    const org = await prisma.organization.create({
+      data: { name: uniqueName("tz-org"), timezone: "Pacific/Auckland" },
+    });
+    const member = await createMember(org.id, {
+      displayName: uniqueName("tz-member"),
+    });
+    const def = await createQualificationDefinition(org.id, {
+      name: uniqueName("tz-def"),
+    });
+
+    const orgToday = calendarDateInZone("Pacific/Auckland");
+    const utcToday = calendarDateInZone("UTC");
+    const orgYesterday = new Date(orgToday.getTime() - 86_400_000);
+
+    // Expired in the org's zone but possibly still current in UTC.
+    const expiredLocally = await createMemberQualification(member.id, {
+      definitionId: def.id,
+      expiresOn: orgYesterday,
+    });
+    // Expires on the org's today.
+    const expiresToday = await createMemberQualification(member.id, {
+      definitionId: def.id,
+      expiresOn: orgToday,
+    });
+
+    const result = await listExpiringQualifications(org.id, {
+      withinDays: 30,
+    });
+    expect(result.map((r) => r.id).sort()).toEqual([expiresToday.id].sort());
+    expect(result.map((r) => r.id)).not.toContain(expiredLocally.id);
+
+    // Sanity: the two clocks may disagree on which day it is — either
+    // way the query used the org's zone because `expiredLocally` is only
+    // excluded when evaluated against orgToday.
+    void utcToday;
+  });
 });

@@ -1,14 +1,13 @@
 import Link from "next/link";
 
 import { prisma } from "@/lib/prisma";
-import { requireAuth } from "@/lib/auth/authorize";
+import { requireAuth, linkedMembersWithAccess } from "@/lib/auth/authorize";
 import { signOutAction } from "@/app/login/actions";
 import {
   listMemberQualifications,
   expiryLabel,
-  formatDateOnly,
-  todayUtc,
 } from "@/lib/domain/qualification";
+import { calendarDateInZone, formatDateOnly } from "@/lib/dates";
 
 export const metadata = { title: "Account" };
 
@@ -21,10 +20,14 @@ export const dynamic = "force-dynamic";
 export default async function AccountPage() {
   const ctx = await requireAuth();
 
+  // A Member link alone grants nothing: member-derived data is exposed
+  // only where the identity also holds a current OrganizationAccess row.
+  const linkedMembers = linkedMembersWithAccess(ctx);
+
   const orgIds = [
     ...new Set([
       ...ctx.access.map((a) => a.organizationId),
-      ...ctx.members.map((m) => m.organizationId),
+      ...linkedMembers.map((m) => m.organizationId),
     ]),
   ];
   const orgs = orgIds.length
@@ -32,14 +35,16 @@ export default async function AccountPage() {
     : [];
   const orgName = (id: string) =>
     orgs.find((o) => o.id === id)?.name ?? "Unknown organization";
+  // "Today" for expiry labels is the organization's own calendar date.
+  const orgToday = (id: string) =>
+    calendarDateInZone(orgs.find((o) => o.id === id)?.timezone ?? "UTC");
 
   const adminOrgs = ctx.access.filter((a) => a.role === "ADMIN");
 
   // Qualification records for the caller's own linked member records only —
-  // member ids come from ctx.members (server-resolved), never from the client.
-  const today = todayUtc();
+  // member ids come from the server-resolved context, never the client.
   const ownQualifications = await Promise.all(
-    ctx.members.map(async (member) => ({
+    linkedMembers.map(async (member) => ({
       member,
       records: await listMemberQualifications(member.id),
     })),
@@ -75,14 +80,14 @@ export default async function AccountPage() {
         <h2 id="memberships-heading" className="text-lg font-medium">
           Member records
         </h2>
-        {ctx.members.length === 0 ? (
+        {linkedMembers.length === 0 ? (
           <p className="mt-2 text-sm text-neutral-600">
-            This sign-in is not linked to a member record yet. An organization
-            administrator can link it.
+            This sign-in is not linked to an accessible member record yet. An
+            organization administrator can link it.
           </p>
         ) : (
           <ul className="mt-2 divide-y divide-neutral-200 rounded-md border border-neutral-200">
-            {ctx.members.map((member) => (
+            {linkedMembers.map((member) => (
               <li key={member.id} className="px-4 py-3 text-sm">
                 <span className="font-medium text-neutral-900">
                   {member.displayName}
@@ -117,7 +122,10 @@ export default async function AccountPage() {
                           {record.definition.name}
                         </span>
                         <span className="text-xs text-neutral-600">
-                          {expiryLabel(record.expiresOn, today)}
+                          {expiryLabel(
+                            record.expiresOn,
+                            orgToday(member.organizationId),
+                          )}
                         </span>
                       </div>
                       <p className="mt-0.5 text-xs text-neutral-500">

@@ -134,9 +134,12 @@ number), `notes`, timestamps.
 - **"Latest" is deterministic, not a flag:** records sort by
   `issuedOn` descending (undated last), then `createdAt` descending.
   History is always listed; nothing supersedes or hides older rows.
-- **Dates are calendar dates.** `@db.Date` (UTC-midnight `Date`s) makes
-  "expires Nov 14" identical in every timezone — an expiry date is the
-  last day the certificate covers; it is `expired` the following day.
+- **Dates are calendar dates.** `@db.Date` stores date-only values —
+  an expiry date is the last day the certificate covers; it is
+  `expired` the following day. Current-date comparisons use the owning
+  organization's IANA `Organization.timezone` ("America/Puerto_Rico",
+  "Pacific/Auckland", …), computed via `calendarDateInZone` in
+  `src/lib/dates.ts` — never UTC and never the server's zone.
 - **Expiry state is derived**, never stored: `no_expiry` / `expired` /
   `expiring_soon` / `current` from `expiresOn` vs. a supplied date.
   "Expiring soon" windows (30/60/90 days in the UI) are a presentation
@@ -206,6 +209,9 @@ centralized helpers in `src/lib/auth/authorize.ts`.
 Server-side Zod schemas (`src/lib/domain/schemas.ts`):
 
 - `name` (organization, unit): required, trimmed, 1–120 chars.
+- `timezone` (organization): IANA identifier validated via `Intl`;
+  blank → `UTC` (the migration default for pre-existing orgs — set the
+  real zone in organization settings).
 - `displayName` (member): required, trimmed, 1–120 chars.
 - `email`: optional; blank → `null`; trimmed, lowercased, format-checked.
 - `phone`: optional; blank → `null`; permissive `+ digits, spaces,

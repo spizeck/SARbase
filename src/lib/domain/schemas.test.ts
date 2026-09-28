@@ -155,3 +155,30 @@ describe("memberQualificationInputSchema", () => {
     ).toBe(false);
   });
 });
+
+describe("organizationInputSchema timezone", () => {
+  it("defaults blank/absent timezone to UTC", () => {
+    expect(
+      organizationInputSchema.parse({ name: "Org", timezone: "" }).timezone,
+    ).toBe("UTC");
+    expect(organizationInputSchema.parse({ name: "Org" }).timezone).toBe("UTC");
+  });
+
+  it("accepts a real IANA timezone", () => {
+    expect(
+      organizationInputSchema.parse({
+        name: "Org",
+        timezone: " America/Puerto_Rico ",
+      }).timezone,
+    ).toBe("America/Puerto_Rico");
+  });
+
+  it("rejects an unknown timezone identifier", () => {
+    expect(
+      organizationInputSchema.safeParse({
+        name: "Org",
+        timezone: "Not/AZone",
+      }).success,
+    ).toBe(false);
+  });
+});
