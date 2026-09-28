@@ -211,3 +211,48 @@ export async function requireOrgAdminForTrainingEvent(
   }
   return event;
 }
+
+/**
+ * Issue #10 asset/inventory/location lookups — same rule: the
+ * caller-supplied id selects the record; the record's own
+ * organizationId decides which grant must exist.
+ */
+export async function requireOrgAdminForStorageLocation(
+  ctx: AuthContext,
+  locationId: string,
+) {
+  const location = await prisma.storageLocation.findUnique({
+    where: { id: locationId },
+  });
+  if (!location || !isOrgAdmin(ctx, location.organizationId)) {
+    logDenial("authz.location_scope_denied", ctx, { entityId: locationId });
+    throw new AuthorizationError();
+  }
+  return location;
+}
+
+export async function requireOrgAdminForAsset(
+  ctx: AuthContext,
+  assetId: string,
+) {
+  const asset = await prisma.asset.findUnique({ where: { id: assetId } });
+  if (!asset || !isOrgAdmin(ctx, asset.organizationId)) {
+    logDenial("authz.asset_scope_denied", ctx, { entityId: assetId });
+    throw new AuthorizationError();
+  }
+  return asset;
+}
+
+export async function requireOrgAdminForInventoryItem(
+  ctx: AuthContext,
+  itemId: string,
+) {
+  const item = await prisma.inventoryItem.findUnique({
+    where: { id: itemId },
+  });
+  if (!item || !isOrgAdmin(ctx, item.organizationId)) {
+    logDenial("authz.item_scope_denied", ctx, { entityId: itemId });
+    throw new AuthorizationError();
+  }
+  return item;
+}

@@ -26,6 +26,9 @@ import {
   trainingEventInputSchema,
   trainingEventStatusSchema,
   trainingAttendanceSchema,
+  storageLocationInputSchema,
+  assetInputSchema,
+  inventoryItemInputSchema,
 } from "@/lib/domain/schemas";
 import {
   requireAuth,
@@ -35,6 +38,9 @@ import {
   requireOrgAdminForDefinition,
   requireOrgAdminForQualification,
   requireOrgAdminForTrainingEvent,
+  requireOrgAdminForStorageLocation,
+  requireOrgAdminForAsset,
+  requireOrgAdminForInventoryItem,
 } from "@/lib/auth/authorize";
 import {
   createTrainingEvent,
@@ -44,6 +50,16 @@ import {
   CrossOrganizationTrainingError,
   CancelledTrainingError,
 } from "@/lib/domain/training";
+import {
+  createStorageLocation,
+  updateStorageLocation,
+  createAsset,
+  updateAsset,
+  createInventoryItem,
+  updateInventoryItem,
+  CrossOrganizationAssetError,
+  AssetHierarchyError,
+} from "@/lib/domain/assets";
 import {
   createQualificationDefinition,
   updateQualificationDefinition,
@@ -120,6 +136,16 @@ function mapDomainError(error: unknown): ActionState {
   }
   if (error instanceof CrossOrganizationTrainingError) {
     // Opaque — foreign-org unit/member ids must not leak existence.
+    return { message: "Not found." };
+  }
+  if (error instanceof AssetHierarchyError) {
+    // Hierarchy violations (cycles, self-parenting, dual container) are
+    // configuration errors inside the caller's own organization — the
+    // message is safe to surface.
+    return { message: error.message };
+  }
+  if (error instanceof CrossOrganizationAssetError) {
+    // Opaque — foreign-org location/asset/unit ids must not leak.
     return { message: "Not found." };
   }
   throw error;
@@ -725,5 +751,234 @@ export async function setTrainingAttendanceAction(
     return mapDomainError(error);
   }
   revalidatePath(`/admin/training/${eventId}`);
+  return {};
+}
+
+/* ------------------------------------------------------------------ */
+/* Assets, inventory, storage (issue #10) — ids are untrusted          */
+/* selectors; the real organization is resolved server-side from the   */
+/* target record. ADMIN-only: no member self-service exists here.      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A location's single container arrives as one select value:
+ * "" (top level) | "location:<id>" | "asset:<id>" — the model's
+ * XOR is physically unrepresentable in the form.
+ */
+function parseContainerRef(raw: FormDataEntryValue | null) {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  if (value.startsWith("location:")) {
+    return { parentLocationId: value.slice(9) };
+  }
+  if (value.startsWith("asset:")) {
+    return { containingAssetId: value.slice(6) };
+  }
+  return {};
+}
+
+function parseLocationForm(formData: FormData) {
+  return storageLocationInputSchema.safeParse({
+    name: formData.get("name"),
+    description: formData.get("description"),
+    status: formData.get("status") ?? undefined,
+    ...parseContainerRef(formData.get("container")),
+  });
+}
+
+export async function createStorageLocationAction(
+  organizationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = parseLocationForm(formData);
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await createStorageLocation(organizationId, parsed.data);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/organizations/${organizationId}/locations`);
+  return {};
+}
+
+export async function updateStorageLocationAction(
+  locationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let location;
+  try {
+    location = await requireOrgAdminForStorageLocation(ctx, locationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = parseLocationForm(formData);
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await updateStorageLocation(locationId, parsed.data);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/organizations/${location.organizationId}/locations`);
+  revalidatePath(`/admin/organizations/${location.organizationId}/assets`);
+  return {};
+}
+
+function parseAssetForm(formData: FormData) {
+  return assetInputSchema.safeParse({
+    name: formData.get("name"),
+    category: formData.get("category"),
+    manufacturer: formData.get("manufacturer"),
+    model: formData.get("model"),
+    serialNumber: formData.get("serialNumber"),
+    assetTag: formData.get("assetTag"),
+    purchaseDate: formData.get("purchaseDate"),
+    vendor: formData.get("vendor"),
+    unitId: formData.get("unitId"),
+    parentAssetId: formData.get("parentAssetId"),
+    storageLocationId: formData.get("storageLocationId"),
+    condition: formData.get("condition") ?? undefined,
+    status: formData.get("status") ?? undefined,
+    notes: formData.get("notes"),
+  });
+}
+
+/** The only unique constraint an asset can violate is (org, assetTag). */
+function mapAssetError(error: unknown): ActionState {
+  if (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2002"
+  ) {
+    return {
+      fieldErrors: {
+        assetTag: ["That asset tag is already in use in this organization."],
+      },
+    };
+  }
+  return mapDomainError(error);
+}
+
+export async function createAssetAction(
+  organizationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = parseAssetForm(formData);
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  let asset;
+  try {
+    asset = await createAsset(organizationId, parsed.data);
+  } catch (error) {
+    return mapAssetError(error);
+  }
+  redirect(`/admin/assets/${asset.id}`);
+}
+
+export async function updateAssetAction(
+  assetId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let asset;
+  try {
+    asset = await requireOrgAdminForAsset(ctx, assetId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = parseAssetForm(formData);
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await updateAsset(assetId, parsed.data);
+  } catch (error) {
+    return mapAssetError(error);
+  }
+  revalidatePath(`/admin/assets/${assetId}`);
+  revalidatePath(`/admin/organizations/${asset.organizationId}/assets`);
+  return {};
+}
+
+function parseItemForm(formData: FormData) {
+  return inventoryItemInputSchema.safeParse({
+    name: formData.get("name"),
+    category: formData.get("category"),
+    quantity: formData.get("quantity"),
+    unitOfMeasure: formData.get("unitOfMeasure"),
+    vendor: formData.get("vendor"),
+    unitId: formData.get("unitId"),
+    storageLocationId: formData.get("storageLocationId"),
+    condition: formData.get("condition") ?? undefined,
+    status: formData.get("status") ?? undefined,
+    notes: formData.get("notes"),
+  });
+}
+
+export async function createInventoryItemAction(
+  organizationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = parseItemForm(formData);
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await createInventoryItem(organizationId, parsed.data);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/organizations/${organizationId}/inventory`);
+  return {};
+}
+
+export async function updateInventoryItemAction(
+  itemId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let item;
+  try {
+    item = await requireOrgAdminForInventoryItem(ctx, itemId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = parseItemForm(formData);
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await updateInventoryItem(itemId, parsed.data);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/organizations/${item.organizationId}/inventory`);
   return {};
 }

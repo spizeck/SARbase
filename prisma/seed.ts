@@ -76,8 +76,98 @@ async function main() {
     },
   });
 
+  // Issue #10 fixture — a small asset/inventory/location chain that
+  // exercises nested locations, a vessel locker (location inside an
+  // asset), a parent-child asset, and a quantity item.
+  const boathouse = await prisma.storageLocation.upsert({
+    where: { id: "seed-location-boathouse" },
+    update: {},
+    create: {
+      id: "seed-location-boathouse",
+      organizationId: organization.id,
+      name: "Example Boathouse",
+    },
+  });
+  const shelf = await prisma.storageLocation.upsert({
+    where: { id: "seed-location-shelf" },
+    update: {},
+    create: {
+      id: "seed-location-shelf",
+      organizationId: organization.id,
+      parentLocationId: boathouse.id,
+      name: "Shelf A",
+    },
+  });
+  const boat = await prisma.asset.upsert({
+    where: { id: "seed-asset-boat" },
+    update: {},
+    create: {
+      id: "seed-asset-boat",
+      organizationId: organization.id,
+      unitId: unit.id,
+      storageLocationId: boathouse.id,
+      name: "Example Rescue Boat",
+      category: "Vessel",
+      manufacturer: "Example Marine",
+      model: "RHIB-600",
+      serialNumber: "EX-0001",
+      assetTag: "SAR-0001",
+      condition: "GOOD",
+    },
+  });
+  await prisma.asset.upsert({
+    where: { id: "seed-asset-engine" },
+    update: {},
+    create: {
+      id: "seed-asset-engine",
+      organizationId: organization.id,
+      parentAssetId: boat.id,
+      name: "Port Engine",
+      category: "Outboard",
+      condition: "GOOD",
+    },
+  });
+  const locker = await prisma.storageLocation.upsert({
+    where: { id: "seed-location-locker" },
+    update: {},
+    create: {
+      id: "seed-location-locker",
+      organizationId: organization.id,
+      containingAssetId: boat.id,
+      name: "Forward locker",
+    },
+  });
+  await prisma.inventoryItem.upsert({
+    where: { id: "seed-item-flares" },
+    update: {},
+    create: {
+      id: "seed-item-flares",
+      organizationId: organization.id,
+      storageLocationId: locker.id,
+      name: "Handheld flares",
+      category: "Pyrotechnics",
+      quantity: "6",
+      unitOfMeasure: "each",
+    },
+  });
+  await prisma.inventoryItem.upsert({
+    where: { id: "seed-item-line" },
+    update: {},
+    create: {
+      id: "seed-item-line",
+      organizationId: organization.id,
+      storageLocationId: shelf.id,
+      name: "3/8 double-braid line",
+      category: "Rope",
+      quantity: "2.5",
+      unitOfMeasure: "rolls",
+      vendor: "Example Chandlery",
+    },
+  });
+
   console.log(
-    `Seeded organization (${organization.id}) with 1 unit and 1 member.`,
+    `Seeded organization (${organization.id}) with 1 unit, 1 member, ` +
+      `2 assets, 3 locations, and 2 inventory items.`,
   );
 }
 

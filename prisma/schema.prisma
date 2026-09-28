@@ -66,6 +66,9 @@ model Organization {
   organizationAccesses     OrganizationAccess[]
   qualificationDefinitions QualificationDefinition[]
   trainingEvents           TrainingEvent[]
+  storageLocations         StorageLocation[]
+  assets                   Asset[]
+  inventoryItems           InventoryItem[]
 }
 
 // An internal operational/administrative grouping within an organization
@@ -81,6 +84,8 @@ model Unit {
   organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   memberUnits    MemberUnit[]
   trainingEvents TrainingEvent[]
+  assets         Asset[]
+  inventoryItems InventoryItem[]
 
   // Unit names are unique within an organization (not globally).
   @@unique([organizationId, name])
@@ -409,4 +414,186 @@ model TrainingAttendanceChange {
   @@index([trainingEventId, createdAt])
   @@index([memberId])
   @@index([organizationId])
+}
+
+/* ------------------------------------------------------------------ */
+/* Issue #10 — assets, inventory, storage locations                    */
+/* ------------------------------------------------------------------ */
+
+// Administrative lifecycle for a storage location. ARCHIVED preserves
+// the node and everything that references it; there is no delete path
+// in the application surface.
+enum StorageLocationStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+// Administrative lifecycle for a durable asset. Every transition is an
+// explicit human choice — nothing is derived from dates, stock levels,
+// or defects. INACTIVE means "not currently in use" (stored, seasonal,
+// spare); OUT_OF_SERVICE means a person marked it so (it is NOT an
+// inspection result — issue #11); RETIRED means permanently withdrawn.
+// None of these values is a safety or readiness conclusion.
+enum AssetStatus {
+  ACTIVE
+  INACTIVE
+  OUT_OF_SERVICE
+  RETIRED
+}
+
+// Human-recorded physical condition — a clerk's note about what someone
+// observed, never an inspection-derived or safety-grade value. UNKNOWN
+// is the default so no record pretends to a condition nobody stated.
+// Structured condition evidence belongs to inspections (issue #11).
+enum ConditionStatus {
+  UNKNOWN
+  GOOD
+  FAIR
+  DAMAGED
+}
+
+enum InventoryItemStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+// A place where assets and stock physically live, arbitrarily nested:
+// "SAR Building > Workshop > Shelf A > Cabinet 2". A location sits
+// inside exactly ONE container — either a parent location or an Asset
+// it is physically part of ("Forward locker" inside "Rescue Boat 1",
+// so a vessel's lockers hang off the boat's single identity rather than
+// a duplicate location named after it). The parentLocationId /
+// containingAssetId mutual exclusion is enforced in the domain layer
+// (Prisma cannot express the XOR); composite FKs keep both inside the
+// organization at the database level. Cycle prevention is likewise
+// domain-enforced — a location can never contain itself transitively.
+model StorageLocation {
+  id                String   @id @default(cuid())
+  organizationId    String
+  parentLocationId  String?
+  containingAssetId String?
+  name              String
+  description       String?
+  status            StorageLocationStatus @default(ACTIVE)
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  parentLocation   StorageLocation?  @relation("LocationNesting", fields: [parentLocationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  childLocations   StorageLocation[] @relation("LocationNesting")
+  containingAsset  Asset?            @relation("AssetContainedLocations", fields: [containingAssetId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  storedAssets     Asset[]           @relation("AssetStorage")
+  inventoryItems   InventoryItem[]
+
+  // Composite-FK target so children/containers enforce same-organization
+  // rows at the database level.
+  @@unique([id, organizationId])
+  @@index([organizationId])
+  @@index([parentLocationId])
+  @@index([containingAssetId])
+}
+
+// A durable, individually identifiable thing the organization owns —
+// a rescue boat, engine, VHF radio, AED, toolbox. Deliberately a flat
+// record with optional identity fields: no per-type subtype tables, no
+// equipment taxonomy enforced by schema. `category` is the
+// organization's own free-text vocabulary ("boat", "radio", "medical")
+// — bounded text, not an enum, so no enum churn as orgs differ.
+//
+// Relationships:
+// - storageLocationId — where it is kept (nullable: unplaced is valid).
+// - parentAssetId — physical/administrative containment only
+//   ("port engine is part of Rescue Boat 1"). It is NOT an operational
+//   dependency graph and asserts nothing about fitness; a child asset
+//   keeps its own identity and its own optional storage location (an
+//   engine can be part of a boat and temporarily stored in the
+//   workshop). Same-org and acyclic, enforced in domain + composite FK.
+// - unitId — optional administrative ownership by an internal unit.
+//
+// `serialNumber` is deliberately NOT unique (manufacturers can reuse
+// them); `assetTag` is the organization's own tag and is unique per
+// organization when present (NULLs are distinct, so untagged assets
+// are unrestricted).
+//
+// Current location is a mutable fact; durable location/movement
+// history is deferred to the generic audit-history work — same
+// posture as event-detail edits.
+model Asset {
+  id                String   @id @default(cuid())
+  organizationId    String
+  unitId            String?
+  parentAssetId     String?
+  storageLocationId String?
+  name              String
+  category          String?
+  manufacturer      String?
+  model             String?
+  serialNumber      String?
+  assetTag          String?
+  purchaseDate      DateTime? @db.Date
+  // Free-text "where did we buy it" memory. A real Vendor record is
+  // deferred to expenses (#17) — this field may later migrate onto it.
+  vendor            String?
+  status            AssetStatus     @default(ACTIVE)
+  condition         ConditionStatus @default(UNKNOWN)
+  notes             String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  organization       Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  unit               Unit?             @relation(fields: [unitId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  parentAsset        Asset?            @relation("AssetChildren", fields: [parentAssetId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  childAssets        Asset[]           @relation("AssetChildren")
+  storageLocation    StorageLocation?  @relation("AssetStorage", fields: [storageLocationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  containedLocations StorageLocation[] @relation("AssetContainedLocations")
+
+  // Composite-FK targets so locations/children/units enforce
+  // same-organization rows at the database level.
+  @@unique([id, organizationId])
+  // Optional org-scoped asset tag — NULLs are distinct in Postgres, so
+  // untagged assets never collide.
+  @@unique([organizationId, assetTag])
+  @@index([organizationId, status])
+  @@index([organizationId, category])
+  @@index([serialNumber])
+  @@index([unitId])
+  @@index([parentAssetId])
+  @@index([storageLocationId])
+}
+
+// A quantity-tracked stock item — rope, flares, gloves, batteries,
+// first-aid consumables. Deliberately separate from Asset: identity
+// fields (serial/tag/parent/contained locations) would be null-noise
+// on bulk stock, and quantity/unitOfMeasure would be meaningless on a
+// unique asset. `quantity` is an exact DECIMAL(14,3) — "25 m of line"
+// or "1.5 gallons cleaner" are legitimate facts; floats would lie.
+// No lot tracking, reorder points, FIFO, or stock transactions —
+// quantity is simply "how many we have now".
+model InventoryItem {
+  id                String   @id @default(cuid())
+  organizationId    String
+  unitId            String?
+  storageLocationId String?
+  name              String
+  category          String?
+  quantity          Decimal   @db.Decimal(14, 3)
+  unitOfMeasure     String?
+  // Free-text purchase-source memory, same deferral as Asset.vendor.
+  vendor            String?
+  condition         ConditionStatus     @default(UNKNOWN)
+  status            InventoryItemStatus @default(ACTIVE)
+  notes             String?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  unit            Unit?            @relation(fields: [unitId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  storageLocation StorageLocation? @relation(fields: [storageLocationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  // Composite-FK target for future same-organization children
+  // (e.g. inspections in issue #11).
+  @@unique([id, organizationId])
+  @@index([organizationId, status])
+  @@index([organizationId, category])
+  @@index([storageLocationId])
 }

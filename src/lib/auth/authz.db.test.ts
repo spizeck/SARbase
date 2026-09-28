@@ -72,8 +72,15 @@ import {
   updateOrganizationAction,
   updateQualificationDefinitionAction,
   updateUnitAction,
+  createStorageLocationAction,
+  updateStorageLocationAction,
+  createAssetAction,
+  updateAssetAction,
+  createInventoryItemAction,
+  updateInventoryItemAction,
 } from "@/app/admin/actions";
 import TrainingEventPage from "@/app/admin/training/[eventId]/page";
+import AssetPage from "@/app/admin/assets/[assetId]/page";
 
 const hasDb = Boolean(process.env.DATABASE_URL);
 const PREFIX = "authztest-";
@@ -202,6 +209,24 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       where: { member: { organization: { name: { startsWith: PREFIX } } } },
     });
     await prisma.member.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    // Issue #10 fixtures — break self-referential edges before parents.
+    await prisma.inventoryItem.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.asset.updateMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+      data: { parentAssetId: null, storageLocationId: null, unitId: null },
+    });
+    await prisma.asset.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.storageLocation.updateMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+      data: { parentLocationId: null, containingAssetId: null },
+    });
+    await prisma.storageLocation.deleteMany({
       where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.unit.deleteMany({
@@ -1291,6 +1316,214 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
         params: Promise.resolve({ eventId: eventB.id }),
       });
       expect(page).toBeTruthy();
+    });
+  });
+
+  describe("assets, inventory, locations (issue #10)", () => {
+    it("admin A creates locations, assets, and items in org A", async () => {
+      signInAs(adminAUid);
+      expect(
+        await createStorageLocationAction(
+          orgA.id,
+          {},
+          form({ name: uniq("loc"), container: "" }),
+        ),
+      ).toEqual({});
+      await expect(
+        createAssetAction(orgA.id, {}, form({ name: uniq("asset") })),
+      ).rejects.toThrow("NEXT_REDIRECT /admin/assets/");
+      expect(
+        await createInventoryItemAction(
+          orgA.id,
+          {},
+          form({ name: uniq("item"), quantity: "3" }),
+        ),
+      ).toEqual({});
+    });
+
+    it("admin A cannot create records in organization B", async () => {
+      signInAs(adminAUid);
+      expect(
+        await createStorageLocationAction(
+          orgB.id,
+          {},
+          form({ name: uniq("loc"), container: "" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await createInventoryItemAction(
+          orgB.id,
+          {},
+          form({ name: uniq("item"), quantity: "1" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      // createAssetAction would redirect on success — denial returns
+      // the opaque message instead.
+      expect(
+        await createAssetAction(orgB.id, {}, form({ name: uniq("asset") })),
+      ).toEqual({ message: "Not found." });
+    });
+
+    it("admin A cannot view or edit organization B records", async () => {
+      const locB = await prisma.storageLocation.create({
+        data: { organizationId: orgB.id, name: uniq("loc-b") },
+      });
+      const assetB = await prisma.asset.create({
+        data: { organizationId: orgB.id, name: uniq("asset-b") },
+      });
+      const itemB = await prisma.inventoryItem.create({
+        data: {
+          organizationId: orgB.id,
+          name: uniq("item-b"),
+          quantity: 1,
+        },
+      });
+
+      signInAs(adminAUid);
+      expect(
+        await updateStorageLocationAction(
+          locB.id,
+          {},
+          form({ name: uniq("hijack"), container: "" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateAssetAction(assetB.id, {}, form({ name: uniq("hijack") })),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateInventoryItemAction(
+          itemB.id,
+          {},
+          form({ name: uniq("hijack"), quantity: "9" }),
+        ),
+      ).toEqual({ message: "Not found." });
+
+      // Substituted/unknown ids are indistinguishable from foreign ones.
+      const foreign = await updateAssetAction(
+        assetB.id,
+        {},
+        form({ name: "x" }),
+      );
+      const missing = await updateAssetAction(
+        "nonexistent-id",
+        {},
+        form({ name: "x" }),
+      );
+      expect(foreign).toEqual({ message: "Not found." });
+      expect(missing).toEqual(foreign);
+
+      // Page-level: the asset detail page is opaque to admin A.
+      await expect(
+        AssetPage({ params: Promise.resolve({ assetId: assetB.id }) }),
+      ).rejects.toThrow("NEXT_NOT_FOUND");
+
+      // Nothing was mutated.
+      expect(
+        (await prisma.asset.findUniqueOrThrow({ where: { id: assetB.id } }))
+          .name,
+      ).not.toContain("hijack");
+    });
+
+    it("admin A cannot attach org-B locations, units, or parents", async () => {
+      const locA = await prisma.storageLocation.create({
+        data: { organizationId: orgA.id, name: uniq("loc-a") },
+      });
+      const locB = await prisma.storageLocation.create({
+        data: { organizationId: orgB.id, name: uniq("loc-b2") },
+      });
+      const assetA = await prisma.asset.create({
+        data: { organizationId: orgA.id, name: uniq("asset-a") },
+      });
+      const parentB = await prisma.asset.create({
+        data: { organizationId: orgB.id, name: uniq("parent-b") },
+      });
+
+      signInAs(adminAUid);
+      // Move org-A asset into an org-B location — opaque failure.
+      expect(
+        await updateAssetAction(
+          assetA.id,
+          {},
+          form({ name: assetA.name, storageLocationId: locB.id }),
+        ),
+      ).toEqual({ message: "Not found." });
+      // Org-B unit on an org-A asset.
+      expect(
+        await updateAssetAction(
+          assetA.id,
+          {},
+          form({ name: assetA.name, unitId: unitB.id }),
+        ),
+      ).toEqual({ message: "Not found." });
+      // Org-B parent asset.
+      expect(
+        await updateAssetAction(
+          assetA.id,
+          {},
+          form({ name: assetA.name, parentAssetId: parentB.id }),
+        ),
+      ).toEqual({ message: "Not found." });
+      // Org-A location nested inside an org-B location.
+      expect(
+        await updateStorageLocationAction(
+          locA.id,
+          {},
+          form({ name: locA.name, container: `location:${locB.id}` }),
+        ),
+      ).toEqual({ message: "Not found." });
+      // Org-A location inside an org-B asset.
+      expect(
+        await createStorageLocationAction(
+          orgA.id,
+          {},
+          form({ name: uniq("loc"), container: `asset:${parentB.id}` }),
+        ),
+      ).toEqual({ message: "Not found." });
+      // Org-B location on an org-A inventory item.
+      const itemA = await prisma.inventoryItem.create({
+        data: { organizationId: orgA.id, name: uniq("item-a"), quantity: 1 },
+      });
+      expect(
+        await updateInventoryItemAction(
+          itemA.id,
+          {},
+          form({ name: itemA.name, quantity: "1", storageLocationId: locB.id }),
+        ),
+      ).toEqual({ message: "Not found." });
+    });
+
+    it("MEMBER role cannot mutate assets, locations, or items", async () => {
+      signInAs(memberRoleUid); // MEMBER of org A
+      expect(
+        await createStorageLocationAction(
+          orgA.id,
+          {},
+          form({ name: uniq("loc"), container: "" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await createInventoryItemAction(
+          orgA.id,
+          {},
+          form({ name: uniq("item"), quantity: "1" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await createAssetAction(orgA.id, {}, form({ name: uniq("asset") })),
+      ).toEqual({ message: "Not found." });
+    });
+
+    it("unauthenticated callers are redirected before any write", async () => {
+      signInAs(null);
+      await expect(
+        createStorageLocationAction(orgA.id, {}, form({ name: "x" })),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
+      await expect(
+        createAssetAction(orgA.id, {}, form({ name: "x" })),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
+      await expect(
+        createInventoryItemAction(orgA.id, {}, form({ name: "x" })),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
     });
   });
 });

@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assetInputSchema,
   dateOnlySchema,
+  inventoryItemInputSchema,
   memberInputSchema,
   memberQualificationInputSchema,
   memberStatusSchema,
   organizationInputSchema,
   qualificationDefinitionInputSchema,
+  storageLocationInputSchema,
   trainingAttendanceSchema,
   trainingEventInputSchema,
 } from "./schemas";
@@ -244,5 +247,95 @@ describe("trainingAttendanceSchema", () => {
     expect(
       trainingAttendanceSchema.parse({ memberIds: ["m1", "m2"] }).memberIds,
     ).toEqual(["m1", "m2"]);
+  });
+});
+
+describe("storageLocationInputSchema", () => {
+  it("accepts a top-level location", () => {
+    const parsed = storageLocationInputSchema.parse({ name: "  Dock shed " });
+    expect(parsed.name).toBe("Dock shed");
+    expect(parsed.parentLocationId).toBeUndefined();
+    expect(parsed.containingAssetId).toBeUndefined();
+    expect(parsed.status).toBe("ACTIVE");
+  });
+
+  it("rejects a location with both a parent location and an asset", () => {
+    expect(
+      storageLocationInputSchema.safeParse({
+        name: "Locker",
+        parentLocationId: "loc-1",
+        containingAssetId: "asset-1",
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("assetInputSchema", () => {
+  it("accepts a minimal asset and normalizes blanks", () => {
+    const parsed = assetInputSchema.parse({
+      name: "  Rescue Boat 1 ",
+      serialNumber: "",
+      purchaseDate: "",
+    });
+    expect(parsed.name).toBe("Rescue Boat 1");
+    expect(parsed.serialNumber).toBeUndefined();
+    expect(parsed.purchaseDate).toBeUndefined();
+    expect(parsed.condition).toBe("UNKNOWN");
+    expect(parsed.status).toBe("ACTIVE");
+  });
+
+  it("accepts a purchase date with existing date-only semantics", () => {
+    const parsed = assetInputSchema.parse({
+      name: "AED",
+      purchaseDate: "2024-03-15",
+    });
+    expect(parsed.purchaseDate!.toISOString()).toBe("2024-03-15T00:00:00.000Z");
+  });
+
+  it("rejects an impossible purchase date and unknown enums", () => {
+    expect(
+      assetInputSchema.safeParse({ name: "X", purchaseDate: "2024-02-30" })
+        .success,
+    ).toBe(false);
+    expect(
+      assetInputSchema.safeParse({ name: "X", status: "BROKEN" }).success,
+    ).toBe(false);
+    expect(
+      assetInputSchema.safeParse({ name: "X", condition: "MINT" }).success,
+    ).toBe(false);
+  });
+});
+
+describe("inventoryItemInputSchema", () => {
+  const base = { name: "3/8 double-braid line" };
+
+  it("accepts whole and fractional quantities", () => {
+    for (const q of ["3", "2.5", "0", "0.125", "250"]) {
+      expect(
+        inventoryItemInputSchema.safeParse({ ...base, quantity: q }).success,
+      ).toBe(true);
+    }
+  });
+
+  it("rejects negatives, NaN, unsafe precision, and blanks", () => {
+    for (const q of ["-1", "abc", "", "  ", "1.0001", "1e3", ".5", "2.5.1"]) {
+      expect(
+        inventoryItemInputSchema.safeParse({ ...base, quantity: q }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("rejects quantities beyond the DECIMAL(14,3) range", () => {
+    expect(
+      inventoryItemInputSchema.safeParse({ ...base, quantity: "9999999999" })
+        .success,
+    ).toBe(false);
+  });
+
+  it("keeps quantity as an exact string for Decimal storage", () => {
+    const parsed = inventoryItemInputSchema.parse({ ...base, quantity: "2.5" });
+    expect(parsed.quantity).toBe("2.5");
+    expect(parsed.status).toBe("ACTIVE");
+    expect(parsed.condition).toBe("UNKNOWN");
   });
 });
