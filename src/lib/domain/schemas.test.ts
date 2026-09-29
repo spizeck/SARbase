@@ -3,10 +3,15 @@ import { describe, expect, it } from "vitest";
 import {
   assetInputSchema,
   dateOnlySchema,
+  defectTransitionSchema,
+  inspectionDefinitionInputSchema,
+  inspectionRecordInputSchema,
   inventoryItemInputSchema,
+  maintenancePlanInputSchema,
   memberInputSchema,
   memberQualificationInputSchema,
   memberStatusSchema,
+  meterReadingInputSchema,
   organizationInputSchema,
   qualificationDefinitionInputSchema,
   storageLocationInputSchema,
@@ -337,5 +342,214 @@ describe("inventoryItemInputSchema", () => {
     expect(parsed.quantity).toBe("2.5");
     expect(parsed.status).toBe("ACTIVE");
     expect(parsed.condition).toBe("UNKNOWN");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Issue #11 schemas                                                   */
+/* ------------------------------------------------------------------ */
+
+describe("inspectionDefinitionInputSchema", () => {
+  it("accepts a non-recurring definition", () => {
+    const parsed = inspectionDefinitionInputSchema.parse({
+      name: "Radio check",
+      recurrenceType: "NONE",
+    });
+    expect(parsed.recurrenceType).toBe("NONE");
+  });
+
+  it("requires an interval when a recurrence is chosen", () => {
+    expect(
+      inspectionDefinitionInputSchema.safeParse({
+        name: "Monthly check",
+        recurrenceType: "CALENDAR_DAYS",
+      }).success,
+    ).toBe(false);
+    expect(
+      inspectionDefinitionInputSchema.safeParse({
+        name: "Monthly check",
+        recurrenceType: "CALENDAR_DAYS",
+        intervalValue: "30",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects an interval on a non-recurring definition", () => {
+    expect(
+      inspectionDefinitionInputSchema.safeParse({
+        name: "x",
+        recurrenceType: "NONE",
+        intervalValue: "30",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("inspection definitions are calendar-only — no meter intervals", () => {
+    expect(
+      inspectionDefinitionInputSchema.safeParse({
+        name: "x",
+        recurrenceType: "METER_INTERVAL",
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("inspectionRecordInputSchema", () => {
+  const base = {
+    definitionId: "def-1",
+    performedOn: "2026-09-15",
+  };
+
+  it("accepts a bare factual record", () => {
+    const parsed = inspectionRecordInputSchema.parse(base);
+    expect(parsed.performedOn).toEqual(new Date("2026-09-15T00:00:00.000Z"));
+  });
+
+  it("rejects a next-due earlier than the performed date", () => {
+    expect(
+      inspectionRecordInputSchema.safeParse({
+        ...base,
+        nextDueOn: "2026-09-01",
+      }).success,
+    ).toBe(false);
+    expect(
+      inspectionRecordInputSchema.safeParse({
+        ...base,
+        nextDueOn: "2026-09-15",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("requires meter id and reading to arrive together", () => {
+    expect(
+      inspectionRecordInputSchema.safeParse({ ...base, meterId: "m1" }).success,
+    ).toBe(false);
+    expect(
+      inspectionRecordInputSchema.safeParse({ ...base, meterReading: "10" })
+        .success,
+    ).toBe(false);
+    expect(
+      inspectionRecordInputSchema.safeParse({
+        ...base,
+        meterId: "m1",
+        meterReading: "10.5",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects negative and malformed meter readings", () => {
+    for (const reading of ["-1", "1.2345", "abc", "12,5"]) {
+      expect(
+        inspectionRecordInputSchema.safeParse({
+          ...base,
+          meterId: "m1",
+          meterReading: reading,
+        }).success,
+      ).toBe(false);
+    }
+  });
+});
+
+describe("maintenancePlanInputSchema", () => {
+  const base = { name: "Oil change" };
+
+  it("accepts a meter-interval plan with meter + interval", () => {
+    const parsed = maintenancePlanInputSchema.parse({
+      ...base,
+      intervalType: "METER_INTERVAL",
+      meterId: "m1",
+      meterInterval: "100",
+    });
+    expect(parsed.intervalType).toBe("METER_INTERVAL");
+  });
+
+  it("rejects a meter plan missing its meter or interval", () => {
+    expect(
+      maintenancePlanInputSchema.safeParse({
+        ...base,
+        intervalType: "METER_INTERVAL",
+        meterInterval: "100",
+      }).success,
+    ).toBe(false);
+    expect(
+      maintenancePlanInputSchema.safeParse({
+        ...base,
+        intervalType: "METER_INTERVAL",
+        meterId: "m1",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects calendar fields on meter plans and vice versa", () => {
+    expect(
+      maintenancePlanInputSchema.safeParse({
+        ...base,
+        intervalType: "METER_INTERVAL",
+        meterId: "m1",
+        meterInterval: "100",
+        intervalValue: "30",
+      }).success,
+    ).toBe(false);
+    expect(
+      maintenancePlanInputSchema.safeParse({
+        ...base,
+        intervalType: "CALENDAR_DAYS",
+        intervalValue: "30",
+        meterId: "m1",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("a NONE plan takes no interval at all", () => {
+    expect(
+      maintenancePlanInputSchema.safeParse({
+        ...base,
+        intervalType: "NONE",
+        intervalValue: "30",
+      }).success,
+    ).toBe(false);
+    expect(
+      maintenancePlanInputSchema.safeParse({ ...base, intervalType: "NONE" })
+        .success,
+    ).toBe(true);
+  });
+});
+
+describe("defectTransitionSchema", () => {
+  it("requires a resolution date when resolving", () => {
+    expect(
+      defectTransitionSchema.safeParse({ status: "RESOLVED" }).success,
+    ).toBe(false);
+    expect(
+      defectTransitionSchema.safeParse({
+        status: "RESOLVED",
+        resolvedOn: "2026-09-20",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("a reopen needs no resolution fields", () => {
+    expect(defectTransitionSchema.safeParse({ status: "OPEN" }).success).toBe(
+      true,
+    );
+  });
+});
+
+describe("meterReadingInputSchema", () => {
+  it("accepts exact decimals and rejects invalid shapes", () => {
+    expect(
+      meterReadingInputSchema.safeParse({
+        reading: "812.435",
+        recordedOn: "2026-09-15",
+      }).success,
+    ).toBe(true);
+    for (const reading of ["-1", "1.2345", "", "NaN"]) {
+      expect(
+        meterReadingInputSchema.safeParse({
+          reading,
+          recordedOn: "2026-09-15",
+        }).success,
+      ).toBe(false);
+    }
   });
 });

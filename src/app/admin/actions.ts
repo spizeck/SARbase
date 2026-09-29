@@ -29,6 +29,19 @@ import {
   storageLocationInputSchema,
   assetInputSchema,
   inventoryItemInputSchema,
+  inspectionDefinitionInputSchema,
+  inspectionDefinitionStatusSchema,
+  inspectionRecordInputSchema,
+  inspectionRecordUpdateSchema,
+  maintenancePlanInputSchema,
+  maintenancePlanStatusSchema,
+  maintenanceRecordInputSchema,
+  maintenanceRecordUpdateSchema,
+  defectInputSchema,
+  defectTransitionSchema,
+  assetMeterInputSchema,
+  assetMeterStatusSchema,
+  meterReadingInputSchema,
 } from "@/lib/domain/schemas";
 import {
   requireAuth,
@@ -41,6 +54,12 @@ import {
   requireOrgAdminForStorageLocation,
   requireOrgAdminForAsset,
   requireOrgAdminForInventoryItem,
+  requireOrgAdminForInspectionDefinition,
+  requireOrgAdminForInspectionRecord,
+  requireOrgAdminForMaintenancePlan,
+  requireOrgAdminForMaintenanceRecord,
+  requireOrgAdminForDefect,
+  requireOrgAdminForAssetMeter,
 } from "@/lib/auth/authorize";
 import {
   createTrainingEvent,
@@ -69,6 +88,31 @@ import {
   CrossOrganizationQualificationError,
   InactiveQualificationError,
 } from "@/lib/domain/qualification";
+import {
+  createInspectionDefinition,
+  updateInspectionDefinition,
+  setInspectionDefinitionStatus,
+  recordInspection,
+  updateInspectionRecord,
+  createMaintenancePlan,
+  updateMaintenancePlan,
+  setMaintenancePlanStatus,
+  recordMaintenance,
+  updateMaintenanceRecord,
+  reportDefect,
+  updateDefect,
+  transitionDefect,
+  createAssetMeter,
+  updateAssetMeter,
+  setAssetMeterStatus,
+  recordMeterReading,
+  CrossOrganizationMaintenanceError,
+  InactiveInspectionDefinitionError,
+  InactiveMaintenancePlanError,
+  ArchivedMeterError,
+  MeterReadingDecreaseError,
+  DefectTransitionError,
+} from "@/lib/domain/maintenance";
 import { AuthenticationError, AuthorizationError } from "@/lib/auth/context";
 import { emailSchema } from "@/lib/domain/schemas";
 import { log } from "@/lib/logging";
@@ -156,6 +200,21 @@ function mapDomainError(error: unknown): ActionState {
   if (error instanceof CrossOrganizationAssetError) {
     // Opaque — foreign-org location/asset/unit ids must not leak.
     return { message: "Not found." };
+  }
+  if (error instanceof CrossOrganizationMaintenanceError) {
+    // Opaque — foreign-org asset/definition/plan/meter/member ids must
+    // not leak existence.
+    return { message: "Not found." };
+  }
+  if (
+    error instanceof InactiveInspectionDefinitionError ||
+    error instanceof InactiveMaintenancePlanError ||
+    error instanceof ArchivedMeterError ||
+    error instanceof MeterReadingDecreaseError ||
+    error instanceof DefectTransitionError
+  ) {
+    // Configuration facts about the caller's own organization — safe.
+    return { message: error.message };
   }
   throw error;
 }
@@ -989,5 +1048,568 @@ export async function updateInventoryItemAction(
     return mapDomainError(error);
   }
   revalidatePath(`/admin/organizations/${item.organizationId}/inventory`);
+  return {};
+}
+
+/* ------------------------------------------------------------------ */
+/* Issue #11 — inspections, maintenance, defects, meters               */
+/*                                                                     */
+/* Same authorization contract as everything above: caller-supplied    */
+/* ids are untrusted selectors, the record's own organizationId        */
+/* decides the required grant, and cross-organization failures are     */
+/* opaque "Not found." responses.                                      */
+/* ------------------------------------------------------------------ */
+
+function revalidateMaintenance(orgId: string, assetId?: string) {
+  revalidatePath(`/admin/organizations/${orgId}/maintenance`);
+  revalidatePath(`/admin/organizations/${orgId}`);
+  if (assetId) revalidatePath(`/admin/assets/${assetId}`);
+}
+
+export async function createInspectionDefinitionAction(
+  organizationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = inspectionDefinitionInputSchema.safeParse({
+    name: formData.get("name"),
+    description: formData.get("description"),
+    recurrenceType: formData.get("recurrenceType") ?? "NONE",
+    intervalValue: formData.get("intervalValue"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await createInspectionDefinition(organizationId, parsed.data);
+  } catch (error) {
+    const mapped = mapDomainError(error);
+    return mapped.message?.includes("already exists")
+      ? {
+          fieldErrors: {
+            name: [
+              "An inspection type with this name already exists in this organization.",
+            ],
+          },
+        }
+      : mapped;
+  }
+  revalidateMaintenance(organizationId);
+  return {};
+}
+
+export async function updateInspectionDefinitionAction(
+  definitionId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let definition;
+  try {
+    definition = await requireOrgAdminForInspectionDefinition(
+      ctx,
+      definitionId,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = inspectionDefinitionInputSchema.safeParse({
+    name: formData.get("name"),
+    description: formData.get("description"),
+    recurrenceType: formData.get("recurrenceType") ?? "NONE",
+    intervalValue: formData.get("intervalValue"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await updateInspectionDefinition(definitionId, parsed.data);
+  } catch (error) {
+    const mapped = mapDomainError(error);
+    return mapped.message?.includes("already exists")
+      ? {
+          fieldErrors: {
+            name: [
+              "An inspection type with this name already exists in this organization.",
+            ],
+          },
+        }
+      : mapped;
+  }
+  revalidateMaintenance(definition.organizationId);
+  return {};
+}
+
+export async function setInspectionDefinitionStatusAction(
+  definitionId: string,
+  status: string,
+): Promise<void> {
+  const ctx = await requireAuth();
+  const definition = await requireOrgAdminForInspectionDefinition(
+    ctx,
+    definitionId,
+  );
+  const parsed = inspectionDefinitionStatusSchema.safeParse(status);
+  if (!parsed.success) return;
+  await setInspectionDefinitionStatus(definitionId, parsed.data);
+  revalidateMaintenance(definition.organizationId);
+}
+
+export async function recordInspectionAction(
+  assetId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let asset;
+  try {
+    asset = await requireOrgAdminForAsset(ctx, assetId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = inspectionRecordInputSchema.safeParse({
+    definitionId: formData.get("definitionId"),
+    performedOn: formData.get("performedOn"),
+    inspectorMemberId: formData.get("inspectorMemberId"),
+    inspectorName: formData.get("inspectorName"),
+    conditionObserved: formData.get("conditionObserved"),
+    nextDueOn: formData.get("nextDueOn"),
+    meterId: formData.get("meterId"),
+    meterReading: formData.get("meterReading"),
+    notes: formData.get("notes"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await recordInspection(assetId, parsed.data);
+  } catch (error) {
+    const mapped = mapDomainError(error);
+    return mapped.message?.includes("meter")
+      ? { fieldErrors: { meterReading: [mapped.message!] } }
+      : mapped;
+  }
+  revalidateMaintenance(asset.organizationId, assetId);
+  return {};
+}
+
+export async function updateInspectionRecordAction(
+  recordId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let record;
+  try {
+    record = await requireOrgAdminForInspectionRecord(ctx, recordId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = inspectionRecordUpdateSchema.safeParse({
+    performedOn: formData.get("performedOn"),
+    inspectorMemberId: formData.get("inspectorMemberId"),
+    inspectorName: formData.get("inspectorName"),
+    conditionObserved: formData.get("conditionObserved"),
+    nextDueOn: formData.get("nextDueOn"),
+    notes: formData.get("notes"),
+    correctionNote: formData.get("correctionNote"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    // The correction-history actor is the server-side identity — never
+    // a client-supplied value.
+    await updateInspectionRecord(recordId, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidateMaintenance(record.organizationId, record.assetId);
+  return {};
+}
+
+export async function createMaintenancePlanAction(
+  assetId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let asset;
+  try {
+    asset = await requireOrgAdminForAsset(ctx, assetId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = maintenancePlanInputSchema.safeParse({
+    name: formData.get("name"),
+    description: formData.get("description"),
+    intervalType: formData.get("intervalType") ?? "NONE",
+    intervalValue: formData.get("intervalValue"),
+    meterId: formData.get("meterId"),
+    meterInterval: formData.get("meterInterval"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await createMaintenancePlan(assetId, parsed.data);
+  } catch (error) {
+    const mapped = mapDomainError(error);
+    if (mapped.message?.includes("already exists")) {
+      return {
+        fieldErrors: {
+          name: ["A plan with this name already exists on this asset."],
+        },
+      };
+    }
+    return mapped.message?.includes("meter")
+      ? { fieldErrors: { meterId: [mapped.message!] } }
+      : mapped;
+  }
+  revalidateMaintenance(asset.organizationId, assetId);
+  return {};
+}
+
+export async function updateMaintenancePlanAction(
+  planId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let plan;
+  try {
+    plan = await requireOrgAdminForMaintenancePlan(ctx, planId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = maintenancePlanInputSchema.safeParse({
+    name: formData.get("name"),
+    description: formData.get("description"),
+    intervalType: formData.get("intervalType") ?? "NONE",
+    intervalValue: formData.get("intervalValue"),
+    meterId: formData.get("meterId"),
+    meterInterval: formData.get("meterInterval"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await updateMaintenancePlan(planId, parsed.data);
+  } catch (error) {
+    const mapped = mapDomainError(error);
+    if (mapped.message?.includes("already exists")) {
+      return {
+        fieldErrors: {
+          name: ["A plan with this name already exists on this asset."],
+        },
+      };
+    }
+    return mapped.message?.includes("meter")
+      ? { fieldErrors: { meterId: [mapped.message!] } }
+      : mapped;
+  }
+  revalidateMaintenance(plan.organizationId, plan.assetId);
+  return {};
+}
+
+export async function setMaintenancePlanStatusAction(
+  planId: string,
+  status: string,
+): Promise<void> {
+  const ctx = await requireAuth();
+  const plan = await requireOrgAdminForMaintenancePlan(ctx, planId);
+  const parsed = maintenancePlanStatusSchema.safeParse(status);
+  if (!parsed.success) return;
+  await setMaintenancePlanStatus(planId, parsed.data);
+  revalidateMaintenance(plan.organizationId, plan.assetId);
+}
+
+export async function recordMaintenanceAction(
+  assetId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let asset;
+  try {
+    asset = await requireOrgAdminForAsset(ctx, assetId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = maintenanceRecordInputSchema.safeParse({
+    planId: formData.get("planId"),
+    title: formData.get("title"),
+    performedOn: formData.get("performedOn"),
+    workPerformed: formData.get("workPerformed"),
+    providerName: formData.get("providerName"),
+    performedByMemberId: formData.get("performedByMemberId"),
+    meterId: formData.get("meterId"),
+    meterReading: formData.get("meterReading"),
+    nextDueOn: formData.get("nextDueOn"),
+    notes: formData.get("notes"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await recordMaintenance(assetId, parsed.data);
+  } catch (error) {
+    const mapped = mapDomainError(error);
+    return mapped.message?.includes("meter")
+      ? { fieldErrors: { meterReading: [mapped.message!] } }
+      : mapped;
+  }
+  revalidateMaintenance(asset.organizationId, assetId);
+  return {};
+}
+
+export async function updateMaintenanceRecordAction(
+  recordId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let record;
+  try {
+    record = await requireOrgAdminForMaintenanceRecord(ctx, recordId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = maintenanceRecordUpdateSchema.safeParse({
+    title: formData.get("title"),
+    performedOn: formData.get("performedOn"),
+    workPerformed: formData.get("workPerformed"),
+    providerName: formData.get("providerName"),
+    performedByMemberId: formData.get("performedByMemberId"),
+    nextDueOn: formData.get("nextDueOn"),
+    notes: formData.get("notes"),
+    correctionNote: formData.get("correctionNote"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    // The correction-history actor is the server-side identity — never
+    // a client-supplied value.
+    await updateMaintenanceRecord(recordId, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidateMaintenance(record.organizationId, record.assetId);
+  return {};
+}
+
+export async function reportDefectAction(
+  assetId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let asset;
+  try {
+    asset = await requireOrgAdminForAsset(ctx, assetId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = defectInputSchema.safeParse({
+    title: formData.get("title"),
+    description: formData.get("description"),
+    reportedOn: formData.get("reportedOn"),
+    reportedByMemberId: formData.get("reportedByMemberId"),
+    reporterName: formData.get("reporterName"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await reportDefect(assetId, parsed.data, ctx.identity.id, {
+      markOutOfService: formData.get("markOutOfService") === "on",
+    });
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidateMaintenance(asset.organizationId, assetId);
+  return {};
+}
+
+export async function updateDefectAction(
+  defectId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let defect;
+  try {
+    defect = await requireOrgAdminForDefect(ctx, defectId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = defectInputSchema.safeParse({
+    title: formData.get("title"),
+    description: formData.get("description"),
+    reportedOn: formData.get("reportedOn"),
+    reportedByMemberId: formData.get("reportedByMemberId"),
+    reporterName: formData.get("reporterName"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await updateDefect(defectId, parsed.data);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidateMaintenance(defect.organizationId, defect.assetId);
+  return {};
+}
+
+export async function transitionDefectAction(
+  defectId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let defect;
+  try {
+    defect = await requireOrgAdminForDefect(ctx, defectId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = defectTransitionSchema.safeParse({
+    status: formData.get("status"),
+    resolvedOn: formData.get("resolvedOn"),
+    resolutionNotes: formData.get("resolutionNotes"),
+    note: formData.get("note"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await transitionDefect(defectId, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidateMaintenance(defect.organizationId, defect.assetId);
+  return {};
+}
+
+export async function createAssetMeterAction(
+  assetId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let asset;
+  try {
+    asset = await requireOrgAdminForAsset(ctx, assetId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = assetMeterInputSchema.safeParse({
+    name: formData.get("name"),
+    unit: formData.get("unit"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await createAssetMeter(assetId, parsed.data);
+  } catch (error) {
+    const mapped = mapDomainError(error);
+    return mapped.message?.includes("already exists")
+      ? {
+          fieldErrors: {
+            name: ["A meter with this name already exists on this asset."],
+          },
+        }
+      : mapped;
+  }
+  revalidateMaintenance(asset.organizationId, assetId);
+  return {};
+}
+
+export async function updateAssetMeterAction(
+  meterId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let meter;
+  try {
+    meter = await requireOrgAdminForAssetMeter(ctx, meterId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = assetMeterInputSchema.safeParse({
+    name: formData.get("name"),
+    unit: formData.get("unit"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await updateAssetMeter(meterId, parsed.data);
+  } catch (error) {
+    const mapped = mapDomainError(error);
+    return mapped.message?.includes("already exists")
+      ? {
+          fieldErrors: {
+            name: ["A meter with this name already exists on this asset."],
+          },
+        }
+      : mapped;
+  }
+  revalidateMaintenance(meter.organizationId, meter.assetId);
+  return {};
+}
+
+export async function setAssetMeterStatusAction(
+  meterId: string,
+  status: string,
+): Promise<void> {
+  const ctx = await requireAuth();
+  const meter = await requireOrgAdminForAssetMeter(ctx, meterId);
+  const parsed = assetMeterStatusSchema.safeParse(status);
+  if (!parsed.success) return;
+  await setAssetMeterStatus(meterId, parsed.data);
+  revalidateMaintenance(meter.organizationId, meter.assetId);
+}
+
+export async function recordMeterReadingAction(
+  meterId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let meter;
+  try {
+    meter = await requireOrgAdminForAssetMeter(ctx, meterId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = meterReadingInputSchema.safeParse({
+    reading: formData.get("reading"),
+    recordedOn: formData.get("recordedOn"),
+    recordedByMemberId: formData.get("recordedByMemberId"),
+    notes: formData.get("notes"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await recordMeterReading(meterId, parsed.data);
+  } catch (error) {
+    const mapped = mapDomainError(error);
+    return error instanceof MeterReadingDecreaseError
+      ? { fieldErrors: { reading: [mapped.message!] } }
+      : mapped;
+  }
+  revalidateMaintenance(meter.organizationId, meter.assetId);
   return {};
 }

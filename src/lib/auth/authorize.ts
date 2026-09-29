@@ -256,3 +256,97 @@ export async function requireOrgAdminForInventoryItem(
   }
   return item;
 }
+
+/**
+ * Issue #11 lookups — same rule: the caller-supplied id is an untrusted
+ * selector; the record's own organizationId decides which grant must
+ * exist. Every issue #11 record carries a denormalized organizationId
+ * guaranteed by composite FKs, so each of these is a single-row lookup.
+ */
+export async function requireOrgAdminForInspectionDefinition(
+  ctx: AuthContext,
+  definitionId: string,
+) {
+  const definition = await prisma.inspectionDefinition.findUnique({
+    where: { id: definitionId },
+  });
+  if (!definition || !isOrgAdmin(ctx, definition.organizationId)) {
+    logDenial("authz.inspection_definition_scope_denied", ctx, {
+      entityId: definitionId,
+    });
+    throw new AuthorizationError();
+  }
+  return definition;
+}
+
+export async function requireOrgAdminForInspectionRecord(
+  ctx: AuthContext,
+  recordId: string,
+) {
+  const record = await prisma.inspectionRecord.findUnique({
+    where: { id: recordId },
+  });
+  if (!record || !isOrgAdmin(ctx, record.organizationId)) {
+    logDenial("authz.inspection_record_scope_denied", ctx, {
+      entityId: recordId,
+    });
+    throw new AuthorizationError();
+  }
+  return record;
+}
+
+export async function requireOrgAdminForMaintenancePlan(
+  ctx: AuthContext,
+  planId: string,
+) {
+  const plan = await prisma.maintenancePlan.findUnique({
+    where: { id: planId },
+  });
+  if (!plan || !isOrgAdmin(ctx, plan.organizationId)) {
+    logDenial("authz.maintenance_plan_scope_denied", ctx, {
+      entityId: planId,
+    });
+    throw new AuthorizationError();
+  }
+  return plan;
+}
+
+export async function requireOrgAdminForMaintenanceRecord(
+  ctx: AuthContext,
+  recordId: string,
+) {
+  const record = await prisma.maintenanceRecord.findUnique({
+    where: { id: recordId },
+  });
+  if (!record || !isOrgAdmin(ctx, record.organizationId)) {
+    logDenial("authz.maintenance_record_scope_denied", ctx, {
+      entityId: recordId,
+    });
+    throw new AuthorizationError();
+  }
+  return record;
+}
+
+export async function requireOrgAdminForDefect(
+  ctx: AuthContext,
+  defectId: string,
+) {
+  const defect = await prisma.defect.findUnique({ where: { id: defectId } });
+  if (!defect || !isOrgAdmin(ctx, defect.organizationId)) {
+    logDenial("authz.defect_scope_denied", ctx, { entityId: defectId });
+    throw new AuthorizationError();
+  }
+  return defect;
+}
+
+export async function requireOrgAdminForAssetMeter(
+  ctx: AuthContext,
+  meterId: string,
+) {
+  const meter = await prisma.assetMeter.findUnique({ where: { id: meterId } });
+  if (!meter || !isOrgAdmin(ctx, meter.organizationId)) {
+    logDenial("authz.meter_scope_denied", ctx, { entityId: meterId });
+    throw new AuthorizationError();
+  }
+  return meter;
+}

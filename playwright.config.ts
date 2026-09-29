@@ -31,5 +31,14 @@ export default defineConfig({
     url: `http://localhost:${port}`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
+    env: {
+      // Public Firebase client config (NEXT_PUBLIC_* is embedded in the
+      // client bundle by definition — never secret) so /login renders
+      // its configured branch during smoke tests.
+      NEXT_PUBLIC_FIREBASE_API_KEY: "smoke-test-api-key",
+      NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: "smoke-test.firebaseapp.com",
+      NEXT_PUBLIC_FIREBASE_PROJECT_ID: "smoke-test-project",
+      NEXT_PUBLIC_FIREBASE_APP_ID: "1:0:web:smoke-test",
+    },
   },
 });

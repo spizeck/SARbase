@@ -298,3 +298,342 @@ export const inventoryItemInputSchema = z.object({
   notes: optionalText(2000),
 });
 export type InventoryItemInput = z.infer<typeof inventoryItemInputSchema>;
+
+/* ------------------------------------------------------------------ */
+/* Inspections, maintenance, defects, meters (issue #11)               */
+/*                                                                     */
+/* Everything below describes factual administrative records: that an  */
+/* inspection happened, that service was performed, that a defect was  */
+/* reported, that a due date or meter threshold was recorded. No       */
+/* verdict vocabulary exists here on purpose — nothing asserts an      */
+/* asset is safe, ready, or deployable.                                */
+/* ------------------------------------------------------------------ */
+
+export const recurrenceTypeSchema = z.enum([
+  "NONE",
+  "CALENDAR_DAYS",
+  "CALENDAR_MONTHS",
+  "METER_INTERVAL",
+]);
+
+/** Positive interval value shared by calendar and meter recurrence. */
+const intervalValueSchema = z.preprocess(
+  emptyToUndefined,
+  z.coerce
+    .number()
+    .int("Whole numbers only.")
+    .positive("Interval must be at least 1.")
+    .max(36500)
+    .optional(),
+);
+
+/**
+ * Exact meter values — DECIMAL(14,3), same representation as inventory
+ * quantity. Non-negative only: odometers, hour meters, and cycle
+ * counters never legitimately read below zero.
+ */
+const meterValueSchema = z.preprocess(
+  emptyToUndefined,
+  z
+    .string()
+    .trim()
+    .regex(
+      /^\d{1,9}(\.\d{1,3})?$/,
+      "Enter a non-negative reading (e.g. 812.4).",
+    )
+    .optional(),
+);
+
+/** Inspection definitions track calendar recurrence only. */
+const inspectionRecurrenceSchema = z.enum([
+  "NONE",
+  "CALENDAR_DAYS",
+  "CALENDAR_MONTHS",
+]);
+
+export const inspectionDefinitionInputSchema = z
+  .object({
+    name: nameSchema,
+    description: optionalText(500),
+    recurrenceType: inspectionRecurrenceSchema.default("NONE"),
+    intervalValue: intervalValueSchema,
+  })
+  .check((ctx) => {
+    const { recurrenceType, intervalValue } = ctx.value;
+    if (recurrenceType === "NONE" && intervalValue != null) {
+      ctx.issues.push({
+        code: "custom",
+        message: "An interval requires a recurrence type.",
+        path: ["intervalValue"],
+        input: ctx.value,
+      });
+    }
+    if (recurrenceType !== "NONE" && intervalValue == null) {
+      ctx.issues.push({
+        code: "custom",
+        message: "Enter how often this inspection recurs.",
+        path: ["intervalValue"],
+        input: ctx.value,
+      });
+    }
+  });
+export type InspectionDefinitionInput = z.infer<
+  typeof inspectionDefinitionInputSchema
+>;
+
+export const inspectionDefinitionStatusSchema = z.enum(["ACTIVE", "INACTIVE"]);
+export type InspectionDefinitionStatusInput = z.infer<
+  typeof inspectionDefinitionStatusSchema
+>;
+
+/**
+ * A factual inspection occurrence. No result verdict — the row itself
+ * states the inspection happened; findings are notes, an optional
+ * clerk-observed condition, and any defects a human reports separately.
+ */
+export const inspectionRecordInputSchema = z
+  .object({
+    definitionId: z.string().min(1, "Choose an inspection type."),
+    performedOn: requiredDateOnlySchema,
+    inspectorMemberId: optionalId,
+    inspectorName: optionalText(120),
+    conditionObserved: z.preprocess(
+      emptyToUndefined,
+      conditionStatusSchema.optional(),
+    ),
+    nextDueOn: dateOnlySchema,
+    meterId: optionalId,
+    meterReading: meterValueSchema,
+    notes: optionalText(2000),
+  })
+  .check((ctx) => {
+    const v = ctx.value;
+    if ((v.meterId == null) !== (v.meterReading == null)) {
+      ctx.issues.push({
+        code: "custom",
+        message: "A meter reading needs its meter, and vice versa.",
+        path: ["meterReading"],
+        input: v,
+      });
+    }
+    if (v.nextDueOn && v.nextDueOn < v.performedOn) {
+      ctx.issues.push({
+        code: "custom",
+        message: "Next due cannot be earlier than the inspection date.",
+        path: ["nextDueOn"],
+        input: v,
+      });
+    }
+  });
+export type InspectionRecordInput = z.infer<typeof inspectionRecordInputSchema>;
+
+/** Corrections to a recorded inspection — everything but the target asset/definition/meter fact. */
+export const inspectionRecordUpdateSchema = z
+  .object({
+    performedOn: requiredDateOnlySchema,
+    inspectorMemberId: optionalId,
+    inspectorName: optionalText(120),
+    conditionObserved: z.preprocess(
+      emptyToUndefined,
+      conditionStatusSchema.optional(),
+    ),
+    nextDueOn: dateOnlySchema,
+    notes: optionalText(2000),
+    correctionNote: optionalText(500),
+  })
+  .refine((v) => !v.nextDueOn || v.nextDueOn >= v.performedOn, {
+    message: "Next due cannot be earlier than the inspection date.",
+    path: ["nextDueOn"],
+  });
+export type InspectionRecordUpdate = z.infer<
+  typeof inspectionRecordUpdateSchema
+>;
+
+export const maintenancePlanInputSchema = z
+  .object({
+    name: nameSchema,
+    description: optionalText(500),
+    intervalType: recurrenceTypeSchema.default("NONE"),
+    intervalValue: intervalValueSchema,
+    meterId: optionalId,
+    meterInterval: meterValueSchema,
+  })
+  .check((ctx) => {
+    const v = ctx.value;
+    const calendar =
+      v.intervalType === "CALENDAR_DAYS" ||
+      v.intervalType === "CALENDAR_MONTHS";
+    if (calendar && v.intervalValue == null) {
+      ctx.issues.push({
+        code: "custom",
+        message: "Enter the interval (days or months).",
+        path: ["intervalValue"],
+        input: v,
+      });
+    }
+    if (calendar && (v.meterId != null || v.meterInterval != null)) {
+      ctx.issues.push({
+        code: "custom",
+        message: "Meter fields apply only to meter-interval plans.",
+        path: ["meterId"],
+        input: v,
+      });
+    }
+    if (v.intervalType === "METER_INTERVAL") {
+      if (v.meterId == null) {
+        ctx.issues.push({
+          code: "custom",
+          message: "Choose the meter this plan counts against.",
+          path: ["meterId"],
+          input: v,
+        });
+      }
+      if (v.meterInterval == null) {
+        ctx.issues.push({
+          code: "custom",
+          message: "Enter the meter interval (e.g. 100).",
+          path: ["meterInterval"],
+          input: v,
+        });
+      }
+      if (v.intervalValue != null) {
+        ctx.issues.push({
+          code: "custom",
+          message: "Calendar interval does not apply to meter plans.",
+          path: ["intervalValue"],
+          input: v,
+        });
+      }
+    }
+    if (v.intervalType === "NONE") {
+      if (
+        v.intervalValue != null ||
+        v.meterId != null ||
+        v.meterInterval != null
+      ) {
+        ctx.issues.push({
+          code: "custom",
+          message: "A non-recurring plan takes no interval.",
+          path: ["intervalType"],
+          input: v,
+        });
+      }
+    }
+  });
+export type MaintenancePlanInput = z.infer<typeof maintenancePlanInputSchema>;
+
+export const maintenancePlanStatusSchema = z.enum(["ACTIVE", "INACTIVE"]);
+export type MaintenancePlanStatusInput = z.infer<
+  typeof maintenancePlanStatusSchema
+>;
+
+export const maintenanceRecordInputSchema = z
+  .object({
+    planId: optionalId,
+    title: nameSchema,
+    performedOn: requiredDateOnlySchema,
+    workPerformed: optionalText(2000),
+    providerName: optionalText(120),
+    performedByMemberId: optionalId,
+    meterId: optionalId,
+    meterReading: meterValueSchema,
+    nextDueOn: dateOnlySchema,
+    notes: optionalText(2000),
+  })
+  .check((ctx) => {
+    const v = ctx.value;
+    if ((v.meterId == null) !== (v.meterReading == null)) {
+      ctx.issues.push({
+        code: "custom",
+        message: "A meter reading needs its meter, and vice versa.",
+        path: ["meterReading"],
+        input: v,
+      });
+    }
+    if (v.nextDueOn && v.nextDueOn < v.performedOn) {
+      ctx.issues.push({
+        code: "custom",
+        message: "Next due cannot be earlier than the service date.",
+        path: ["nextDueOn"],
+        input: v,
+      });
+    }
+  });
+export type MaintenanceRecordInput = z.infer<
+  typeof maintenanceRecordInputSchema
+>;
+
+/** Corrections — asset/plan and the meter fact are immutable. */
+export const maintenanceRecordUpdateSchema = z
+  .object({
+    title: nameSchema,
+    performedOn: requiredDateOnlySchema,
+    workPerformed: optionalText(2000),
+    providerName: optionalText(120),
+    performedByMemberId: optionalId,
+    nextDueOn: dateOnlySchema,
+    notes: optionalText(2000),
+    correctionNote: optionalText(500),
+  })
+  .refine((v) => !v.nextDueOn || v.nextDueOn >= v.performedOn, {
+    message: "Next due cannot be earlier than the service date.",
+    path: ["nextDueOn"],
+  });
+export type MaintenanceRecordUpdate = z.infer<
+  typeof maintenanceRecordUpdateSchema
+>;
+
+export const defectInputSchema = z.object({
+  title: nameSchema,
+  description: optionalText(2000),
+  reportedOn: requiredDateOnlySchema,
+  reportedByMemberId: optionalId,
+  reporterName: optionalText(120),
+});
+export type DefectInput = z.infer<typeof defectInputSchema>;
+
+export const defectStatusSchema = z.enum(["OPEN", "RESOLVED"]);
+export type DefectStatusInput = z.infer<typeof defectStatusSchema>;
+
+/** Status transition fields — resolvedOn required when resolving. */
+export const defectTransitionSchema = z
+  .object({
+    status: defectStatusSchema,
+    resolvedOn: dateOnlySchema,
+    resolutionNotes: optionalText(2000),
+    note: optionalText(1000),
+  })
+  .check((ctx) => {
+    const v = ctx.value;
+    if (v.status === "RESOLVED" && v.resolvedOn == null) {
+      ctx.issues.push({
+        code: "custom",
+        message: "A resolved defect needs a resolution date.",
+        path: ["resolvedOn"],
+        input: v,
+      });
+    }
+  });
+export type DefectTransitionInput = z.infer<typeof defectTransitionSchema>;
+
+export const assetMeterInputSchema = z.object({
+  name: nameSchema,
+  unit: z.string().trim().min(1, "Unit is required (e.g. hours, km).").max(30),
+});
+export type AssetMeterInput = z.infer<typeof assetMeterInputSchema>;
+
+export const assetMeterStatusSchema = z.enum(["ACTIVE", "ARCHIVED"]);
+export type AssetMeterStatusInput = z.infer<typeof assetMeterStatusSchema>;
+
+const requiredMeterValueSchema = z
+  .string({ error: "Reading is required." })
+  .trim()
+  .regex(/^\d{1,9}(\.\d{1,3})?$/, "Enter a non-negative reading (e.g. 812.4).");
+
+export const meterReadingInputSchema = z.object({
+  reading: requiredMeterValueSchema,
+  recordedOn: requiredDateOnlySchema,
+  recordedByMemberId: optionalId,
+  notes: optionalText(500),
+});
+export type MeterReadingInput = z.infer<typeof meterReadingInputSchema>;

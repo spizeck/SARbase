@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 
 import { getAuthContext } from "@/lib/auth/context";
+import { tryParseFirebaseClientEnvironment } from "@/lib/env";
 
 import { LoginForm } from "./login-form";
 
@@ -15,6 +16,10 @@ export default async function LoginPage() {
     redirect("/account");
   }
 
+  // Resolved on the server and handed down as a prop: reading process.env
+  // inside the client component is not a stable SSR/hydration boundary.
+  const firebaseConfigured = tryParseFirebaseClientEnvironment() !== null;
+
   return (
     <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center px-6 py-16">
       <h1 className="text-2xl font-semibold tracking-tight">
@@ -26,7 +31,7 @@ export default async function LoginPage() {
       </p>
       <div className="mt-6">
         <Suspense>
-          <LoginForm />
+          <LoginForm configured={firebaseConfigured} />
         </Suspense>
       </div>
     </main>

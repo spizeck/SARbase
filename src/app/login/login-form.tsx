@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { signInWithEmailAndPassword } from "firebase/auth";
 
 import { getFirebaseClientAuth } from "@/lib/firebase/client";
-import { tryParseFirebaseClientEnvironment } from "@/lib/env";
 
 import { createSessionAction } from "./actions";
 
@@ -15,15 +14,13 @@ import { createSessionAction } from "./actions";
  * ID token to the server, which verifies it independently and mints the
  * session cookie. The token never reaches the URL, logs, or storage.
  */
-export function LoginForm() {
+export function LoginForm({ configured }: { configured: boolean }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-
-  const configured = tryParseFirebaseClientEnvironment() !== null;
 
   if (!configured) {
     return (

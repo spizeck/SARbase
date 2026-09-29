@@ -354,8 +354,8 @@ live in free text.
 - `ConditionStatus` (`UNKNOWN`/`GOOD`/`FAIR`/`DAMAGED`): a clerk's
   note about what someone observed — never inspection-derived, never a
   safety grade. `UNKNOWN` is the default so no record pretends to a
-  condition nobody stated. Structured condition evidence belongs to
-  inspections (#11).
+  condition nobody stated. Inspections (#11) may record an observed
+  condition per occurrence without touching the asset's own field.
 - `StorageLocationStatus` / `InventoryItemStatus`: `ACTIVE` |
   `ARCHIVED`. Archival preserves the row and every reference to it;
   the application exposes no delete path for any of these records —
@@ -382,13 +382,232 @@ assetTag])` — org-scoped when present; NULLs are distinct so untagged
 assets never collide. `serialNumber` is indexed but deliberately not
 unique (manufacturers can reuse them).
 
-**Deferred to later issues:** inspections/defects/maintenance and
-engine hours (#11 — `Asset`/`InventoryItem` already expose
-`(id, organizationId)` targets for them), attachments (#16 — stable
+**Deferred to later issues:** attachments (#16 — stable
 ids, no URL/blob stand-ins), real Vendor/Expense records (#17 —
 `vendor` free text may migrate onto them), global search (#18 — the
 identifier/category indexes are the preparation), reporting (#19),
 durable location/movement history (generic audit work).
+
+## Inspections, maintenance, defects, and due tracking
+
+Issue #11 adds four related but distinct record families — durable
+facts, never a mutable "maintenance status" blob. **Product boundary:**
+these records state facts only — "inspection performed 2026-09-15",
+"service at 812.4 hours", "defect reported", "due 2026-10-15",
+"overdue by 12 days". Nothing here concludes that an asset is safe,
+unsafe, ready, deployable, or a mission blocker; humans decide
+operational meaning.
+
+**Target decision:** every record attaches to `Asset` only.
+`InventoryItem` consumable/expiry tracking is deferred — a polymorphic
+asset-or-item target would weaken composite-FK integrity, and items
+that genuinely need per-unit inspection (a specific flare kit, an
+oxygen kit) can be modeled as Assets, which is what they are.
+
+### `InspectionDefinition`
+
+What the organization tracks ("monthly vessel visual inspection",
+"annual extinguisher check"). Org-scoped `name` (unique per org),
+optional `description`, calendar recurrence (`NONE` |
+`CALENDAR_DAYS` | `CALENDAR_MONTHS` + positive `intervalValue`), and
+`ACTIVE`/`INACTIVE` lifecycle. Deactivation preserves history but
+blocks new records. Definitions are never hardcoded. Meter-based
+recurring requirements live on `MaintenancePlan`, not here.
+
+### `InspectionRecord`
+
+A factual occurrence: asset + definition + `performedOn` calendar
+date, optional inspector (same-org `inspectorMemberId` and/or
+free-text `inspectorName` for external surveyors), optional
+`conditionObserved` (a clerk's observation reusing `ConditionStatus` —
+it does NOT update `Asset.condition`), optional explicit `nextDueOn`,
+optional meter reading, `notes`. There is deliberately no result
+verdict — the record's existence states the inspection happened;
+findings live in notes and in defects a human chooses to report.
+When no explicit `nextDueOn` is supplied and the definition carries
+calendar recurrence, the due date is derived at record time and stored
+as a fact (`performedOn + interval`, month-end clamped).
+
+**Corrections preserve material history.** `updateInspectionRecord`
+edits material fields in place but appends an immutable
+`InspectionRecordChange` row in the same transaction: a complete
+before/after snapshot of the material fields (`performedOn`,
+`inspectorMemberId`, `inspectorName`, `conditionObserved`, `nextDueOn`,
+`notes`), the optional human `note`, the acting `AuthIdentity`
+(server-side, never client-supplied), and `createdAt`. The record row
+locks `FOR UPDATE` inside the transaction so concurrent corrections
+chain correctly — each change's `before` equals the previously
+committed state. A submission that changes no material field writes no
+history. Asset, definition, and the captured meter reading are
+immutable provenance and are not in the snapshot.
+
+### `MaintenancePlan`
+
+A per-asset recurring requirement ("engine oil every 100 hours",
+"annual haul-out"). `intervalType` is `NONE` | `CALENDAR_DAYS` |
+`CALENDAR_MONTHS` | `METER_INTERVAL`; meter plans require an
+`AssetMeter` on the same asset plus a positive `meterInterval`
+(exact `DECIMAL(14,3)`). Plans are per-asset only — no category rules
+or policy engine. `INACTIVE` preserves history and blocks new records.
+
+### `MaintenanceRecord`
+
+A factual service/repair event: `performedOn`, `title`, optional
+`workPerformed`, free-text `providerName` (real vendor/cost tracking is
+#17), optional `performedByMemberId`, optional meter reading, optional
+explicit `nextDueOn` (for ad-hoc work), `notes`. `planId` is optional —
+ad-hoc work needs no plan. History appends; a new service is a new
+row, never an overwrite. Plan-linked records get their due follow-up
+from the plan's recurrence at read time, so corrections to the latest
+record automatically recompute the derived due fact.
+
+Material corrections get the same treatment as inspections:
+`updateMaintenanceRecord` writes a `MaintenanceRecordChange`
+before/after snapshot (`performedOn`, `title`, `workPerformed`,
+`providerName`, `performedByMemberId`, `nextDueOn`, `notes`) + actor +
+timestamp atomically with the update. `planId`, asset, and the
+captured meter reading are immutable provenance.
+
+SARbase interprets the foundation's immutable-records rule
+(`amendsRecordId` append-only amendment) as stable-record-identity +
+immutable correction history: corrections fix clerical mistakes in
+place while `*RecordChange` rows preserve every prior material state.
+The historical-integrity property — the past cannot be silently
+rewritten — is the same, and record ids stay stable for future
+attachment linkage.
+
+### `Defect` + `DefectChange`
+
+A human-reported factual issue: `reportedOn`, optional reporter
+(member and/or free text), `title`, `description`, `OPEN`/`RESOLVED`
+status, `resolvedOn`, `resolutionNotes`. Every lifecycle event —
+REPORTED, RESOLVED, REOPENED — appends a `DefectChange` row naming the
+acting `AuthIdentity` (same narrow-history pattern as
+`TrainingAttendanceChange`; no generic audit framework). Reopening
+keeps `resolvedOn`/`resolutionNotes` as the record of the most recent
+resolution while status returns to OPEN.
+
+**Defects never mutate `AssetStatus`.** Reporting a defect leaves the
+asset `ACTIVE` unless the human explicitly checks "also mark out of
+service" (or edits the asset); resolving a defect never restores
+`ACTIVE`. `OUT_OF_SERVICE` remains an explicit human lifecycle choice.
+
+### `AssetMeter` + `AssetMeterReading`
+
+A generic, manually-recorded counter on one asset — `name` + free-text
+`unit` ("hours", "km", "cycles") so no meter kind is hardcoded. No
+telemetry or sensor ingestion. Readings are append-only facts
+(`DECIMAL(14,3)`, non-negative); "current reading" is the latest by
+`(recordedOn, createdAt)`.
+
+**Meters are monotonic within a meter's lifetime** — aligned with
+`maintenance-core` (`readings.ts`): a physical meter does not run
+backward, so a reading that would break non-decreasing observation
+order is rejected as a data-entry error
+(`MeterReadingDecreaseError`). The check compares against the
+chronological neighbors (`recordedOn`, then `createdAt`), so a
+backdated-but-honest observation ("forgot to log Tuesday") is legal
+when it fits — the runbook's "reading dates are honest" principle.
+Writers hold the meter row lock inside the transaction so concurrent
+readings can't interleave a decrease past the check. Meter
+reset/replacement is a real, explicit event: archive the old meter and
+create a new one — each meter's sequence stays monotonic and due math
+(`meterReading + meterInterval` vs current) stays unambiguous. A
+reading may carry at most one provenance source (a maintenance or
+inspection record it was captured on) — enforced by the
+`AssetMeterReading_single_source` CHECK constraint as well as domain
+validation.
+
+### Due-date and meter-due semantics
+
+"Today" is always the owning organization's IANA-local calendar date
+(`calendarDateInZone` on `Organization.timezone`) — never server or
+UTC time. A due date is valid **through** that day: "due today" all
+day, overdue starting the next local day. `listDueInspections` reports
+the latest record per (asset, definition) that carries a `nextDueOn`.
+`listDueMaintenance` derives plan dues from the latest linked record
+(`performedOn + interval`, or `meterReading + meterInterval` vs the
+current meter reading) plus the most recent ad-hoc record carrying an
+explicit `nextDueOn` per asset. A plan with no records reports
+"never performed" — no baseline date is invented. All due data is
+query-derived and deterministic; **notification delivery is deferred
+to #13** — there are no reminder jobs or reminder rows.
+
+### Same-organization integrity
+
+Denormalized `organizationId` + composite FKs throughout: every record
+proves its org at the database level, and references to definitions,
+plans, meters, assets, members, and provenance records are all
+composite `(id, organizationId)` targets — a cross-org write is a
+P2003 rejection, not just an app check. Meters additionally must
+belong to the same asset as the record referencing them.
+
+**Deferred to later issues:** notification delivery (#13 — the
+query-derived due lists are the seam), attachments (#16),
+vendors/expenses (#17 — `providerName` free text may migrate),
+global search (#18), reporting (#19), InventoryItem expiry tracking
+(deliberately deferred with the target decision above).
+
+### app-foundations `maintenance-core` evaluation
+
+Reviewed `spizeck/app-foundations/modules/maintenance-core`
+(`README.md`, `src/dates.ts`, `src/due-state.ts`, `src/schedule.ts`,
+`src/readings.ts`, `src/records.ts`, `standards/maintenance.md`,
+`runbooks/maintenance.md`, `docs/maintenance-extraction.md`) as
+copy/adapt guidance — it is pure domain logic, so nothing is a runtime
+dependency.
+
+**Reused / adapted:**
+
+- **Calendar-date semantics** — `LocalDate` ≈ SARbase's `YYYY-MM-DD`
+  validated dates pinned to `@db.Date` UTC midnight; "today" is
+  resolved at the application boundary (`organizationToday` /
+  `calendarDateInZone`), never inside decision logic — same shape as
+  `evaluateDueState(schedule, asOf, policy)`.
+- **Due-state is a fact, never an operational verdict** — the
+  module's "maintenance state never mutates operational state" /
+  Resource-Blocks boundary matches SARbase's defect/status separation.
+- **Schedule vs. record separation** — `MaintenancePlan`/`Inspection
+Definition` play the schedule role; `MaintenanceRecord`/
+  `InspectionRecord` are the history. SARbase additionally derives the
+  due point from the latest record at read time rather than storing a
+  mutable `nextDueAt` on the plan — the standard's "two writes can
+  diverge" hazard is structurally impossible here.
+- **`unknown` ≠ `ok`** — plans with no records report "never
+  performed"; a meter with no reading yields no meter-due fact.
+- **Meter due** — `currentReading >= nextDueAt` is overdue; the
+  threshold is `lastServiceReading + interval` (≈ `advanceAfterService`
+  semantics). SARbase does not implement the 10%-of-interval
+  "due-soon" window for meters; meter entries report reached/not
+  reached plus remaining/overBy amounts, while date dues use the
+  caller-supplied day window.
+- **Immutable history** — defect `DefectChange` and the
+  `*RecordChange` correction snapshots implement the same
+  "the past is not rewritten" rule as `records.ts` + `amendsRecordId`.
+
+**Deliberate differences:**
+
+- **Record identity stays stable.** `maintenance-core` models
+  corrections as new records with `amendsRecordId`. SARbase updates
+  material fields in place and appends `InspectionRecordChange` /
+  `MaintenanceRecordChange` before/after rows — friendlier for
+  correction-heavy clerical use and keeps ids stable for future
+  attachment linkage, while preserving the same audit property.
+- **Reset/replacement is archive + new meter, not a reset flag.**
+  `applyMeterReading` allows a decrease with `allowMeterReset`; SARbase
+  has no reset flag — a meter's observation order is strictly
+  non-decreasing for its lifetime and a replacement is a new
+  `AssetMeter`, matching the model's own "meter lifetime" framing and
+  keeping every meter's history self-consistent.
+- **Meters live on assets, not inside the schedule.** The plan only
+  references a meter and an interval; readings are first-class
+  append-only rows shared by direct entry and record provenance, so
+  inspection-time and service-time captures feed one sequence.
+- **No `kind` taxonomy on records.** maintenance-core splits
+  service/unscheduled/inspection/note; SARbase keeps inspections as
+  their own typed record family (they carry org-defined definitions
+  and recurrence) and treats all maintenance rows uniformly —
+  the factual boundary the issue asks for.
 
 ## Lifecycle and history
 
@@ -400,12 +619,14 @@ durable location/movement history (generic audit work).
   this issue; the `Restrict` FKs make even administrative deletion
   conservative.
 - Status changes are ordinary column updates today. Training
-  **attendance** edits are the exception — they append immutable
-  `TrainingAttendanceChange` rows (see above). **Deferred:** the generic
-  audit-history work (a later issue) is expected to strengthen other
-  material history — who changed status, event details, when — into
-  durable audit records rather than relying on `updatedAt` and runtime
-  logs.
+  **attendance** edits, **defect lifecycle** transitions, and
+  **material inspection/maintenance corrections** are the exceptions —
+  they append immutable `TrainingAttendanceChange` / `DefectChange` /
+  `InspectionRecordChange` / `MaintenanceRecordChange` rows (see
+  above). **Deferred:** the generic audit-history work (a later issue)
+  is expected to strengthen other material history — who changed
+  status, event details, when — into durable audit records rather than
+  relying on `updatedAt` and runtime logs.
 
 ## Authentication and authorization
 
@@ -481,3 +702,33 @@ Server-side Zod schemas (`src/lib/domain/schemas.ts`):
   stored as exact `DECIMAL(14,3)`; `unitOfMeasure` ≤30; `unitId` and
   `storageLocationId` same-organization; bounded `condition`/`status`
   enums; `notes` ≤2000.
+- Inspection definition: `name` required; `description` ≤500;
+  `recurrenceType` calendar-only (`NONE`/`CALENDAR_DAYS`/
+  `CALENDAR_MONTHS`); a positive `intervalValue` is required iff a
+  recurrence is chosen.
+- Inspection record: `definitionId` required (same-org, ACTIVE
+  definition); `performedOn` required calendar date; `nextDueOn` may
+  not precede it; inspector member must be same-org; meter id and
+  reading must arrive together (same-org, same-asset, ACTIVE meter,
+  non-negative ≤3-decimal value); `conditionObserved` bounded enum;
+  `notes` ≤2000.
+- Maintenance plan: `name` required (unique per asset); `intervalType`
+  `NONE`/`CALENDAR_DAYS`/`CALENDAR_MONTHS`/`METER_INTERVAL`; calendar
+  intervals require positive `intervalValue`, meter intervals require
+  same-asset `meterId` + positive decimal `meterInterval`; mixing
+  fields across modes is rejected.
+- Maintenance record: `title` and `performedOn` required; optional
+  same-org, same-asset, ACTIVE `planId`; `nextDueOn` may not precede
+  `performedOn`; meter id + reading pair as for inspections;
+  `providerName`/`workPerformed`/`notes` bounded text.
+- Defect: `title` required; `reportedOn` required; reporter member
+  same-org; `resolvedOn` required when resolving and may not precede
+  `reportedOn`; bounded `description`/`resolutionNotes`/history `note`.
+- Meter: `name` required (unique per asset); `unit` required ≤30.
+  Reading: non-negative decimal (≤9 integer digits, ≤3 decimals),
+  `recordedOn` required calendar date, optional same-org member,
+  `notes` ≤500 — and the value must keep the meter's observation order
+  non-decreasing (a decrease means archive + new meter, not an edit).
+- Inspection/maintenance corrections: same fields as creation minus
+  the immutable provenance; optional `correctionNote` ≤500 recorded on
+  the change row.
