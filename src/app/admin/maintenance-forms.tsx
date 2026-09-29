@@ -500,6 +500,28 @@ export function InspectionRecordEditForm({
           className={inputClass}
         />
       </div>
+      <div>
+        <label htmlFor={id("correctionNote")} className={labelClass}>
+          Correction note {optionalMark}
+        </label>
+        <input
+          id={id("correctionNote")}
+          name="correctionNote"
+          type="text"
+          maxLength={500}
+          placeholder="Why is this record being corrected?"
+          aria-invalid={Boolean(state.fieldErrors?.correctionNote)}
+          aria-describedby={id("correctionNote-error")}
+          className={inputClass}
+        />
+        <FieldError
+          id={id("correctionNote-error")}
+          errors={state.fieldErrors?.correctionNote}
+        />
+        <p className="mt-1 text-xs text-neutral-500">
+          Material corrections are preserved in an immutable change history.
+        </p>
+      </div>
       {state.message && (
         <p className={errorClass} role="alert">
           {state.message}
@@ -1041,6 +1063,28 @@ export function MaintenanceRecordEditForm({
           defaultValue={defaults.notes ?? undefined}
           className={inputClass}
         />
+      </div>
+      <div>
+        <label htmlFor={id("correctionNote")} className={labelClass}>
+          Correction note {optionalMark}
+        </label>
+        <input
+          id={id("correctionNote")}
+          name="correctionNote"
+          type="text"
+          maxLength={500}
+          placeholder="Why is this record being corrected?"
+          aria-invalid={Boolean(state.fieldErrors?.correctionNote)}
+          aria-describedby={id("correctionNote-error")}
+          className={inputClass}
+        />
+        <FieldError
+          id={id("correctionNote-error")}
+          errors={state.fieldErrors?.correctionNote}
+        />
+        <p className="mt-1 text-xs text-neutral-500">
+          Material corrections are preserved in an immutable change history.
+        </p>
       </div>
       {state.message && (
         <p className={errorClass} role="alert">

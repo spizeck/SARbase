@@ -47,11 +47,20 @@ import type {
  *
  * History is append-only at the row level: inspections, service
  * records, meter readings, and defect lifecycle changes are never
- * destructively deleted through the application surface. Corrections
- * edit factual fields in place (updatedAt); defect OPEN/RESOLVED/
- * REOPENED transitions are audited by DefectChange rows, following the
- * TrainingAttendanceChange pattern — narrow domain history, not a
- * generic audit framework.
+ * destructively deleted through the application surface. Material
+ * corrections to InspectionRecord/MaintenanceRecord edit factual
+ * fields in place but write an immutable InspectionRecordChange /
+ * MaintenanceRecordChange row (before/after snapshot + acting
+ * identity) in the same transaction — correction without history is
+ * impossible. Defect OPEN/RESOLVED/REOPENED transitions are audited
+ * by DefectChange rows, following the TrainingAttendanceChange
+ * pattern — narrow domain history, not a generic audit framework.
+ *
+ * Meter semantics follow the app-foundations maintenance-core
+ * guidance: readings on one meter are non-decreasing in observation
+ * order ((recordedOn, createdAt)); a lower value is rejected as a
+ * data-entry error. Meter reset/replacement is a real event modeled
+ * explicitly — archive the meter and create a new one.
  */
 
 export class CrossOrganizationMaintenanceError extends Error {
@@ -81,6 +90,15 @@ export class ArchivedMeterError extends Error {
   constructor() {
     super("This meter is archived — it cannot receive new readings.");
     this.name = "ArchivedMeterError";
+  }
+}
+
+export class MeterReadingDecreaseError extends Error {
+  constructor() {
+    super(
+      "That reading conflicts with this meter's observation order — readings on a meter never decrease. If the meter was reset or replaced, archive it and create a new meter.",
+    );
+    this.name = "MeterReadingDecreaseError";
   }
 }
 
@@ -274,9 +292,10 @@ async function loadAsset(assetId: string) {
 async function assertSameOrgMember(
   memberId: string | undefined,
   organizationId: string,
+  tx: Prisma.TransactionClient | typeof prisma = prisma,
 ) {
   if (!memberId) return;
-  const member = await prisma.member.findUnique({ where: { id: memberId } });
+  const member = await tx.member.findUnique({ where: { id: memberId } });
   if (!member || member.organizationId !== organizationId) {
     throw new CrossOrganizationMaintenanceError();
   }
@@ -316,6 +335,90 @@ async function latestMeterReading(
     where: { meterId },
     orderBy: [{ recordedOn: "desc" }, { createdAt: "desc" }],
   });
+}
+
+/**
+ * Require that a new reading keeps the meter's observation order
+ * non-decreasing (maintenance-core monotonicity — a meter does not run
+ * backward within its lifetime). The new observation must be ≥ the
+ * latest observation dated on/before it and ≤ the earliest observation
+ * dated after it, so a backdated reading is legal only when it fits
+ * between its chronological neighbors. Same-date insertions must be ≥
+ * the latest same-date reading (createdAt breaks the tie).
+ *
+ * Callers MUST hold a row lock on the AssetMeter (SELECT ... FOR UPDATE)
+ * inside the same transaction — see appendMeterReading — so concurrent
+ * writers can't interleave a decrease.
+ */
+async function assertMonotonicReading(
+  tx: Prisma.TransactionClient,
+  meterId: string,
+  recordedOn: Date,
+  reading: Prisma.Decimal | string | number,
+) {
+  const value = new Prisma.Decimal(reading);
+  const [predecessor, successor] = await Promise.all([
+    tx.assetMeterReading.findFirst({
+      where: { meterId, recordedOn: { lte: recordedOn } },
+      orderBy: [{ recordedOn: "desc" }, { createdAt: "desc" }],
+      select: { reading: true },
+    }),
+    tx.assetMeterReading.findFirst({
+      where: { meterId, recordedOn: { gt: recordedOn } },
+      orderBy: [{ recordedOn: "asc" }, { createdAt: "asc" }],
+      select: { reading: true },
+    }),
+  ]);
+  if (
+    (predecessor && value.lt(predecessor.reading)) ||
+    (successor && value.gt(successor.reading))
+  ) {
+    throw new MeterReadingDecreaseError();
+  }
+}
+
+/**
+ * Append a meter reading inside `tx`, holding the meter row lock and
+ * enforcing monotonic observation order. `provenance` links at most one
+ * source record (the AssetMeterReading_single_source CHECK is the
+ * database backstop).
+ */
+async function appendMeterReading(
+  tx: Prisma.TransactionClient,
+  args: {
+    organizationId: string;
+    meterId: string;
+    reading: Prisma.Decimal | string | number;
+    recordedOn: Date;
+    recordedByMemberId?: string | null;
+    maintenanceRecordId?: string;
+    inspectionRecordId?: string;
+    notes?: string | null;
+  },
+) {
+  // Serialize writers per meter so the monotonic check can't be raced —
+  // two concurrent readings must not interleave past each other's check.
+  await tx.$executeRaw`SELECT id FROM "AssetMeter" WHERE id = ${args.meterId} FOR UPDATE`;
+  await assertMonotonicReading(tx, args.meterId, args.recordedOn, args.reading);
+  return tx.assetMeterReading.create({
+    data: {
+      organizationId: args.organizationId,
+      meterId: args.meterId,
+      reading: args.reading,
+      recordedOn: args.recordedOn,
+      recordedByMemberId: args.recordedByMemberId ?? null,
+      maintenanceRecordId: args.maintenanceRecordId ?? null,
+      inspectionRecordId: args.inspectionRecordId ?? null,
+      notes: args.notes ?? null,
+    },
+  });
+}
+
+/** Date equality that treats "unset" consistently (null ↔ undefined). */
+function sameDate(a: Date | null | undefined, b: Date | null | undefined) {
+  if (a == null && b == null) return true;
+  if (a == null || b == null) return false;
+  return a.getTime() === b.getTime();
 }
 
 /* ------------------------------------------------------------------ */
@@ -413,6 +516,12 @@ export function listAssetInspections(assetId: string) {
       definition: { select: { id: true, name: true } },
       inspectorMember: { select: { id: true, displayName: true } },
       meter: { select: { id: true, name: true, unit: true } },
+      changes: {
+        orderBy: { createdAt: "desc" },
+        include: {
+          actorAuthIdentity: { select: { id: true, email: true } },
+        },
+      },
     },
   });
 }
@@ -471,15 +580,13 @@ export async function recordInspection(
       },
     });
     if (input.meterId && input.meterReading != null) {
-      await tx.assetMeterReading.create({
-        data: {
-          organizationId: asset.organizationId,
-          meterId: input.meterId,
-          reading: input.meterReading,
-          recordedOn: input.performedOn,
-          recordedByMemberId: input.inspectorMemberId ?? null,
-          inspectionRecordId: created.id,
-        },
+      await appendMeterReading(tx, {
+        organizationId: asset.organizationId,
+        meterId: input.meterId,
+        reading: input.meterReading,
+        recordedOn: input.performedOn,
+        recordedByMemberId: input.inspectorMemberId ?? null,
+        inspectionRecordId: created.id,
       });
     }
     return created;
@@ -496,33 +603,77 @@ export async function recordInspection(
 }
 
 /**
- * Correct a recorded inspection's factual fields in place (updatedAt
- * marks the correction). Asset, definition, and the captured meter
- * reading are immutable — a wrong reading is corrected by recording a
- * new reading, preserving the append-only meter history.
+ * Correct a recorded inspection's factual fields in place — and append
+ * an immutable InspectionRecordChange in the same transaction, so a
+ * material correction cannot commit without its before/after snapshot.
+ * The correction actor is the server-side sign-in identity
+ * (ctx.identity.id), never client input. Asset, definition, and the
+ * captured meter reading are immutable provenance. A submission that
+ * changes no material field writes no history row.
  */
 export async function updateInspectionRecord(
   recordId: string,
   input: InspectionRecordUpdate,
+  actorAuthIdentityId: string,
 ) {
-  const existing = await prisma.inspectionRecord.findUnique({
-    where: { id: recordId },
-    select: { organizationId: true },
-  });
-  if (!existing) {
-    throw new CrossOrganizationMaintenanceError();
-  }
-  await assertSameOrgMember(input.inspectorMemberId, existing.organizationId);
-  const record = await prisma.inspectionRecord.update({
-    where: { id: recordId },
-    data: {
+  const record = await prisma.$transaction(async (tx) => {
+    // Serialize concurrent corrections so each change row's "before"
+    // snapshot equals the previously committed state.
+    await tx.$executeRaw`SELECT id FROM "InspectionRecord" WHERE id = ${recordId} FOR UPDATE`;
+    const existing = await tx.inspectionRecord.findUnique({
+      where: { id: recordId },
+    });
+    if (!existing) {
+      throw new CrossOrganizationMaintenanceError();
+    }
+    await assertSameOrgMember(
+      input.inspectorMemberId,
+      existing.organizationId,
+      tx,
+    );
+
+    const next = {
       performedOn: input.performedOn,
       inspectorMemberId: input.inspectorMemberId ?? null,
       inspectorName: input.inspectorName ?? null,
       conditionObserved: input.conditionObserved ?? null,
       nextDueOn: input.nextDueOn ?? null,
       notes: input.notes ?? null,
-    },
+    };
+    const materiallyChanged =
+      !sameDate(existing.performedOn, next.performedOn) ||
+      existing.inspectorMemberId !== next.inspectorMemberId ||
+      existing.inspectorName !== next.inspectorName ||
+      existing.conditionObserved !== next.conditionObserved ||
+      !sameDate(existing.nextDueOn, next.nextDueOn) ||
+      existing.notes !== next.notes;
+
+    if (materiallyChanged) {
+      await tx.inspectionRecordChange.create({
+        data: {
+          organizationId: existing.organizationId,
+          recordId: existing.id,
+          note: input.correctionNote ?? null,
+          beforePerformedOn: existing.performedOn,
+          beforeInspectorMemberId: existing.inspectorMemberId,
+          beforeInspectorName: existing.inspectorName,
+          beforeConditionObserved: existing.conditionObserved,
+          beforeNextDueOn: existing.nextDueOn,
+          beforeNotes: existing.notes,
+          afterPerformedOn: next.performedOn,
+          afterInspectorMemberId: next.inspectorMemberId,
+          afterInspectorName: next.inspectorName,
+          afterConditionObserved: next.conditionObserved,
+          afterNextDueOn: next.nextDueOn,
+          afterNotes: next.notes,
+          actorAuthIdentityId,
+        },
+      });
+    }
+    return tx.inspectionRecord.update({
+      where: { id: recordId },
+      data: next,
+    });
   });
   log({
     event: "inspection_record_updated",
@@ -661,6 +812,12 @@ export function listAssetMaintenanceRecords(assetId: string) {
       plan: { select: { id: true, name: true } },
       performedByMember: { select: { id: true, displayName: true } },
       meter: { select: { id: true, name: true, unit: true } },
+      changes: {
+        orderBy: { createdAt: "desc" },
+        include: {
+          actorAuthIdentity: { select: { id: true, email: true } },
+        },
+      },
     },
   });
 }
@@ -717,15 +874,13 @@ export async function recordMaintenance(
       },
     });
     if (input.meterId && input.meterReading != null) {
-      await tx.assetMeterReading.create({
-        data: {
-          organizationId: asset.organizationId,
-          meterId: input.meterId,
-          reading: input.meterReading,
-          recordedOn: input.performedOn,
-          recordedByMemberId: input.performedByMemberId ?? null,
-          maintenanceRecordId: created.id,
-        },
+      await appendMeterReading(tx, {
+        organizationId: asset.organizationId,
+        meterId: input.meterId,
+        reading: input.meterReading,
+        recordedOn: input.performedOn,
+        recordedByMemberId: input.performedByMemberId ?? null,
+        maintenanceRecordId: created.id,
       });
     }
     return created;
@@ -742,25 +897,34 @@ export async function recordMaintenance(
 }
 
 /**
- * Correct a recorded service event's factual fields in place. Asset,
- * plan, and the captured meter reading are immutable — append-only
- * history is preserved by recording a new reading instead of editing.
+ * Correct a recorded service event's factual fields in place — and
+ * append an immutable MaintenanceRecordChange in the same transaction.
+ * Actor is the server-side sign-in identity; asset, plan, and the
+ * captured meter reading are immutable provenance. A submission that
+ * changes no material field writes no history row.
  */
 export async function updateMaintenanceRecord(
   recordId: string,
   input: MaintenanceRecordUpdate,
+  actorAuthIdentityId: string,
 ) {
-  const existing = await prisma.maintenanceRecord.findUnique({
-    where: { id: recordId },
-    select: { organizationId: true },
-  });
-  if (!existing) {
-    throw new CrossOrganizationMaintenanceError();
-  }
-  await assertSameOrgMember(input.performedByMemberId, existing.organizationId);
-  const record = await prisma.maintenanceRecord.update({
-    where: { id: recordId },
-    data: {
+  const record = await prisma.$transaction(async (tx) => {
+    // Serialize concurrent corrections so each change row's "before"
+    // snapshot equals the previously committed state.
+    await tx.$executeRaw`SELECT id FROM "MaintenanceRecord" WHERE id = ${recordId} FOR UPDATE`;
+    const existing = await tx.maintenanceRecord.findUnique({
+      where: { id: recordId },
+    });
+    if (!existing) {
+      throw new CrossOrganizationMaintenanceError();
+    }
+    await assertSameOrgMember(
+      input.performedByMemberId,
+      existing.organizationId,
+      tx,
+    );
+
+    const next = {
       title: input.title,
       performedOn: input.performedOn,
       workPerformed: input.workPerformed ?? null,
@@ -768,7 +932,44 @@ export async function updateMaintenanceRecord(
       performedByMemberId: input.performedByMemberId ?? null,
       nextDueOn: input.nextDueOn ?? null,
       notes: input.notes ?? null,
-    },
+    };
+    const materiallyChanged =
+      existing.title !== next.title ||
+      !sameDate(existing.performedOn, next.performedOn) ||
+      existing.workPerformed !== next.workPerformed ||
+      existing.providerName !== next.providerName ||
+      existing.performedByMemberId !== next.performedByMemberId ||
+      !sameDate(existing.nextDueOn, next.nextDueOn) ||
+      existing.notes !== next.notes;
+
+    if (materiallyChanged) {
+      await tx.maintenanceRecordChange.create({
+        data: {
+          organizationId: existing.organizationId,
+          recordId: existing.id,
+          note: input.correctionNote ?? null,
+          beforePerformedOn: existing.performedOn,
+          beforeTitle: existing.title,
+          beforeWorkPerformed: existing.workPerformed,
+          beforeProviderName: existing.providerName,
+          beforePerformedByMemberId: existing.performedByMemberId,
+          beforeNextDueOn: existing.nextDueOn,
+          beforeNotes: existing.notes,
+          afterPerformedOn: next.performedOn,
+          afterTitle: next.title,
+          afterWorkPerformed: next.workPerformed,
+          afterProviderName: next.providerName,
+          afterPerformedByMemberId: next.performedByMemberId,
+          afterNextDueOn: next.nextDueOn,
+          afterNotes: next.notes,
+          actorAuthIdentityId,
+        },
+      });
+    }
+    return tx.maintenanceRecord.update({
+      where: { id: recordId },
+      data: next,
+    });
   });
   log({
     event: "maintenance_record_updated",
@@ -1053,11 +1254,12 @@ export function listMeterReadings(meterId: string) {
 }
 
 /**
- * Append a factual meter reading. Readings are never edited — a wrong
- * value is corrected by recording the right one (latest by
- * (recordedOn, createdAt) is "current"). No monotonicity is enforced:
- * meters are reset and replaced in the real world, so a lower reading
- * than a previous one is a legal fact.
+ * Append a factual meter reading. Readings are never edited, and on one
+ * meter they never decrease in observation order — a lower value is a
+ * data-entry error (MeterReadingDecreaseError), not a reset. Meter
+ * reset/replacement is modeled by archiving the meter and creating a
+ * new one. A backdated observation is legal when it fits between its
+ * chronological neighbors.
  */
 export async function recordMeterReading(
   meterId: string,
@@ -1072,15 +1274,15 @@ export async function recordMeterReading(
   }
   await assertSameOrgMember(input.recordedByMemberId, meter.organizationId);
 
-  const reading = await prisma.assetMeterReading.create({
-    data: {
+  const reading = await prisma.$transaction(async (tx) => {
+    return appendMeterReading(tx, {
       organizationId: meter.organizationId,
       meterId: meter.id,
       reading: input.reading,
       recordedOn: input.recordedOn,
       recordedByMemberId: input.recordedByMemberId ?? null,
       notes: input.notes ?? null,
-    },
+    });
   });
   log({
     event: "meter_reading_recorded",

@@ -71,8 +71,10 @@ model Organization {
   inventoryItems           InventoryItem[]
   inspectionDefinitions    InspectionDefinition[]
   inspectionRecords        InspectionRecord[]
+  inspectionRecordChanges  InspectionRecordChange[]
   maintenancePlans         MaintenancePlan[]
   maintenanceRecords       MaintenanceRecord[]
+  maintenanceRecordChanges MaintenanceRecordChange[]
   defects                  Defect[]
   defectChanges            DefectChange[]
   assetMeters              AssetMeter[]
@@ -181,9 +183,11 @@ model AuthIdentity {
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 
-  members              Member[]
-  organizationAccesses OrganizationAccess[]
-  defectChanges        DefectChange[]
+  members                  Member[]
+  organizationAccesses     OrganizationAccess[]
+  defectChanges            DefectChange[]
+  inspectionRecordChanges  InspectionRecordChange[]
+  maintenanceRecordChanges MaintenanceRecordChange[]
 
   @@unique([provider, providerUid])
   @@index([email])
@@ -490,31 +494,70 @@ model InspectionDefinition {
 /// nextDueOn is an explicit date-only fact — pre-filled from the
 /// definition's recurrence when recording, freely overridable.
 model InspectionRecord {
-  id                String               @id @default(cuid())
-  organization      Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id                String                   @id @default(cuid())
+  organization      Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   organizationId    String
-  asset             Asset                @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  asset             Asset                    @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
   assetId           String
-  definition        InspectionDefinition @relation(fields: [definitionId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  definition        InspectionDefinition     @relation(fields: [definitionId, organizationId], references: [id, organizationId], onDelete: Restrict)
   definitionId      String
-  performedOn       DateTime             @db.Date
-  inspectorMember   Member?              @relation(fields: [inspectorMemberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  performedOn       DateTime                 @db.Date
+  inspectorMember   Member?                  @relation(fields: [inspectorMemberId, organizationId], references: [id, organizationId], onDelete: Restrict)
   inspectorMemberId String?
   inspectorName     String? // free-text inspector (e.g. external surveyor)
   conditionObserved ConditionStatus? // clerk-recorded observation, never a readiness verdict
-  nextDueOn         DateTime?            @db.Date
-  meter             AssetMeter?          @relation(fields: [meterId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  nextDueOn         DateTime?                @db.Date
+  meter             AssetMeter?              @relation(fields: [meterId, organizationId], references: [id, organizationId], onDelete: Restrict)
   meterId           String?
-  meterReading      Decimal?             @db.Decimal(14, 3)
+  meterReading      Decimal?                 @db.Decimal(14, 3)
   notes             String?
-  meterReadings     AssetMeterReading[]  @relation("MeterReadingInspectionSource")
-  createdAt         DateTime             @default(now())
-  updatedAt         DateTime             @updatedAt
+  meterReadings     AssetMeterReading[]      @relation("MeterReadingInspectionSource")
+  changes           InspectionRecordChange[]
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
 
   // Composite target for AssetMeterReading.inspectionRecord provenance.
   @@unique([id, organizationId])
   @@index([organizationId, assetId, performedOn])
   @@index([organizationId, definitionId])
+}
+
+/// Append-only correction history for an InspectionRecord — the "corrections
+/// preserve material history" requirement. Each row snapshots every material
+/// field before and after the correction and is written in the same
+/// transaction as the record update, so a material correction cannot commit
+/// without its history. Asset/definition/meter provenance are immutable and
+/// not duplicated here. actorAuthIdentityId is the server-side sign-in
+/// identity — never client-supplied; Restrict keeps history intact because
+/// an identity cannot be deleted while it has authored changes. Member-id
+/// snapshots are stored as plain values (what the field contained), not
+/// live references.
+model InspectionRecordChange {
+  id             String           @id @default(cuid())
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  organizationId String
+  record         InspectionRecord @relation(fields: [recordId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  recordId       String
+  note           String? // optional human reason for the correction
+
+  beforePerformedOn       DateTime         @db.Date
+  beforeInspectorMemberId String?
+  beforeInspectorName     String?
+  beforeConditionObserved ConditionStatus?
+  beforeNextDueOn         DateTime?        @db.Date
+  beforeNotes             String?
+  afterPerformedOn        DateTime         @db.Date
+  afterInspectorMemberId  String?
+  afterInspectorName      String?
+  afterConditionObserved  ConditionStatus?
+  afterNextDueOn          DateTime?        @db.Date
+  afterNotes              String?
+  actorAuthIdentity       AuthIdentity     @relation(fields: [actorAuthIdentityId], references: [id], onDelete: Restrict)
+  actorAuthIdentityId     String
+  createdAt               DateTime         @default(now())
+
+  @@index([recordId, createdAt])
+  @@index([organizationId])
 }
 
 /// A per-asset recurring maintenance requirement ("engine oil every 100
@@ -550,31 +593,67 @@ model MaintenancePlan {
 /// AssetMeterReading in the same transaction so "current reading" has a
 /// single append-only source of truth.
 model MaintenanceRecord {
-  id                  String              @id @default(cuid())
-  organization        Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id                  String                    @id @default(cuid())
+  organization        Organization              @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   organizationId      String
-  asset               Asset               @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  asset               Asset                     @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
   assetId             String
-  plan                MaintenancePlan?    @relation(fields: [planId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  plan                MaintenancePlan?          @relation(fields: [planId, organizationId], references: [id, organizationId], onDelete: Restrict)
   planId              String?
-  performedOn         DateTime            @db.Date
+  performedOn         DateTime                  @db.Date
   title               String
   workPerformed       String?
   providerName        String? // free text; real vendor/cost tracking is issue #17
-  performedByMember   Member?             @relation(fields: [performedByMemberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  performedByMember   Member?                   @relation(fields: [performedByMemberId, organizationId], references: [id, organizationId], onDelete: Restrict)
   performedByMemberId String?
-  meter               AssetMeter?         @relation(fields: [meterId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  meter               AssetMeter?               @relation(fields: [meterId, organizationId], references: [id, organizationId], onDelete: Restrict)
   meterId             String?
-  meterReading        Decimal?            @db.Decimal(14, 3)
-  nextDueOn           DateTime?           @db.Date
+  meterReading        Decimal?                  @db.Decimal(14, 3)
+  nextDueOn           DateTime?                 @db.Date
   notes               String?
-  meterReadings       AssetMeterReading[] @relation("MeterReadingMaintenanceSource")
-  createdAt           DateTime            @default(now())
-  updatedAt           DateTime            @updatedAt
+  meterReadings       AssetMeterReading[]       @relation("MeterReadingMaintenanceSource")
+  changes             MaintenanceRecordChange[]
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
 
   @@unique([id, organizationId])
   @@index([organizationId, assetId, performedOn])
   @@index([organizationId, planId])
+}
+
+/// Append-only correction history for a MaintenanceRecord — same contract
+/// as InspectionRecordChange: a complete before/after snapshot of the
+/// material fields, written atomically with the record update, keyed to the
+/// server-side acting identity. planId and the captured meter reading are
+/// immutable provenance and are not part of the snapshot.
+model MaintenanceRecordChange {
+  id             String            @id @default(cuid())
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  organizationId String
+  record         MaintenanceRecord @relation(fields: [recordId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  recordId       String
+  note           String? // optional human reason for the correction
+
+  beforePerformedOn         DateTime     @db.Date
+  beforeTitle               String
+  beforeWorkPerformed       String?
+  beforeProviderName        String?
+  beforePerformedByMemberId String?
+  beforeNextDueOn           DateTime?    @db.Date
+  beforeNotes               String?
+  afterPerformedOn          DateTime     @db.Date
+  afterTitle                String
+  afterWorkPerformed        String?
+  afterProviderName         String?
+  afterPerformedByMemberId  String?
+  afterNextDueOn            DateTime?    @db.Date
+  afterNotes                String?
+  actorAuthIdentity         AuthIdentity @relation(fields: [actorAuthIdentityId], references: [id], onDelete: Restrict)
+  actorAuthIdentityId       String
+  createdAt                 DateTime     @default(now())
+
+  @@index([recordId, createdAt])
+  @@index([organizationId])
 }
 
 /// A human-reported factual issue. OPEN/RESOLVED transitions are audited by
@@ -648,8 +727,12 @@ model AssetMeter {
   @@index([organizationId, assetId])
 }
 
-/// One factual meter observation. No monotonicity is enforced — meters are
-/// reset and replaced in the real world; "current reading" is simply the
+/// One factual meter observation. Readings on one meter are non-decreasing
+/// in observation order ((recordedOn, createdAt)) — a physical meter does
+/// not run backward, so a lower value is a data error and is rejected. A
+/// backdated observation is legal when it fits between its chronological
+/// neighbors. Meter reset/replacement is a real event modeled explicitly:
+/// archive the old meter and create a new one. "Current reading" is the
 /// latest by (recordedOn, createdAt). A reading may record where it was
 /// captured (a maintenance or inspection record) — at most one source,
 /// enforced by the AssetMeterReading_single_source CHECK constraint.

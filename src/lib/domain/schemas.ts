@@ -439,6 +439,7 @@ export const inspectionRecordUpdateSchema = z
     ),
     nextDueOn: dateOnlySchema,
     notes: optionalText(2000),
+    correctionNote: optionalText(500),
   })
   .refine((v) => !v.nextDueOn || v.nextDueOn >= v.performedOn, {
     message: "Next due cannot be earlier than the inspection date.",
@@ -572,6 +573,7 @@ export const maintenanceRecordUpdateSchema = z
     performedByMemberId: optionalId,
     nextDueOn: dateOnlySchema,
     notes: optionalText(2000),
+    correctionNote: optionalText(500),
   })
   .refine((v) => !v.nextDueOn || v.nextDueOn >= v.performedOn, {
     message: "Next due cannot be earlier than the service date.",

@@ -137,6 +137,9 @@ let adminAIdentityId: string;
 // Issue #11 fixtures — records that live in org B and must be opaque to A.
 let assetA: { id: string };
 let assetB: { id: string };
+let inspectionDefinitionA: { id: string };
+let inspectionRecordA: { id: string };
+let maintenanceRecordA: { id: string };
 let inspectionDefinitionB: { id: string };
 let inspectionRecordB: { id: string };
 let maintenancePlanB: { id: string };
@@ -200,6 +203,25 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
     assetB = await prisma.asset.create({
       data: { organizationId: orgB.id, name: uniq("asset-b") },
     });
+    inspectionDefinitionA = await prisma.inspectionDefinition.create({
+      data: { organizationId: orgA.id, name: uniq("def-a") },
+    });
+    inspectionRecordA = await prisma.inspectionRecord.create({
+      data: {
+        organizationId: orgA.id,
+        assetId: assetA.id,
+        definitionId: inspectionDefinitionA.id,
+        performedOn: new Date("2026-09-15T00:00:00.000Z"),
+      },
+    });
+    maintenanceRecordA = await prisma.maintenanceRecord.create({
+      data: {
+        organizationId: orgA.id,
+        assetId: assetA.id,
+        title: uniq("svc-a"),
+        performedOn: new Date("2026-09-15T00:00:00.000Z"),
+      },
+    });
     inspectionDefinitionB = await prisma.inspectionDefinition.create({
       data: { organizationId: orgB.id, name: uniq("def-b") },
     });
@@ -262,6 +284,12 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.defect.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.inspectionRecordChange.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.maintenanceRecordChange.deleteMany({
       where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.maintenanceRecord.deleteMany({
@@ -1916,6 +1944,103 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
           form({ name: "x", recurrenceType: "NONE" }),
         ),
       ).rejects.toThrow("NEXT_REDIRECT /login");
+    });
+
+    it("MEMBER can write neither a correction nor its history", async () => {
+      signInAs(memberRoleUid);
+      const before = await prisma.inspectionRecord.findUniqueOrThrow({
+        where: { id: inspectionRecordA.id },
+      });
+      expect(
+        await updateInspectionRecordAction(
+          inspectionRecordA.id,
+          {},
+          form({ performedOn: "2026-09-16", notes: "member tamper" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateMaintenanceRecordAction(
+          maintenanceRecordA.id,
+          {},
+          form({ title: "member tamper", performedOn: recordDate }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await prisma.inspectionRecord.findUniqueOrThrow({
+          where: { id: inspectionRecordA.id },
+        }),
+      ).toEqual(before);
+      expect(
+        await prisma.inspectionRecordChange.count({
+          where: { recordId: inspectionRecordA.id },
+        }),
+      ).toBe(0);
+      expect(
+        await prisma.maintenanceRecordChange.count({
+          where: { recordId: maintenanceRecordA.id },
+        }),
+      ).toBe(0);
+    });
+
+    it("admin A cannot mutate org B records or grow their history", async () => {
+      signInAs(adminAUid);
+      const before = await prisma.maintenanceRecord.findUniqueOrThrow({
+        where: { id: maintenanceRecordB.id },
+      });
+      expect(
+        await updateMaintenanceRecordAction(
+          maintenanceRecordB.id,
+          {},
+          form({ title: "tampered", performedOn: recordDate }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateInspectionRecordAction(
+          inspectionRecordB.id,
+          {},
+          form({ performedOn: "2026-09-20" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      // Foreign record untouched; no change rows materialized.
+      expect(
+        await prisma.maintenanceRecord.findUniqueOrThrow({
+          where: { id: maintenanceRecordB.id },
+        }),
+      ).toEqual(before);
+      expect(
+        await prisma.maintenanceRecordChange.count({
+          where: { recordId: maintenanceRecordB.id },
+        }),
+      ).toBe(0);
+      expect(
+        await prisma.inspectionRecordChange.count({
+          where: { recordId: inspectionRecordB.id },
+        }),
+      ).toBe(0);
+    });
+
+    it("derives the correction actor from the server identity, not the form", async () => {
+      signInAs(adminAUid);
+      expect(
+        await updateInspectionRecordAction(
+          inspectionRecordA.id,
+          {},
+          form({
+            performedOn: "2026-09-16",
+            notes: "spoof attempt",
+            // Forged fields — must be ignored; the actor is ctx.identity.
+            actorAuthIdentityId: "attacker-identity",
+            actorId: "attacker-identity",
+            correctionNote: "date was wrong",
+          }),
+        ),
+      ).toEqual({});
+      const change = await prisma.inspectionRecordChange.findFirstOrThrow({
+        where: { recordId: inspectionRecordA.id },
+      });
+      expect(change.actorAuthIdentityId).toBe(adminAIdentityId);
+      expect(change.note).toBe("date was wrong");
+      expect(change.afterNotes).toBe("spoof attempt");
     });
   });
 });

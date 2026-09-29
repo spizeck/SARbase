@@ -110,6 +110,7 @@ import {
   InactiveInspectionDefinitionError,
   InactiveMaintenancePlanError,
   ArchivedMeterError,
+  MeterReadingDecreaseError,
   DefectTransitionError,
 } from "@/lib/domain/maintenance";
 import { AuthenticationError, AuthorizationError } from "@/lib/auth/context";
@@ -209,6 +210,7 @@ function mapDomainError(error: unknown): ActionState {
     error instanceof InactiveInspectionDefinitionError ||
     error instanceof InactiveMaintenancePlanError ||
     error instanceof ArchivedMeterError ||
+    error instanceof MeterReadingDecreaseError ||
     error instanceof DefectTransitionError
   ) {
     // Configuration facts about the caller's own organization — safe.
@@ -1217,11 +1219,14 @@ export async function updateInspectionRecordAction(
     conditionObserved: formData.get("conditionObserved"),
     nextDueOn: formData.get("nextDueOn"),
     notes: formData.get("notes"),
+    correctionNote: formData.get("correctionNote"),
   });
   if (!parsed.success) return zodErrors(parsed.error);
 
   try {
-    await updateInspectionRecord(recordId, parsed.data);
+    // The correction-history actor is the server-side identity — never
+    // a client-supplied value.
+    await updateInspectionRecord(recordId, parsed.data, ctx.identity.id);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1385,11 +1390,14 @@ export async function updateMaintenanceRecordAction(
     performedByMemberId: formData.get("performedByMemberId"),
     nextDueOn: formData.get("nextDueOn"),
     notes: formData.get("notes"),
+    correctionNote: formData.get("correctionNote"),
   });
   if (!parsed.success) return zodErrors(parsed.error);
 
   try {
-    await updateMaintenanceRecord(recordId, parsed.data);
+    // The correction-history actor is the server-side identity — never
+    // a client-supplied value.
+    await updateMaintenanceRecord(recordId, parsed.data, ctx.identity.id);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1597,7 +1605,10 @@ export async function recordMeterReadingAction(
   try {
     await recordMeterReading(meterId, parsed.data);
   } catch (error) {
-    return mapDomainError(error);
+    const mapped = mapDomainError(error);
+    return error instanceof MeterReadingDecreaseError
+      ? { fieldErrors: { reading: [mapped.message!] } }
+      : mapped;
   }
   revalidateMaintenance(meter.organizationId, meter.assetId);
   return {};

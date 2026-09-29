@@ -9,11 +9,13 @@ import {
   DefectTransitionError,
   InactiveInspectionDefinitionError,
   InactiveMaintenancePlanError,
+  MeterReadingDecreaseError,
   createAssetMeter,
   createInspectionDefinition,
   createMaintenancePlan,
   listAssetDefects,
   listAssetInspections,
+  listAssetMaintenanceRecords,
   listAssetMeters,
   listDueInspections,
   listDueMaintenance,
@@ -30,6 +32,7 @@ import {
   transitionDefect,
   updateDefect,
   updateInspectionRecord,
+  updateMaintenanceRecord,
 } from "./maintenance";
 
 /**
@@ -93,6 +96,8 @@ describe.skipIf(!hasDb)("inspections / maintenance / defects", () => {
     await prisma.assetMeterReading.deleteMany({ where: orgFilter });
     await prisma.defectChange.deleteMany({ where: orgFilter });
     await prisma.defect.deleteMany({ where: orgFilter });
+    await prisma.inspectionRecordChange.deleteMany({ where: orgFilter });
+    await prisma.maintenanceRecordChange.deleteMany({ where: orgFilter });
     await prisma.maintenanceRecord.deleteMany({ where: orgFilter });
     await prisma.inspectionRecord.deleteMany({ where: orgFilter });
     await prisma.maintenancePlan.deleteMany({ where: orgFilter });
@@ -340,6 +345,7 @@ describe.skipIf(!hasDb)("inspections / maintenance / defects", () => {
     it("corrects a record in place — asset and definition stay immutable", async () => {
       const org = await createTestOrg("irec-org9");
       const asset = await createTestAsset(org.id);
+      const actor = await createTestIdentity("irec-actor");
       const def = await createInspectionDefinition(org.id, {
         name: uniq("check"),
         recurrenceType: "NONE",
@@ -348,11 +354,15 @@ describe.skipIf(!hasDb)("inspections / maintenance / defects", () => {
         definitionId: def.id,
         performedOn: D("2026-09-14"),
       });
-      const corrected = await updateInspectionRecord(record.id, {
-        performedOn: D("2026-09-15"),
-        nextDueOn: D("2026-12-15"),
-        notes: "Corrected date",
-      });
+      const corrected = await updateInspectionRecord(
+        record.id,
+        {
+          performedOn: D("2026-09-15"),
+          nextDueOn: D("2026-12-15"),
+          notes: "Corrected date",
+        },
+        actor.id,
+      );
       expect(corrected.performedOn).toEqual(D("2026-09-15"));
       expect(corrected.assetId).toBe(asset.id);
       expect(corrected.definitionId).toBe(def.id);
@@ -360,6 +370,18 @@ describe.skipIf(!hasDb)("inspections / maintenance / defects", () => {
         corrected.createdAt.getTime(),
       );
       expect(await listAssetInspections(asset.id)).toHaveLength(1);
+
+      // The material correction appended an immutable before/after row.
+      const changes = await prisma.inspectionRecordChange.findMany({
+        where: { recordId: record.id },
+      });
+      expect(changes).toHaveLength(1);
+      expect(changes[0]!.actorAuthIdentityId).toBe(actor.id);
+      expect(changes[0]!.beforePerformedOn).toEqual(D("2026-09-14"));
+      expect(changes[0]!.afterPerformedOn).toEqual(D("2026-09-15"));
+      expect(changes[0]!.afterNextDueOn).toEqual(D("2026-12-15"));
+      expect(changes[0]!.beforeNotes).toBeNull();
+      expect(changes[0]!.afterNotes).toBe("Corrected date");
     });
 
     it("PostgreSQL rejects a cross-org record write outright", async () => {
@@ -408,7 +430,7 @@ describe.skipIf(!hasDb)("inspections / maintenance / defects", () => {
       expect(all[1]!.reading.toString()).toBe("812.435");
     });
 
-    it("allows a lower reading — meters are reset and replaced", async () => {
+    it("rejects a lower reading — meters are monotonic within a lifetime", async () => {
       const org = await createTestOrg("meter-org2");
       const asset = await createTestAsset(org.id);
       const meter = await createAssetMeter(asset.id, {
@@ -419,15 +441,127 @@ describe.skipIf(!hasDb)("inspections / maintenance / defects", () => {
         reading: "900",
         recordedOn: D("2026-09-10"),
       });
-      // Replacement meter installed — a lower reading is a legal fact.
-      const lower = await recordMeterReading(meter.id, {
-        reading: "12.5",
-        recordedOn: D("2026-09-15"),
-        notes: "Meter replaced",
+      // A decrease dated on/after the latest observation is a data error.
+      await expect(
+        recordMeterReading(meter.id, {
+          reading: "12.5",
+          recordedOn: D("2026-09-15"),
+          notes: "Meter replaced",
+        }),
+      ).rejects.toBeInstanceOf(MeterReadingDecreaseError);
+      // Equal readings are legal (re-observation).
+      await recordMeterReading(meter.id, {
+        reading: "900",
+        recordedOn: D("2026-09-12"),
       });
-      expect(lower.reading.toString()).toBe("12.5");
+      // An increase is legal.
+      const higher = await recordMeterReading(meter.id, {
+        reading: "905",
+        recordedOn: D("2026-09-15"),
+      });
+      expect(higher.reading.toString()).toBe("905");
+      expect(await listMeterReadings(meter.id)).toHaveLength(3);
+    });
+
+    it("accepts a backdated reading that fits between its neighbors", async () => {
+      const org = await createTestOrg("meter-org2b");
+      const asset = await createTestAsset(org.id);
+      const meter = await createAssetMeter(asset.id, {
+        name: uniq("engine"),
+        unit: "hours",
+      });
+      await recordMeterReading(meter.id, {
+        reading: "100",
+        recordedOn: D("2026-09-10"),
+      });
+      await recordMeterReading(meter.id, {
+        reading: "150",
+        recordedOn: D("2026-09-20"),
+      });
+      // Logged late but honestly dated — 120 on the 15th fits.
+      const backdated = await recordMeterReading(meter.id, {
+        reading: "120",
+        recordedOn: D("2026-09-15"),
+      });
+      expect(backdated.reading.toString()).toBe("120");
+      // A backdated value that contradicts the sequence is rejected:
+      // 200 on the 15th would mean the meter ran backward by the 20th.
+      await expect(
+        recordMeterReading(meter.id, {
+          reading: "200",
+          recordedOn: D("2026-09-15"),
+        }),
+      ).rejects.toBeInstanceOf(MeterReadingDecreaseError);
+      // And 90 on the 15th would mean it ran backward from the 10th.
+      await expect(
+        recordMeterReading(meter.id, {
+          reading: "90",
+          recordedOn: D("2026-09-15"),
+        }),
+      ).rejects.toBeInstanceOf(MeterReadingDecreaseError);
+      // "Current" is still the latest-dated observation.
       const meters = await listAssetMeters(asset.id);
-      expect(meters[0]!.readings[0]!.reading.toString()).toBe("12.5");
+      expect(meters[0]!.readings[0]!.reading.toString()).toBe("150");
+    });
+
+    it("models meter replacement as archive + new meter", async () => {
+      const org = await createTestOrg("meter-org2c");
+      const asset = await createTestAsset(org.id);
+      const meter = await createAssetMeter(asset.id, {
+        name: uniq("engine"),
+        unit: "hours",
+      });
+      await recordMeterReading(meter.id, {
+        reading: "900",
+        recordedOn: D("2026-09-10"),
+      });
+      // The reset/replacement workflow: archive, then a new meter starts
+      // its own monotonic sequence — low first readings are legal there.
+      await setAssetMeterStatus(meter.id, "ARCHIVED");
+      const replacement = await createAssetMeter(asset.id, {
+        name: uniq("engine-new"),
+        unit: "hours",
+      });
+      const first = await recordMeterReading(replacement.id, {
+        reading: "0.4",
+        recordedOn: D("2026-09-15"),
+        notes: "Replacement hour meter installed",
+      });
+      expect(first.reading.toString()).toBe("0.4");
+      // The old meter keeps its history untouched.
+      expect(await listMeterReadings(meter.id)).toHaveLength(1);
+      await expect(
+        recordMeterReading(meter.id, {
+          reading: "950",
+          recordedOn: D("2026-09-15"),
+        }),
+      ).rejects.toBeInstanceOf(ArchivedMeterError);
+    });
+
+    it("enforces monotonicity on readings captured via records", async () => {
+      const org = await createTestOrg("meter-org2d");
+      const asset = await createTestAsset(org.id);
+      const meter = await createAssetMeter(asset.id, {
+        name: uniq("engine"),
+        unit: "hours",
+      });
+      await recordMeterReading(meter.id, {
+        reading: "800",
+        recordedOn: D("2026-09-10"),
+      });
+      // A service record dated later with a lower captured reading is
+      // inconsistent with the meter's history — reject the whole record.
+      await expect(
+        recordMaintenance(asset.id, {
+          title: uniq("svc"),
+          performedOn: D("2026-09-12"),
+          meterId: meter.id,
+          meterReading: "700",
+        }),
+      ).rejects.toBeInstanceOf(MeterReadingDecreaseError);
+      // Nothing was written — the record and the reading roll back together.
+      expect(await listAssetMaintenanceRecords(asset.id)).toHaveLength(0);
+      expect(await listMeterReadings(meter.id)).toHaveLength(1);
     });
 
     it("an archived meter keeps history but rejects new readings", async () => {
@@ -677,6 +811,164 @@ describe.skipIf(!hasDb)("inspections / maintenance / defects", () => {
           },
         }),
       ).rejects.toMatchObject({ code: "P2003" });
+    });
+  });
+
+  describe("correction history", () => {
+    it("writes immutable before/after history for a maintenance correction", async () => {
+      const org = await createTestOrg("chg-org1");
+      const asset = await createTestAsset(org.id);
+      const actor = await createTestIdentity("chg-actor1");
+      const record = await recordMaintenance(asset.id, {
+        title: "Oil change",
+        performedOn: D("2026-09-10"),
+        providerName: "Harbor Marine",
+      });
+      await updateMaintenanceRecord(
+        record.id,
+        {
+          title: "Oil change — both engines",
+          performedOn: D("2026-09-10"),
+          providerName: "Harbor Marine",
+          correctionNote: "Clarified scope",
+        },
+        actor.id,
+      );
+      const changes = await prisma.maintenanceRecordChange.findMany({
+        where: { recordId: record.id },
+      });
+      expect(changes).toHaveLength(1);
+      const c = changes[0]!;
+      expect(c.actorAuthIdentityId).toBe(actor.id);
+      expect(c.note).toBe("Clarified scope");
+      expect(c.beforeTitle).toBe("Oil change");
+      expect(c.afterTitle).toBe("Oil change — both engines");
+      expect(c.beforeProviderName).toBe("Harbor Marine");
+      expect(c.afterProviderName).toBe("Harbor Marine");
+      // Immutable surface: change rows have no update path in the
+      // application; a raw read confirms the snapshot is persisted.
+      expect(c.organizationId).toBe(org.id);
+    });
+
+    it("appends corrections — each change's before equals the prior after", async () => {
+      const org = await createTestOrg("chg-org2");
+      const asset = await createTestAsset(org.id);
+      const actor = await createTestIdentity("chg-actor2");
+      const record = await recordMaintenance(asset.id, {
+        title: "First title",
+        performedOn: D("2026-09-10"),
+      });
+      await updateMaintenanceRecord(
+        record.id,
+        { title: "Second title", performedOn: D("2026-09-10") },
+        actor.id,
+      );
+      await updateMaintenanceRecord(
+        record.id,
+        { title: "Third title", performedOn: D("2026-09-10") },
+        actor.id,
+      );
+      const changes = await prisma.maintenanceRecordChange.findMany({
+        where: { recordId: record.id },
+        orderBy: { createdAt: "asc" },
+      });
+      expect(changes).toHaveLength(2);
+      expect(changes[0]!.beforeTitle).toBe("First title");
+      expect(changes[0]!.afterTitle).toBe("Second title");
+      expect(changes[1]!.beforeTitle).toBe("Second title");
+      expect(changes[1]!.afterTitle).toBe("Third title");
+    });
+
+    it("writes no history when validation fails or nothing changed", async () => {
+      const org = await createTestOrg("chg-org3");
+      const asset = await createTestAsset(org.id);
+      const actor = await createTestIdentity("chg-actor3");
+      const foreignOrg = await createTestOrg("chg-org3b");
+      const foreignMember = await createTestMember(foreignOrg.id, "fm");
+      const record = await recordInspection(asset.id, {
+        definitionId: (
+          await createInspectionDefinition(org.id, {
+            name: uniq("def"),
+            recurrenceType: "NONE",
+          })
+        ).id,
+        performedOn: D("2026-09-14"),
+      });
+      // Cross-org member reference fails validation — nothing written.
+      await expect(
+        updateInspectionRecord(
+          record.id,
+          { performedOn: D("2026-09-15"), inspectorMemberId: foreignMember.id },
+          actor.id,
+        ),
+      ).rejects.toBeInstanceOf(CrossOrganizationMaintenanceError);
+      // A no-change submission writes no history row.
+      await updateInspectionRecord(
+        record.id,
+        { performedOn: D("2026-09-14") },
+        actor.id,
+      );
+      expect(
+        await prisma.inspectionRecordChange.count({
+          where: { recordId: record.id },
+        }),
+      ).toBe(0);
+      expect(
+        (await prisma.inspectionRecord.findUnique({ where: { id: record.id } }))
+          ?.performedOn,
+      ).toEqual(D("2026-09-14"));
+    });
+
+    it("rolls the record update back when the history write fails", async () => {
+      const org = await createTestOrg("chg-org4");
+      const asset = await createTestAsset(org.id);
+      const record = await recordMaintenance(asset.id, {
+        title: "Oil change",
+        performedOn: D("2026-09-10"),
+      });
+      // A nonexistent actor id violates the change row's FK — forcing a
+      // failure between the snapshot and the update. Neither may commit.
+      await expect(
+        updateMaintenanceRecord(
+          record.id,
+          { title: "Tampered", performedOn: D("2026-09-11") },
+          "nonexistent-identity",
+        ),
+      ).rejects.toMatchObject({ code: "P2003" });
+      const persisted = await prisma.maintenanceRecord.findUnique({
+        where: { id: record.id },
+      });
+      expect(persisted?.title).toBe("Oil change");
+      expect(persisted?.performedOn).toEqual(D("2026-09-10"));
+      expect(
+        await prisma.maintenanceRecordChange.count({
+          where: { recordId: record.id },
+        }),
+      ).toBe(0);
+    });
+
+    it("pins the correction to the record's real organization", async () => {
+      const org = await createTestOrg("chg-org5");
+      const asset = await createTestAsset(org.id);
+      const actor = await createTestIdentity("chg-actor5");
+      const def = await createInspectionDefinition(org.id, {
+        name: uniq("def"),
+        recurrenceType: "NONE",
+      });
+      const record = await recordInspection(asset.id, {
+        definitionId: def.id,
+        performedOn: D("2026-09-14"),
+      });
+      await updateInspectionRecord(
+        record.id,
+        { performedOn: D("2026-09-15"), notes: "typo fix" },
+        actor.id,
+      );
+      const change = await prisma.inspectionRecordChange.findFirstOrThrow({
+        where: { recordId: record.id },
+      });
+      // The change row's composite FK proved same-org at write time.
+      expect(change.organizationId).toBe(org.id);
     });
   });
 

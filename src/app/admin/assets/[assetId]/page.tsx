@@ -68,6 +68,13 @@ const CONDITION_LABELS: Record<string, string> = {
   DAMAGED: "Damaged",
 };
 
+/** Deterministic instant rendering for correction-history rows. */
+function formatInstant(d: Date) {
+  return `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+type ChangeDiff = readonly [label: string, before: string, after: string];
+
 export default async function AssetPage({
   params,
 }: {
@@ -114,6 +121,16 @@ export default async function AssetPage({
     id: m.id,
     displayName: m.displayName,
   }));
+
+  // Correction-history value formatting (before → after facts).
+  const dash = "—";
+  const fmtD = (d: Date | null) => (d ? formatDateOnly(d)! : dash);
+  const fmtS = (s: string | null) => (s && s.trim() !== "" ? s : dash);
+  const fmtMember = (id: string | null) =>
+    id
+      ? (members.find((m) => m.id === id)?.displayName ?? "Removed member")
+      : dash;
+  const fmtCond = (c: string | null) => (c ? (CONDITION_LABELS[c] ?? c) : dash);
   const meterOptions = meters
     .filter((m) => m.status === "ACTIVE")
     .map((m) => ({ id: m.id, name: m.name, unit: m.unit }));
@@ -286,7 +303,8 @@ export default async function AssetPage({
         </h2>
         <p className="mt-1 text-sm text-neutral-600">
           Manually recorded counters (engine hours, odometer, cycles). Readings
-          are append-only; a wrong value is corrected by recording a new one.
+          are append-only and never decrease — if a meter is reset or replaced,
+          archive it and create a new one.
         </p>
         {meters.length > 0 ? (
           <ul className="mt-3 space-y-2">
@@ -467,6 +485,72 @@ export default async function AssetPage({
                     />
                   </div>
                 </details>
+                {record.changes.length > 0 && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-xs font-medium text-neutral-600 hover:text-neutral-900">
+                      Correction history ({record.changes.length})
+                    </summary>
+                    <ul className="mt-2 space-y-2">
+                      {record.changes.map((change) => {
+                        const diffs = (
+                          [
+                            [
+                              "Performed on",
+                              fmtD(change.beforePerformedOn),
+                              fmtD(change.afterPerformedOn),
+                            ],
+                            [
+                              "Inspector (member)",
+                              fmtMember(change.beforeInspectorMemberId),
+                              fmtMember(change.afterInspectorMemberId),
+                            ],
+                            [
+                              "Inspector name",
+                              fmtS(change.beforeInspectorName),
+                              fmtS(change.afterInspectorName),
+                            ],
+                            [
+                              "Observed condition",
+                              fmtCond(change.beforeConditionObserved),
+                              fmtCond(change.afterConditionObserved),
+                            ],
+                            [
+                              "Next due",
+                              fmtD(change.beforeNextDueOn),
+                              fmtD(change.afterNextDueOn),
+                            ],
+                            [
+                              "Notes",
+                              fmtS(change.beforeNotes),
+                              fmtS(change.afterNotes),
+                            ],
+                          ] as const satisfies readonly ChangeDiff[]
+                        ).filter(([, before, after]) => before !== after);
+                        return (
+                          <li
+                            key={change.id}
+                            className="text-xs text-neutral-600"
+                          >
+                            <div>
+                              Corrected {formatInstant(change.createdAt)} by{" "}
+                              {change.actorAuthIdentity.email}
+                              {change.note ? ` — ${change.note}` : ""}
+                            </div>
+                            {diffs.length > 0 && (
+                              <ul className="mt-1 list-disc pl-4">
+                                {diffs.map(([label, before, after]) => (
+                                  <li key={label}>
+                                    {label}: {before} → {after}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </details>
+                )}
               </li>
             ))}
           </ul>
@@ -680,6 +764,73 @@ export default async function AssetPage({
                     />
                   </div>
                 </details>
+                {record.changes.length > 0 && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-xs font-medium text-neutral-600 hover:text-neutral-900">
+                      Correction history ({record.changes.length})
+                    </summary>
+                    <ul className="mt-2 space-y-2">
+                      {record.changes.map((change) => {
+                        const diffs = (
+                          [
+                            ["Title", change.beforeTitle, change.afterTitle],
+                            [
+                              "Performed on",
+                              fmtD(change.beforePerformedOn),
+                              fmtD(change.afterPerformedOn),
+                            ],
+                            [
+                              "Work performed",
+                              fmtS(change.beforeWorkPerformed),
+                              fmtS(change.afterWorkPerformed),
+                            ],
+                            [
+                              "Provider",
+                              fmtS(change.beforeProviderName),
+                              fmtS(change.afterProviderName),
+                            ],
+                            [
+                              "Performed by (member)",
+                              fmtMember(change.beforePerformedByMemberId),
+                              fmtMember(change.afterPerformedByMemberId),
+                            ],
+                            [
+                              "Next due",
+                              fmtD(change.beforeNextDueOn),
+                              fmtD(change.afterNextDueOn),
+                            ],
+                            [
+                              "Notes",
+                              fmtS(change.beforeNotes),
+                              fmtS(change.afterNotes),
+                            ],
+                          ] as const satisfies readonly ChangeDiff[]
+                        ).filter(([, before, after]) => before !== after);
+                        return (
+                          <li
+                            key={change.id}
+                            className="text-xs text-neutral-600"
+                          >
+                            <div>
+                              Corrected {formatInstant(change.createdAt)} by{" "}
+                              {change.actorAuthIdentity.email}
+                              {change.note ? ` — ${change.note}` : ""}
+                            </div>
+                            {diffs.length > 0 && (
+                              <ul className="mt-1 list-disc pl-4">
+                                {diffs.map(([label, before, after]) => (
+                                  <li key={label}>
+                                    {label}: {before} → {after}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </details>
+                )}
               </li>
             ))}
           </ul>
