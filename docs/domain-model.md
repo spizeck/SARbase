@@ -95,6 +95,107 @@ Join rows cascade (`onDelete: Cascade`) when a member or unit row is
 removed at the database level, keeping referential integrity. The
 application surface itself never deletes members — see lifecycle below.
 
+## Member availability and contact preferences
+
+Issue #12 adds two member-centered record families. Both record
+**facts and stated preferences only** — SARbase is an administrative
+records system, not an operational decision-support system, so nothing
+here infers crew sufficiency, readiness, or whom to call.
+
+### `MemberAvailabilityUpdate` — append-only availability statements
+
+Each row is one **immutable availability statement**: a member (or an
+admin acting on their behalf) declaring their status at a point in
+time. Current availability is always _derived_ from the latest row —
+there is no mutable "current status" column to drift out of sync.
+
+- `status` — `AVAILABLE`, `UNAVAILABLE`, `OFF_ISLAND`, `UNKNOWN`.
+  Deliberately small and purely descriptive. `LIMITED` was considered
+  and rejected for v1: "limited" invites operational interpretation
+  (limited _how_? _enough_ for what?) that SARbase must not encode.
+- `until` — optional calendar **date** (`@db.Date`), meaningful only
+  for the temporary states `UNAVAILABLE` and `OFF_ISLAND`. A date — not
+  a timestamp — matches how volunteers think ("off island until
+  October 12"); no hour-of-day precision is invented.
+- `note` — optional free-text context ≤280 chars.
+- `actorAuthIdentityId` + `selfReported` — provenance: who recorded the
+  statement and whether the member said it themselves or an admin
+  entered it (e.g. phoned in).
+
+#### Expiry semantics
+
+`until` is evaluated against the **organization's local calendar date**
+(`Organization.timezone`, never server-local time): the statement
+remains the member's current status for the whole local day named by
+`until`, then expires at local midnight.
+
+After expiry the computed status falls back to **`UNKNOWN`** — never
+`AVAILABLE`. An elapsed date is a fact about the past, not evidence
+the member returned or became available; inferring `AVAILABLE` from a
+lapsed date would silently fabricate operational information. The
+expired row remains visible as history ("was off island until Oct 12,
+lapsed"), and any later statement supersedes it normally.
+
+Expiry is **read-time calculation**, not a background job: each read
+compares the latest row's `until` to the org's local "today", so there
+is no scheduler to fail, no stale flipped state, and the historical
+row is never rewritten.
+
+#### Authorization
+
+- **Self-service**: a signed-in volunteer may update availability only
+  for their own linked member record **and only while an
+  `OrganizationAccess` row exists** — member linkage alone grants
+  nothing. The target member is resolved server-side from the session
+  (`linkedMembersWithAccess`), so a submitted `memberId` for anyone
+  else is an opaque "Not found."
+- **Admins** may record availability on behalf of members in their
+  organization (marked `selfReported: false`, attributed to the admin's
+  identity) and view the org-wide current-status list and per-member
+  history. Unit membership is not an authorization boundary.
+- Rows carry a denormalized `organizationId` with a composite
+  `(memberId, organizationId)` foreign key — a statement cannot point
+  across organizations even at the SQL level — and `@@index`es on
+  `(organizationId, memberId)` / `(memberId)` serve both access paths.
+- History is never deleted by the application; `Member`/`Organization`/
+  actor `AuthIdentity` relations are `Restrict`, so statements cannot
+  be orphaned or silently erased.
+
+### `MemberNotificationPreference` — per-member channel preferences
+
+One row per member recording which channels they are **willing** to
+receive notifications on — the configuration later notification work
+(issue #13) reads. This is preference/consent data only: **nothing is
+sent**, and a checked channel is not proof of deliverability.
+
+- `notifyEmail` / `notifySms` / `notifyWhatsapp` / `notifyPush` —
+  four booleans covering the channels callout notifications will use.
+- **Destinations stay on `Member`** (`email`, `phone`) rather than
+  duplicating addresses into the preference row — one canonical
+  destination per channel family. Email notifications require a member
+  `email`; SMS and WhatsApp require a `phone` (both are validated at
+  write time, since willingness without a destination is meaningless
+  configuration). Push has no address yet — willingness is recorded so
+  a later device-registration flow can honor it.
+- `Member.phone` is now normalized at write time to digits plus an
+  optional leading `+` — usable by notification providers without
+  inventing country codes or assuming any locale.
+- Same authorization shape as availability: members manage their own
+  record (with live `OrganizationAccess`); admins manage it
+  organization-wide. One row per member via
+  `@@unique([memberId, organizationId])`; `Cascade` delete since a
+  preference has no standalone value, unlike availability history.
+
+### What availability does **not** mean
+
+The organization defines its requirements. SARbase records availability
+facts and communication preferences; it does not determine whether a
+crew is sufficient or ready to respond. Specifically, nothing here
+drives launch readiness, minimum-crew checks, member ranking,
+qualification inference, or callout dispatch — those are operational
+decisions for the organization, and later issues (notifications,
+callouts) build on these records without changing their factual nature.
+
 ## Qualifications and certifications
 
 Issue #8 adds the first member-record domain: administrative
@@ -667,8 +768,15 @@ Server-side Zod schemas (`src/lib/domain/schemas.ts`):
 - `displayName` (member): required, trimmed, 1–120 chars.
 - `email`: optional; blank → `null`; trimmed, lowercased, format-checked.
 - `phone`: optional; blank → `null`; permissive `+ digits, spaces,
-( ) . -` pattern.
+( ) . -` pattern, normalized at write time to digits plus an optional
+  leading `+`.
 - `status`: `ACTIVE` | `INACTIVE`.
+- Availability statement: `status` required
+  (`AVAILABLE`/`UNAVAILABLE`/`OFF_ISLAND`/`UNKNOWN`); `until` optional
+  `YYYY-MM-DD` calendar date, allowed only on `UNAVAILABLE`/`OFF_ISLAND`
+  and not already past in the organization's timezone; `note` optional
+  ≤280. Contact preferences: four channel booleans; email requires a
+  member `email`, SMS/WhatsApp require a member `phone`.
 - Unit assignments: array of unit ids, all verified same-organization.
 - Qualification definition: `name` required (1–120, trimmed),
   `description` optional ≤500.

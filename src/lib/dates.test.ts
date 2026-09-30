@@ -5,6 +5,7 @@ import {
   daysBetween,
   formatDateOnly,
   isValidTimeZone,
+  relativeTimeLabel,
   todayUtc,
 } from "./dates";
 import { expiryInfo, expiryLabel } from "./domain/qualification";
@@ -124,5 +125,36 @@ describe("todayUtc / daysBetween / formatDateOnly", () => {
     expect(daysBetween(D("2027-11-01"), D("2027-11-15"))).toBe(14);
     expect(formatDateOnly(D("2027-11-14"))).toBe("2027-11-14");
     expect(formatDateOnly(null)).toBeNull();
+  });
+});
+
+describe("relativeTimeLabel", () => {
+  const now = INSTANT("2027-11-14T12:00:00.000Z");
+
+  it("describes recent timestamps as minutes/hours/days ago", () => {
+    expect(relativeTimeLabel(INSTANT("2027-11-14T11:59:30.000Z"), now)).toBe(
+      "just now",
+    );
+    expect(relativeTimeLabel(INSTANT("2027-11-14T11:45:00.000Z"), now)).toBe(
+      "15 minutes ago",
+    );
+    expect(relativeTimeLabel(INSTANT("2027-11-14T06:00:00.000Z"), now)).toBe(
+      "6 hours ago",
+    );
+    expect(relativeTimeLabel(INSTANT("2027-10-30T12:00:00.000Z"), now)).toBe(
+      "15 days ago",
+    );
+  });
+
+  it("uses singular units and falls back to the date past a month", () => {
+    expect(relativeTimeLabel(INSTANT("2027-11-14T11:59:00.000Z"), now)).toBe(
+      "1 minute ago",
+    );
+    expect(relativeTimeLabel(INSTANT("2027-11-13T12:00:00.000Z"), now)).toBe(
+      "1 day ago",
+    );
+    expect(relativeTimeLabel(INSTANT("2027-09-01T12:00:00.000Z"), now)).toBe(
+      "2027-09-01",
+    );
   });
 });

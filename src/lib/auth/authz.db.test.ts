@@ -91,7 +91,13 @@ import {
   transitionDefectAction,
   createAssetMeterAction,
   recordMeterReadingAction,
+  setMemberAvailabilityAction,
+  updateMemberContactPreferenceAction,
 } from "@/app/admin/actions";
+import {
+  updateMyAvailabilityAction,
+  updateMyContactPreferencesAction,
+} from "@/app/account/actions";
 import TrainingEventPage from "@/app/admin/training/[eventId]/page";
 import AssetPage from "@/app/admin/assets/[assetId]/page";
 
@@ -305,6 +311,14 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.assetMeter.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    // Issue #12 fixtures — Restrict edges to members and actor
+    // identities require cleanup before both parents.
+    await prisma.memberAvailabilityUpdate.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.memberNotificationPreference.deleteMany({
       where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.authIdentity.deleteMany({
@@ -2041,6 +2055,279 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       expect(change.actorAuthIdentityId).toBe(adminAIdentityId);
       expect(change.note).toBe("date was wrong");
       expect(change.afterNotes).toBe("spoof attempt");
+    });
+  });
+
+  describe("member availability & contact preference authorization", () => {
+    // Issue #12: self-service is scoped to the caller's own linked member
+    // AND gated on a live OrganizationAccess row — the Member link alone
+    // grants nothing. All denials surface as an opaque "Not found."
+    let selfMember: { id: string }; // org A, linked to memberRoleUid
+    let unlinkedMemberA: { id: string }; // org A, no link
+    let memberRoleIdentityId: string;
+
+    beforeAll(async () => {
+      const memberRoleIdentity = await prisma.authIdentity.findUniqueOrThrow({
+        where: {
+          provider_providerUid: {
+            provider: "firebase",
+            providerUid: memberRoleUid,
+          },
+        },
+      });
+      memberRoleIdentityId = memberRoleIdentity.id;
+      selfMember = await prisma.member.create({
+        data: {
+          organizationId: orgA.id,
+          displayName: uniq("self"),
+          email: "self@example.org",
+          phone: "+17875550134",
+          authIdentityId: memberRoleIdentity.id,
+        },
+      });
+      unlinkedMemberA = await prisma.member.create({
+        data: { organizationId: orgA.id, displayName: uniq("unlinked-self") },
+      });
+    });
+
+    it("a linked member with MEMBER access records own availability (selfReported)", async () => {
+      signInAs(memberRoleUid); // MEMBER of org A, linked to selfMember
+      const result = await updateMyAvailabilityAction(
+        selfMember.id,
+        {},
+        form({ status: "OFF_ISLAND", until: "2030-01-01", note: "" }),
+      );
+      expect(result).toEqual({});
+      const saved = await prisma.memberAvailabilityUpdate.findFirstOrThrow({
+        where: { memberId: selfMember.id, status: "OFF_ISLAND" },
+      });
+      expect(saved.organizationId).toBe(orgA.id);
+      expect(saved.selfReported).toBe(true);
+      // The actor is the server identity — never client-supplied.
+      expect(saved.actorAuthIdentityId).toBe(memberRoleIdentityId);
+    });
+
+    it("a forged actor field is ignored — attribution stays the session identity", async () => {
+      signInAs(memberRoleUid);
+      const result = await updateMyAvailabilityAction(
+        selfMember.id,
+        {},
+        form({
+          status: "AVAILABLE",
+          until: "",
+          note: "",
+          actorAuthIdentityId: adminAIdentityId,
+        }),
+      );
+      expect(result).toEqual({});
+      const saved = await prisma.memberAvailabilityUpdate.findFirstOrThrow({
+        where: { memberId: selfMember.id, status: "AVAILABLE" },
+      });
+      expect(saved.actorAuthIdentityId).toBe(memberRoleIdentityId);
+    });
+
+    it("cannot submit another memberId — unlinked, linked-to-someone-else, or cross-org", async () => {
+      signInAs(memberRoleUid);
+      const beforeA = await prisma.memberAvailabilityUpdate.count({
+        where: { memberId: unlinkedMemberA.id },
+      });
+      const beforeB = await prisma.memberAvailabilityUpdate.count({
+        where: { memberId: memberB.id },
+      });
+      for (const target of [unlinkedMemberA.id, memberA.id, memberB.id]) {
+        expect(
+          await updateMyAvailabilityAction(
+            target,
+            {},
+            form({ status: "AVAILABLE", until: "", note: "" }),
+          ),
+        ).toEqual({ message: "Not found." });
+      }
+      expect(
+        await prisma.memberAvailabilityUpdate.count({
+          where: { memberId: unlinkedMemberA.id },
+        }),
+      ).toBe(beforeA);
+      expect(
+        await prisma.memberAvailabilityUpdate.count({
+          where: { memberId: memberB.id },
+        }),
+      ).toBe(beforeB);
+    });
+
+    it("revoked OrganizationAccess removes self-service even while linked", async () => {
+      signInAs(memberRoleUid);
+      const access = await prisma.organizationAccess.findFirstOrThrow({
+        where: {
+          authIdentityId: memberRoleIdentityId,
+          organizationId: orgA.id,
+        },
+      });
+      await prisma.organizationAccess.delete({ where: { id: access.id } });
+      try {
+        // Still linked via Member.authIdentityId — but no access row.
+        expect(
+          await updateMyAvailabilityAction(
+            selfMember.id,
+            {},
+            form({ status: "UNAVAILABLE", until: "", note: "" }),
+          ),
+        ).toEqual({ message: "Not found." });
+        expect(
+          await prisma.memberAvailabilityUpdate.count({
+            where: { memberId: selfMember.id, status: "UNAVAILABLE" },
+          }),
+        ).toBe(0);
+      } finally {
+        await prisma.organizationAccess.create({
+          data: {
+            authIdentityId: memberRoleIdentityId,
+            organizationId: orgA.id,
+            role: "MEMBER",
+          },
+        });
+      }
+    });
+
+    it("unauthenticated self-service is denied", async () => {
+      signInAs(null);
+      expect(
+        await updateMyAvailabilityAction(
+          selfMember.id,
+          {},
+          form({ status: "AVAILABLE" }),
+        ),
+      ).toEqual({ message: "Not found." });
+    });
+
+    it("self updates contact preferences; SMS requires a phone destination", async () => {
+      signInAs(memberRoleUid);
+      expect(
+        await updateMyContactPreferencesAction(
+          selfMember.id,
+          {},
+          form({ notifyEmail: "on", notifySms: "on" }),
+        ),
+      ).toEqual({});
+      const saved = await prisma.memberNotificationPreference.findFirstOrThrow({
+        where: { memberId: selfMember.id },
+      });
+      expect(saved.notifyEmail).toBe(true);
+      expect(saved.notifySms).toBe(true);
+      expect(saved.notifyWhatsapp).toBe(false);
+      expect(saved.notifyPush).toBe(false);
+    });
+
+    it("cannot update another member's contact preferences (IDOR)", async () => {
+      signInAs(memberRoleUid);
+      expect(
+        await updateMyContactPreferencesAction(
+          unlinkedMemberA.id,
+          {},
+          form({ notifyEmail: "on" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateMyContactPreferencesAction(
+          memberB.id,
+          {},
+          form({ notifyEmail: "on" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await prisma.memberNotificationPreference.count({
+          where: { memberId: { in: [unlinkedMemberA.id, memberB.id] } },
+        }),
+      ).toBe(0);
+    });
+
+    it("admin records availability on behalf — attributed, not selfReported", async () => {
+      signInAs(adminAUid);
+      expect(
+        await setMemberAvailabilityAction(
+          unlinkedMemberA.id,
+          {},
+          form({
+            status: "UNAVAILABLE",
+            until: "2030-02-01",
+            note: "Phoned in",
+          }),
+        ),
+      ).toEqual({});
+      const saved = await prisma.memberAvailabilityUpdate.findFirstOrThrow({
+        where: { memberId: unlinkedMemberA.id, status: "UNAVAILABLE" },
+      });
+      expect(saved.selfReported).toBe(false);
+      expect(saved.actorAuthIdentityId).toBe(adminAIdentityId);
+      expect(saved.note).toBe("Phoned in");
+    });
+
+    it("admin A cannot manage availability or preferences for org B members", async () => {
+      signInAs(adminAUid);
+      expect(
+        await setMemberAvailabilityAction(
+          memberB.id,
+          {},
+          form({ status: "AVAILABLE" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateMemberContactPreferenceAction(
+          memberB.id,
+          {},
+          form({ notifyEmail: "on" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await prisma.memberAvailabilityUpdate.count({
+          where: { memberId: memberB.id },
+        }),
+      ).toBe(0);
+      expect(
+        await prisma.memberNotificationPreference.count({
+          where: { memberId: memberB.id },
+        }),
+      ).toBe(0);
+    });
+
+    it("admin updates a member's preferences; email requires a destination", async () => {
+      signInAs(adminAUid);
+      expect(
+        await updateMemberContactPreferenceAction(
+          selfMember.id,
+          {},
+          form({ notifyEmail: "on", notifyPush: "on" }),
+        ),
+      ).toEqual({});
+      // unlinkedMemberA has neither email nor phone → refuses.
+      expect(
+        await updateMemberContactPreferenceAction(
+          unlinkedMemberA.id,
+          {},
+          form({ notifyEmail: "on" }),
+        ),
+      ).toEqual({
+        message:
+          "Email notifications need an email address on the member record.",
+      });
+    });
+
+    it("MEMBER role cannot use the admin availability/preference actions", async () => {
+      signInAs(memberRoleUid);
+      expect(
+        await setMemberAvailabilityAction(
+          selfMember.id,
+          {},
+          form({ status: "AVAILABLE" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateMemberContactPreferenceAction(
+          selfMember.id,
+          {},
+          form({ notifyEmail: "on" }),
+        ),
+      ).toEqual({ message: "Not found." });
     });
   });
 });

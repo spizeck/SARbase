@@ -14,6 +14,13 @@ import {
   getMemberTrainingSummary,
 } from "@/lib/domain/training";
 import { requireAuth, isOrgAdmin } from "@/lib/auth/authorize";
+import {
+  getMemberAvailability,
+  getMemberContactPreference,
+  listMemberAvailabilityHistory,
+  AVAILABILITY_STATUS_LABELS,
+} from "@/lib/domain/availability";
+import { relativeTimeLabel } from "@/lib/dates";
 
 import {
   updateMemberAction,
@@ -23,6 +30,8 @@ import {
   unlinkIdentityFromMemberAction,
   createMemberQualificationAction,
   updateMemberQualificationAction,
+  setMemberAvailabilityAction,
+  updateMemberContactPreferenceAction,
 } from "../../actions";
 import {
   MemberForm,
@@ -30,6 +39,10 @@ import {
   LinkIdentityForm,
   MemberQualificationForm,
 } from "../../forms";
+import {
+  AvailabilityForm,
+  ContactPreferencesForm,
+} from "../../../account/forms";
 
 export const metadata = { title: "Member" };
 
@@ -57,6 +70,13 @@ export default async function MemberPage({
   const activeDefinitions = await listQualificationDefinitions(orgId);
   const trainingHistory = await listMemberTraining(member.id);
   const trainingSummary = await getMemberTrainingSummary(member.id);
+
+  // Issue #12 — factual availability statements + channel preferences.
+  // Read-time derivation against the org's local date; no sufficiency
+  // or readiness is computed or implied.
+  const availability = await getMemberAvailability(member.id);
+  const availabilityHistory = await listMemberAvailabilityHistory(member.id);
+  const contactPreference = await getMemberContactPreference(member.id);
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
@@ -159,6 +179,136 @@ export default async function MemberPage({
             action={setMemberUnitsAction.bind(null, member.id)}
             units={units}
             assignedUnitIds={assignedUnitIds}
+          />
+        </div>
+      </section>
+
+      <section
+        aria-labelledby="availability-heading"
+        className="mt-6 rounded-md border border-neutral-200 p-4"
+      >
+        <h2
+          id="availability-heading"
+          className="text-sm font-medium text-neutral-800"
+        >
+          Availability
+        </h2>
+        <p className="mt-1 text-sm text-neutral-600">
+          The member&apos;s self-reported availability statement, or one
+          recorded here on their behalf. Factual records only — SARbase does not
+          determine crew sufficiency or readiness.
+        </p>
+        <div className="mt-2 text-sm">
+          <span
+            className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${
+              availability.status === "AVAILABLE"
+                ? "bg-green-100 text-green-800"
+                : availability.status === "UNKNOWN"
+                  ? "bg-neutral-100 text-neutral-600"
+                  : "bg-amber-100 text-amber-800"
+            }`}
+          >
+            {AVAILABILITY_STATUS_LABELS[availability.status]}
+          </span>
+          {availability.latest?.until &&
+            !availability.expired &&
+            availability.status !== "UNKNOWN" && (
+              <span className="ml-2 text-neutral-600">
+                Until {formatDateOnly(availability.latest.until)}
+              </span>
+            )}
+        </div>
+        <p className="mt-1 text-xs text-neutral-500">
+          {availability.latest
+            ? `Last updated ${relativeTimeLabel(availability.latest.createdAt)}${
+                availability.latest.selfReported
+                  ? " by the member"
+                  : " by an administrator"
+              }`
+            : "No availability recorded yet."}
+          {availability.expired && availability.latest
+            ? ` Last recorded as ${
+                AVAILABILITY_STATUS_LABELS[availability.latest.status]
+              }${
+                availability.latest.until
+                  ? ` until ${formatDateOnly(availability.latest.until)}`
+                  : ""
+              } — expired.`
+            : ""}
+        </p>
+        <details className="mt-3">
+          <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+            Record availability for this member
+          </summary>
+          <div className="mt-2">
+            <AvailabilityForm
+              action={setMemberAvailabilityAction.bind(null, member.id)}
+              defaultStatus={availability.status}
+              defaultUntil={formatDateOnly(availability.latest?.until)}
+              defaultNote={availability.latest?.note}
+              idPrefix={`admin-availability-${member.id}`}
+            />
+          </div>
+        </details>
+        {availabilityHistory.length > 0 && (
+          <details className="mt-3">
+            <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+              History ({availabilityHistory.length} most recent)
+            </summary>
+            <ul className="mt-2 divide-y divide-neutral-200 rounded-md border border-neutral-200">
+              {availabilityHistory.map((update) => (
+                <li key={update.id} className="px-4 py-2 text-xs">
+                  <span className="font-medium text-neutral-900">
+                    {AVAILABILITY_STATUS_LABELS[update.status]}
+                  </span>
+                  {update.until && (
+                    <span className="text-neutral-600">
+                      {" "}
+                      until {formatDateOnly(update.until)}
+                    </span>
+                  )}
+                  <span className="text-neutral-500">
+                    {" "}
+                    · {relativeTimeLabel(update.createdAt)} ·{" "}
+                    {update.selfReported
+                      ? "self-reported"
+                      : "recorded by admin"}
+                    {update.actorDisplayName
+                      ? ` (${update.actorDisplayName})`
+                      : ""}
+                  </span>
+                  {update.note && (
+                    <p className="mt-0.5 text-neutral-600">{update.note}</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </section>
+
+      <section
+        aria-labelledby="contact-prefs-heading"
+        className="mt-6 rounded-md border border-neutral-200 p-4"
+      >
+        <h2
+          id="contact-prefs-heading"
+          className="text-sm font-medium text-neutral-800"
+        >
+          Contact preferences
+        </h2>
+        <p className="mt-1 text-sm text-neutral-600">
+          Which channels this member is willing to be notified on. Preferences
+          only — notifications are not sent yet, and a selected channel is not
+          proof of deliverability.
+        </p>
+        <div className="mt-2">
+          <ContactPreferencesForm
+            action={updateMemberContactPreferenceAction.bind(null, member.id)}
+            email={member.email}
+            phone={member.phone}
+            defaults={contactPreference}
+            idPrefix={`admin-contact-${member.id}`}
           />
         </div>
       </section>

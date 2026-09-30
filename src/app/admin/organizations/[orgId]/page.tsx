@@ -10,7 +10,15 @@ import {
 } from "@/lib/domain/qualification";
 import { listTrainingEvents } from "@/lib/domain/training";
 import { dateOnlySchema } from "@/lib/domain/schemas";
-import { calendarDateInZone, formatDateOnly } from "@/lib/dates";
+import {
+  listOrganizationAvailability,
+  AVAILABILITY_STATUS_LABELS,
+} from "@/lib/domain/availability";
+import {
+  calendarDateInZone,
+  formatDateOnly,
+  relativeTimeLabel,
+} from "@/lib/dates";
 import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
 
 import {
@@ -101,6 +109,9 @@ export default async function OrganizationPage({
     : 30;
   // "Today" is the organization's own local calendar date.
   const today = calendarDateInZone(organization.timezone);
+  // Current factual availability per member (issue #12) — informational
+  // only; the table sorts alphabetically, never by "best" status.
+  const availability = await listOrganizationAvailability(orgId, today);
   const expiringRecords = await listExpiringQualifications(orgId, {
     withinDays: expiryWindow,
     today,
@@ -616,37 +627,71 @@ export default async function OrganizationPage({
                   >
                     Status
                   </th>
+                  <th
+                    scope="col"
+                    className="px-4 py-2 text-left font-medium text-neutral-700"
+                  >
+                    Availability
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-200">
-                {members.map((member) => (
-                  <tr key={member.id}>
-                    <td className="px-4 py-2">
-                      <Link
-                        href={`/admin/members/${member.id}`}
-                        className="font-medium text-neutral-900 hover:underline"
-                      >
-                        {member.displayName}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-2 text-neutral-600">
-                      {member.memberUnits
-                        .map((mu) => mu.unit.name)
-                        .join(", ") || "—"}
-                    </td>
-                    <td className="px-4 py-2">
-                      <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
-                          member.status === "ACTIVE"
-                            ? "bg-green-100 text-green-800"
-                            : "bg-neutral-100 text-neutral-600"
-                        }`}
-                      >
-                        {member.status === "ACTIVE" ? "Active" : "Inactive"}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {members.map((member) => {
+                  const memberAvailability = availability.get(member.id);
+                  return (
+                    <tr key={member.id}>
+                      <td className="px-4 py-2">
+                        <Link
+                          href={`/admin/members/${member.id}`}
+                          className="font-medium text-neutral-900 hover:underline"
+                        >
+                          {member.displayName}
+                        </Link>
+                      </td>
+                      <td className="px-4 py-2 text-neutral-600">
+                        {member.memberUnits
+                          .map((mu) => mu.unit.name)
+                          .join(", ") || "—"}
+                      </td>
+                      <td className="px-4 py-2">
+                        <span
+                          className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+                            member.status === "ACTIVE"
+                              ? "bg-green-100 text-green-800"
+                              : "bg-neutral-100 text-neutral-600"
+                          }`}
+                        >
+                          {member.status === "ACTIVE" ? "Active" : "Inactive"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2 text-neutral-600">
+                        {
+                          AVAILABILITY_STATUS_LABELS[
+                            memberAvailability?.status ?? "UNKNOWN"
+                          ]
+                        }
+                        {memberAvailability?.latest?.until &&
+                          !memberAvailability.expired &&
+                          memberAvailability.status !== "UNKNOWN" && (
+                            <span className="text-neutral-500">
+                              {" "}
+                              until{" "}
+                              {formatDateOnly(memberAvailability.latest.until)}
+                            </span>
+                          )}
+                        {memberAvailability?.latest && (
+                          <span className="block text-xs text-neutral-400">
+                            {memberAvailability.expired ? "expired — " : ""}
+                            updated{" "}
+                            {relativeTimeLabel(
+                              memberAvailability.latest.createdAt,
+                            )}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

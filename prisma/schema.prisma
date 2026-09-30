@@ -79,6 +79,9 @@ model Organization {
   defectChanges            DefectChange[]
   assetMeters              AssetMeter[]
   assetMeterReadings       AssetMeterReading[]
+
+  availabilityUpdates     MemberAvailabilityUpdate[]
+  notificationPreferences MemberNotificationPreference[]
 }
 
 // An internal operational/administrative grouping within an organization
@@ -145,6 +148,11 @@ model Member {
   defectsReported       Defect[]
   meterReadingsRecorded AssetMeterReading[]
 
+  // Issue #12 — availability statements are append-only history; the
+  // notification-preference row is the member's mutable channel config.
+  availabilityUpdates    MemberAvailabilityUpdate[]
+  notificationPreference MemberNotificationPreference?
+
   // Optional link to a login identity. Nullable — most members never sign
   // in. SetNull on identity deletion: removing a login must never destroy
   // the domain person record or its history. One identity may legitimately
@@ -188,6 +196,7 @@ model AuthIdentity {
   defectChanges            DefectChange[]
   inspectionRecordChanges  InspectionRecordChange[]
   maintenanceRecordChanges MaintenanceRecordChange[]
+  availabilityUpdates      MemberAvailabilityUpdate[]
 
   @@unique([provider, providerUid])
   @@index([email])
@@ -973,4 +982,99 @@ model InventoryItem {
   @@index([organizationId, status])
   @@index([organizationId, category])
   @@index([storageLocationId])
+}
+
+// ---------------------------------------------------------------------------
+// Issue #12 — member availability and contact preferences.
+//
+// Everything here is a recorded fact: a member (or an admin on their
+// behalf) stated an availability status, or configured which channels
+// they are willing to be notified on. Nothing computes crew
+// sufficiency, launch readiness, ranking, or qualification — the
+// organization and qualified personnel decide what availability means
+// operationally. See docs/domain-model.md.
+// ---------------------------------------------------------------------------
+
+// A member's self-reported availability statement. Deliberately small
+// and factual — no LIMITED/percent/role qualifiers: those invite the
+// operational inference SARbase deliberately does not make. UNKNOWN is
+// both an explicit choice ("clear my status") and the computed fallback
+// when nothing has been recorded or the latest statement has expired.
+enum AvailabilityStatus {
+  AVAILABLE
+  UNAVAILABLE
+  OFF_ISLAND
+  UNKNOWN
+}
+
+// Append-only availability statement. Each row is one immutable fact:
+// "actor recorded that member is <status> [through <until> local date]"
+// at createdAt. The CURRENT status is derived at read time — the latest
+// row by (createdAt, id); a row whose `until` (a calendar date in the
+// organization's timezone, inclusive) has passed no longer describes the
+// present and the computed status falls back to UNKNOWN. Expiry never
+// invents AVAILABLE — elapsed time is not a statement.
+//
+// - until is @db.Date: "off island until Oct 12" means through the end
+//   of Oct 12 local — an instant would shift it with the server's clock.
+// - selfReported records at write time whether the actor was updating
+//   their own linked member record; identity links can change later, so
+//   deriving it afterwards would not be a durable fact.
+// - actorAuthIdentity is a real FK with Restrict — the same posture as
+//   the issue #11 change rows: an identity that authored availability
+//   history cannot be deleted out from under it.
+// - Composite FK to Member(id, organizationId) makes a cross-org
+//   statement physically impossible; Restrict keeps member rows and
+//   their history together.
+model MemberAvailabilityUpdate {
+  id                  String             @id @default(cuid())
+  organization        Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  organizationId      String
+  member              Member             @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  memberId            String
+  status              AvailabilityStatus
+  until               DateTime?          @db.Date
+  note                String?
+  selfReported        Boolean            @default(false)
+  actorAuthIdentity   AuthIdentity       @relation(fields: [actorAuthIdentityId], references: [id], onDelete: Restrict)
+  actorAuthIdentityId String
+  createdAt           DateTime           @default(now())
+
+  @@index([memberId, createdAt])
+  @@index([organizationId, createdAt])
+}
+
+// One mutable row per member recording which notification channels they
+// are willing to be contacted on — the consent/preference half of
+// contact configuration, established for the later notification work
+// (issue #13). This is a PREFERENCE, not proof of deliverability: a
+// checked channel only answers "is this member willing", never "will a
+// message arrive". The destinations themselves stay on Member
+// (email/phone) — this row deliberately stores no addresses, and push
+// has no destination yet (willingness is recorded ahead of device
+// registration).
+//
+// Mutable current state rather than append-only history: preference
+// provenance/audit belongs to the deferred generic audit work — same
+// posture as member detail edits. Cascade keeps the row consistent if a
+// member row is ever removed at the database level; the application
+// surface never deletes members.
+model MemberNotificationPreference {
+  id             String   @id @default(cuid())
+  organizationId String
+  memberId       String
+  notifyEmail    Boolean  @default(false)
+  notifySms      Boolean  @default(false)
+  notifyWhatsapp Boolean  @default(false)
+  notifyPush     Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  member       Member       @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  // One preference row per member — the composite unique is also the
+  // one-to-one FK target on the defining side.
+  @@unique([memberId, organizationId])
+  @@index([organizationId])
 }

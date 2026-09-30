@@ -68,6 +68,22 @@ describe("memberInputSchema", () => {
     ).toBe(false);
   });
 
+  it("normalizes phone to digits plus an optional leading +", () => {
+    const parsed = memberInputSchema.parse({
+      displayName: "Pat Example",
+      phone: "+1 (721) 555-0134",
+    });
+    expect(parsed.phone).toBe("+17215550134");
+  });
+
+  it("preserves a national number without inventing a country code", () => {
+    const parsed = memberInputSchema.parse({
+      displayName: "Pat Example",
+      phone: "416 12 34",
+    });
+    expect(parsed.phone).toBe("4161234");
+  });
+
   it("rejects a blank display name", () => {
     expect(memberInputSchema.safeParse({ displayName: "   " }).success).toBe(
       false,
