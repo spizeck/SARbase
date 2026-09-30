@@ -38,4 +38,39 @@ test.describe("login", () => {
       /hydration|server rendered HTML didn't match/i,
     );
   });
+
+  // Regression: the server saw NEXT_PUBLIC_FIREBASE_* and rendered the
+  // form, but the bundled client parsed the ambient `process.env`
+  // object — unenumerable in the browser — so getFirebaseClientAuth()
+  // returned null and submit reported "Authentication is not
+  // available." The parser now reads each public variable by explicit
+  // reference, which Next.js inlines into the client bundle. Firebase's
+  // credential endpoint is stubbed so the suite stays secret-free and
+  // deterministic: a fulfilled 400 makes signInWithEmailAndPassword
+  // reject, proving the flow reached credential verification.
+  test("/login submit reaches Firebase instead of failing at config detection", async ({
+    page,
+  }) => {
+    await page.route("**/googleapis.com/**", (route) =>
+      route.fulfill({
+        status: 400,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: 400, message: "INVALID_LOGIN_CREDENTIALS" },
+        }),
+      }),
+    );
+
+    await page.goto("/login");
+    await page.getByLabel("Email").fill("user@example.com");
+    await page.getByLabel("Password").fill("password123");
+    await page.getByRole("button", { name: "Sign in" }).click();
+
+    // Scoped to the form's error <p> — the page also contains Next's
+    // route announcer, which shares role="alert".
+    const alert = page.locator("form p[role='alert']");
+    await expect(alert).toBeVisible();
+    await expect(alert).not.toHaveText(/authentication is not available/i);
+    await expect(alert).toHaveText(/invalid email or password/i);
+  });
 });

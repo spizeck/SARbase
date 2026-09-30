@@ -1,12 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   arePostgresqlUrlsSameDatabase,
+  firebaseClientEnvironmentValues,
   normalizeDatabaseEndpoint,
   parseAppEnvironment,
   parseDatabaseAdminEnvironment,
   parseDatabaseEnvironment,
   parsePostgresqlUrl,
+  tryParseFirebaseClientEnvironment,
 } from "./env";
 
 const POOLED =
@@ -98,6 +100,85 @@ describe("parseDatabaseAdminEnvironment", () => {
         DATABASE_URL_UNPOOLED: UNPOOLED.replace("/appdb", "/otherdb"),
       }),
     ).toThrow("same database");
+  });
+});
+
+const FIREBASE_CLIENT_ENV_KEYS = [
+  "NEXT_PUBLIC_FIREBASE_API_KEY",
+  "NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN",
+  "NEXT_PUBLIC_FIREBASE_PROJECT_ID",
+  "NEXT_PUBLIC_FIREBASE_APP_ID",
+] as const;
+
+const FIREBASE_CLIENT_ENV = {
+  NEXT_PUBLIC_FIREBASE_API_KEY: "test-api-key",
+  NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: "test.firebaseapp.com",
+  NEXT_PUBLIC_FIREBASE_PROJECT_ID: "test-project",
+  NEXT_PUBLIC_FIREBASE_APP_ID: "1:0:web:test",
+} as const;
+
+function stubFirebaseClientEnv() {
+  for (const key of FIREBASE_CLIENT_ENV_KEYS) {
+    vi.stubEnv(key, FIREBASE_CLIENT_ENV[key]);
+  }
+}
+
+function clearFirebaseClientEnv() {
+  for (const key of FIREBASE_CLIENT_ENV_KEYS) {
+    vi.stubEnv(key, undefined);
+  }
+}
+
+describe("firebaseClientEnvironmentValues", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("reads each NEXT_PUBLIC_FIREBASE_* variable by explicit reference", () => {
+    stubFirebaseClientEnv();
+
+    expect(firebaseClientEnvironmentValues()).toEqual(FIREBASE_CLIENT_ENV);
+  });
+
+  it("reports absent variables as undefined rather than dropping keys", () => {
+    clearFirebaseClientEnv();
+
+    const values = firebaseClientEnvironmentValues();
+    for (const key of FIREBASE_CLIENT_ENV_KEYS) {
+      expect(values[key]).toBeUndefined();
+    }
+  });
+});
+
+describe("tryParseFirebaseClientEnvironment", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("parses an explicit values object", () => {
+    expect(tryParseFirebaseClientEnvironment(FIREBASE_CLIENT_ENV)).toEqual(
+      FIREBASE_CLIENT_ENV,
+    );
+  });
+
+  it("returns null for explicit missing or partial values", () => {
+    expect(tryParseFirebaseClientEnvironment({})).toBeNull();
+
+    const partial: Record<string, string> = { ...FIREBASE_CLIENT_ENV };
+    delete partial.NEXT_PUBLIC_FIREBASE_APP_ID;
+    expect(tryParseFirebaseClientEnvironment(partial)).toBeNull();
+  });
+
+  it("parses the default public env values when they are set", () => {
+    stubFirebaseClientEnv();
+
+    expect(tryParseFirebaseClientEnvironment()).toEqual(FIREBASE_CLIENT_ENV);
+  });
+
+  it("returns null when the default public env values are absent", () => {
+    clearFirebaseClientEnv();
+
+    expect(tryParseFirebaseClientEnvironment()).toBeNull();
   });
 });
 
