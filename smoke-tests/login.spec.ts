@@ -38,4 +38,53 @@ test.describe("login", () => {
       /hydration|server rendered HTML didn't match/i,
     );
   });
+
+  // Regression: the server saw NEXT_PUBLIC_FIREBASE_* and rendered the
+  // form, but the bundled client parsed the ambient `process.env`
+  // object — unenumerable in the browser — so getFirebaseClientAuth()
+  // returned null and submit reported "Authentication is not
+  // available." The parser now reads each public variable by explicit
+  // reference, which Next.js inlines into the client bundle.
+  //
+  // Intercepting only the real Email/Password credential endpoint —
+  // POST {identitytoolkit}/v1/accounts:signInWithPassword?key=... —
+  // keeps the suite secret-free and deterministic: the fulfilled 400
+  // makes signInWithEmailAndPassword reject with a credential error.
+  // The interception flag is asserted before the error UI so the test
+  // cannot pass on an unrelated failure that never reached Firebase.
+  test("/login submit reaches Firebase instead of failing at config detection", async ({
+    page,
+  }) => {
+    let credentialRequestIntercepted = false;
+    await page.route(
+      "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword*",
+      (route) => {
+        credentialRequestIntercepted = true;
+        return route.fulfill({
+          status: 400,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: 400, message: "INVALID_LOGIN_CREDENTIALS" },
+          }),
+        });
+      },
+    );
+
+    await page.goto("/login");
+    await page.getByLabel("Email").fill("user@example.com");
+    await page.getByLabel("Password").fill("password123");
+    await page.getByRole("button", { name: "Sign in" }).click();
+
+    // Scoped to the form's error <p> — the page also contains Next's
+    // route announcer, which shares role="alert".
+    const alert = page.locator("form p[role='alert']");
+    await expect(alert).toBeVisible();
+
+    // The credential request must actually have been intercepted —
+    // otherwise the error below could come from a failure that never
+    // reached Firebase and the regression would pass silently.
+    expect(credentialRequestIntercepted).toBe(true);
+    await expect(alert).not.toHaveText(/authentication is not available/i);
+    await expect(alert).toHaveText(/invalid email or password/i);
+  });
 });

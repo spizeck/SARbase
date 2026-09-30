@@ -154,7 +154,18 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      # NEXT_PUBLIC_* is inlined into the client bundle at build time,
+      # so the production build inside `npm run check` must see the
+      # same non-secret smoke values the Playwright webServer passes to
+      # `next start` — otherwise the bundled login form builds for an
+      # unconfigured deployment and its submit path can never reach
+      # Firebase.
       - run: npm run check
+        env:
+          NEXT_PUBLIC_FIREBASE_API_KEY: smoke-test-api-key
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: smoke-test.firebaseapp.com
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: smoke-test-project
+          NEXT_PUBLIC_FIREBASE_APP_ID: 1:0:web:smoke-test
       - name: Install Playwright Chromium
         if: needs.changes.outputs.e2e == 'true'
         run: npx playwright install --with-deps chromium
