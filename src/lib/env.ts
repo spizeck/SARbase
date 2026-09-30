@@ -232,9 +232,37 @@ export type FirebaseClientEnvironment = z.infer<
   typeof firebaseClientEnvironmentSchema
 >;
 
+/**
+ * Reads the public Firebase client variables via explicit references.
+ *
+ * Next.js only embeds a NEXT_PUBLIC_* variable into the browser bundle
+ * when it is referenced literally — `process.env.NEXT_PUBLIC_FOO` is
+ * inlined at build time, while the ambient `process.env` object cannot
+ * be enumerated client-side. Parsing `process.env` wholesale therefore
+ * always sees an empty environment in the browser and reports a
+ * configured deployment as unconfigured. Build the candidate object
+ * here so server and browser share one code path.
+ */
+export function firebaseClientEnvironmentValues(): Record<
+  keyof FirebaseClientEnvironment,
+  string | undefined
+> {
+  return {
+    NEXT_PUBLIC_FIREBASE_API_KEY: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+    NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN:
+      process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+    NEXT_PUBLIC_FIREBASE_PROJECT_ID:
+      process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+    NEXT_PUBLIC_FIREBASE_APP_ID: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+  };
+}
+
 /** Non-throwing variant — the login UI checks "is auth configured?" */
 export function tryParseFirebaseClientEnvironment(
-  values: Record<string, string | undefined> = process.env,
+  values: Record<
+    string,
+    string | undefined
+  > = firebaseClientEnvironmentValues(),
 ): FirebaseClientEnvironment | null {
   const result = firebaseClientEnvironmentSchema.safeParse(values);
   return result.success ? result.data : null;
