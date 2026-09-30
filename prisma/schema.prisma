@@ -196,7 +196,8 @@ model AuthIdentity {
   defectChanges            DefectChange[]
   inspectionRecordChanges  InspectionRecordChange[]
   maintenanceRecordChanges MaintenanceRecordChange[]
-  availabilityUpdates      MemberAvailabilityUpdate[]
+  // MemberAvailabilityUpdate.actorAuthIdentityId is a plain scalar
+  // reference (no back-relation) — history outlives the identity.
 
   @@unique([provider, providerUid])
   @@index([email])
@@ -1020,9 +1021,16 @@ enum AvailabilityStatus {
 // - selfReported records at write time whether the actor was updating
 //   their own linked member record; identity links can change later, so
 //   deriving it afterwards would not be a durable fact.
-// - actorAuthIdentity is a real FK with Restrict — the same posture as
-//   the issue #11 change rows: an identity that authored availability
-//   history cannot be deleted out from under it.
+// - actorAuthIdentityId is deliberately a PLAIN reference, not a
+//   foreign key — the same policy as TrainingAttendanceChange. An FK
+//   would either pin identities forever (Restrict) or erase the actor
+//   on identity removal (SetNull) — and audit history that disappears
+//   with the actor is not audit history. The stored id remains a
+//   stable forensic reference after the AuthIdentity is disabled or
+//   deleted; while the identity exists the UI resolves it to a friendly
+//   name, and after removal it renders as the raw identifier.
+//   NOTE: the issue #11 correction-history rows still use Restrict —
+//   aligning them is tracked as a separate policy cleanup.
 // - Composite FK to Member(id, organizationId) makes a cross-org
 //   statement physically impossible; Restrict keeps member rows and
 //   their history together.
@@ -1036,7 +1044,6 @@ model MemberAvailabilityUpdate {
   until               DateTime?          @db.Date
   note                String?
   selfReported        Boolean            @default(false)
-  actorAuthIdentity   AuthIdentity       @relation(fields: [actorAuthIdentityId], references: [id], onDelete: Restrict)
   actorAuthIdentityId String
   createdAt           DateTime           @default(now())
 

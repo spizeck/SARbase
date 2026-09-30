@@ -211,10 +211,13 @@ export async function listMemberAvailabilityHistory(
   const emailByIdentity = new Map(identities.map((i) => [i.id, i.email]));
   return updates.map((update) => ({
     ...update,
+    // Falls back to the raw identity id — actorAuthIdentityId is a
+    // scalar (no FK), so a deleted identity still leaves a stable
+    // forensic reference rather than an unattributed row.
     actorDisplayName:
       memberNameByIdentity.get(update.actorAuthIdentityId) ??
       emailByIdentity.get(update.actorAuthIdentityId) ??
-      null,
+      update.actorAuthIdentityId,
   }));
 }
 

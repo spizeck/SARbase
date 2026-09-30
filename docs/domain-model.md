@@ -160,9 +160,12 @@ row is never rewritten.
   `(memberId, organizationId)` foreign key — a statement cannot point
   across organizations even at the SQL level — and `@@index`es on
   `(organizationId, memberId)` / `(memberId)` serve both access paths.
-- History is never deleted by the application; `Member`/`Organization`/
-  actor `AuthIdentity` relations are `Restrict`, so statements cannot
-  be orphaned or silently erased.
+- History is never deleted by the application; `Member`/`Organization`
+  relations are `Restrict`, so statements cannot be orphaned or
+  silently erased. `actorAuthIdentityId` is a plain scalar (same policy
+  as `TrainingAttendanceChange`): an identity that authored history can
+  still be deleted, the stored id remains a stable forensic reference,
+  and display resolution falls back to the raw id after removal.
 
 ### `MemberNotificationPreference` — per-member channel preferences
 

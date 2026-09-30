@@ -238,6 +238,36 @@ describe.skipIf(!hasDb)("member availability", () => {
     ).rejects.toThrow();
   });
 
+  it("deleting the authoring identity preserves the statement (scalar actor ref)", async () => {
+    // actorAuthIdentityId is a plain reference, not an FK — an identity
+    // that authored availability history can still be deleted, and the
+    // row keeps the raw id as a stable forensic reference.
+    const ghost = await prisma.authIdentity.create({
+      data: {
+        provider: "test",
+        providerUid: uniq("ghost"),
+        email: "ghost@example.test",
+      },
+    });
+    const row = await recordMemberAvailability(
+      memberWest.id,
+      { status: "AVAILABLE", note: "before departure" },
+      ghost.id,
+      { selfReported: false },
+    );
+    await prisma.authIdentity.delete({ where: { id: ghost.id } });
+
+    const persisted = await prisma.memberAvailabilityUpdate.findUniqueOrThrow({
+      where: { id: row.id },
+    });
+    expect(persisted.actorAuthIdentityId).toBe(ghost.id);
+    // Display resolution degrades to the raw id once the identity is gone.
+    const history = await listMemberAvailabilityHistory(memberWest.id);
+    expect(history.find((u) => u.id === row.id)?.actorDisplayName).toBe(
+      ghost.id,
+    );
+  });
+
   it("organization overview derives each member's current status", async () => {
     const orgToday = calendarDateInZone("America/Puerto_Rico");
     const yesterday = new Date(orgToday.getTime() - 24 * 60 * 60 * 1000);
