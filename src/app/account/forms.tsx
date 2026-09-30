@@ -223,7 +223,12 @@ export function ContactPreferencesForm({
                   id={`${idPrefix}-${channel.key}`}
                   name={channel.key}
                   type="checkbox"
-                  defaultChecked={defaults?.[channel.key] ?? false}
+                  // A saved "willing" flag whose destination was later
+                  // removed renders unchecked — a checked-but-disabled
+                  // box would assert a preference that can't apply.
+                  defaultChecked={
+                    !missingDestination && (defaults?.[channel.key] ?? false)
+                  }
                   disabled={missingDestination}
                   aria-describedby={`${idPrefix}-${channel.key}-hint`}
                   className="mt-0.5 h-4 w-4 rounded border-neutral-300"

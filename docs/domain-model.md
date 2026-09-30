@@ -113,11 +113,14 @@ there is no mutable "current status" column to drift out of sync.
   Deliberately small and purely descriptive. `LIMITED` was considered
   and rejected for v1: "limited" invites operational interpretation
   (limited _how_? _enough_ for what?) that SARbase must not encode.
-- `until` — optional calendar **date** (`@db.Date`), meaningful only
-  for the temporary states `UNAVAILABLE` and `OFF_ISLAND`. A date — not
-  a timestamp — matches how volunteers think ("off island until
-  October 12"); no hour-of-day precision is invented.
-- `note` — optional free-text context ≤280 chars.
+- `until` — optional calendar **date** (`@db.Date`) that limits how long
+  the statement remains current. The domain applies it uniformly to any
+  status — `AVAILABLE until Dec 1` ("I'm on island until then") is as
+  meaningful as `OFF_ISLAND until Oct 12` — while the account form only
+  offers the date input when a real (non-`UNKNOWN`) status is selected.
+  A date — not a timestamp — matches how volunteers think; no
+  hour-of-day precision is invented.
+- `note` — optional free-text context ≤200 chars.
 - `actorAuthIdentityId` + `selfReported` — provenance: who recorded the
   statement and whether the member said it themselves or an admin
   entered it (e.g. phoned in).
@@ -773,10 +776,11 @@ Server-side Zod schemas (`src/lib/domain/schemas.ts`):
 - `status`: `ACTIVE` | `INACTIVE`.
 - Availability statement: `status` required
   (`AVAILABLE`/`UNAVAILABLE`/`OFF_ISLAND`/`UNKNOWN`); `until` optional
-  `YYYY-MM-DD` calendar date, allowed only on `UNAVAILABLE`/`OFF_ISLAND`
-  and not already past in the organization's timezone; `note` optional
-  ≤280. Contact preferences: four channel booleans; email requires a
-  member `email`, SMS/WhatsApp require a member `phone`.
+  `YYYY-MM-DD` calendar date that must not already be past in the
+  organization's timezone (the write path rejects dates the org's local
+  calendar has already passed); `note` optional ≤200. Contact
+  preferences: four channel booleans; email requires a member `email`,
+  SMS/WhatsApp require a member `phone`.
 - Unit assignments: array of unit ids, all verified same-organization.
 - Qualification definition: `name` required (1–120, trimmed),
   `description` optional ≤500.
