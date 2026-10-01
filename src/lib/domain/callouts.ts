@@ -910,15 +910,3 @@ export function listMemberCalloutInvitations(memberIds: string[]) {
     },
   });
 }
-
-/** Single invitation lookup for member-scope checks in actions. */
-export function getCalloutInvitation(invitationId: string) {
-  return prisma.calloutInvitation.findUnique({
-    where: { id: invitationId },
-    select: {
-      id: true,
-      memberId: true,
-      callout: { select: { status: true } },
-    },
-  });
-}
