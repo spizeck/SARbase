@@ -281,7 +281,9 @@ idempotent activation — same contract as `Notification`.
 The invited set is resolved and written as rows at activation; later
 roster changes never rewrite it. `@@unique([calloutId, memberId])`
 dedupes. Each row carries `responseTokenHash` (SHA-256 of the emailed
-link's 256-bit token — the raw token is never stored), `invitedAt`,
+link's 256-bit token — the hash, not the raw token, authenticates
+responses; the delivered link itself persists inside the notification
+record's stored body), `invitedAt`,
 current `response` (`COMING`/`UNAVAILABLE`/NULL — "no response" is
 derived, not stored) and `respondedAt`, plus a nullable `notificationId`
 link to the notification request — invitation and notification status

@@ -521,6 +521,228 @@ describe.skipIf(!hasDb)("callouts (issue #14)", () => {
     expect(invitations.every((i) => i.notificationId !== null)).toBe(true);
   });
 
+  /* ---------------- dispatch claims ---------------- */
+
+  /**
+   * Reset a dispatched invitation back to "pending" for dispatch-path
+   * tests: optionally deletes its notification row (the orphaned-row
+   * case keeps it) and stamps a claim.
+   */
+  async function resetInvitationForDispatch(
+    invitationId: string,
+    opts: { deleteNotification?: boolean; claimedAt?: Date | null } = {},
+  ) {
+    const invitation = await prisma.calloutInvitation.findUniqueOrThrow({
+      where: { id: invitationId },
+    });
+    // Unlink first — the composite FK restricts deleting a referenced
+    // notification row.
+    const updated = await prisma.calloutInvitation.update({
+      where: { id: invitationId },
+      data: {
+        notificationId: null,
+        ...(opts.claimedAt !== undefined
+          ? { dispatchClaimedAt: opts.claimedAt }
+          : {}),
+      },
+    });
+    if (invitation.notificationId && opts.deleteNotification) {
+      await prisma.notificationAttempt.deleteMany({
+        where: { notificationId: invitation.notificationId },
+      });
+      await prisma.notification.delete({
+        where: { id: invitation.notificationId },
+      });
+    }
+    return updated;
+  }
+
+  /**
+   * Re-run activateCallout as an idempotent replay of an existing
+   * callout: same activationKey, same logical input (the memberIds the
+   * callout originally materialized), fresh provider.
+   */
+  async function replay(
+    calloutId: string,
+    provider?: FakeNotificationProvider,
+  ) {
+    const callout = await prisma.callout.findUniqueOrThrow({
+      where: { id: calloutId },
+      include: { invitations: { select: { memberId: true } } },
+    });
+    return activateCallout(
+      orgA.id,
+      {
+        title: callout.title,
+        message: callout.message ?? undefined,
+        audience: callout.audience,
+        unitId: callout.unitId ?? undefined,
+        memberIds: callout.invitations.map((i) => i.memberId),
+        activationKey: callout.activationKey,
+      },
+      actor.id,
+      provider ? { provider } : {},
+    );
+  }
+
+  it("a live dispatch claim blocks a concurrent dispatcher from rotating the token", async () => {
+    const m = await makeMember(orgA.id);
+    await enableEmail(m.id);
+    const { callout } = await activate(orgA.id, {
+      title: "Live claim",
+      audience: "MEMBERS",
+      memberIds: [m.id],
+    });
+    let invitation = await prisma.calloutInvitation.findFirstOrThrow({
+      where: { calloutId: callout.id, memberId: m.id },
+    });
+    // Simulate an in-flight dispatcher: pending invitation, fresh
+    // claim, notification row not yet created.
+    invitation = await resetInvitationForDispatch(invitation.id, {
+      deleteNotification: true,
+      claimedAt: new Date(),
+    });
+    const storedHash = invitation.responseTokenHash;
+
+    // The replayed dispatcher must not rotate or send — the live claim
+    // owns the in-flight send.
+    const provider = new FakeNotificationProvider();
+    await replay(callout.id, provider);
+    const after = await prisma.calloutInvitation.findUniqueOrThrow({
+      where: { id: invitation.id },
+    });
+    expect(provider.calls).toHaveLength(0);
+    expect(after.responseTokenHash).toBe(storedHash);
+    expect(after.notificationId).toBeNull();
+    expect(after.dispatchClaimedAt).not.toBeNull();
+  });
+
+  it("a stale dispatch claim is reclaimed by a replay, which sends and links", async () => {
+    const m = await makeMember(orgA.id);
+    await enableEmail(m.id);
+    const { callout } = await activate(orgA.id, {
+      title: "Stale claim",
+      audience: "MEMBERS",
+      memberIds: [m.id],
+    });
+    const invitation = await prisma.calloutInvitation.findFirstOrThrow({
+      where: { calloutId: callout.id, memberId: m.id },
+    });
+    // Simulate a crashed dispatcher: pending, stale claim, notification
+    // row never created.
+    await resetInvitationForDispatch(invitation.id, {
+      deleteNotification: true,
+      claimedAt: new Date(Date.now() - 11 * 60 * 1000),
+    });
+
+    const provider = new FakeNotificationProvider();
+    await replay(callout.id, provider);
+    const after = await prisma.calloutInvitation.findUniqueOrThrow({
+      where: { id: invitation.id },
+    });
+    expect(provider.calls).toHaveLength(1);
+    expect(after.notificationId).not.toBeNull();
+    expect(after.dispatchClaimedAt).toBeNull();
+    // Stored hash matches the token that was actually emailed.
+    const emailed = tokenFromCall(provider.calls[0]!.text);
+    expect(after.responseTokenHash).toBe(hashResponseToken(emailed));
+  });
+
+  it("an orphaned notification row is linked and the stored hash repaired to the emailed token", async () => {
+    const m = await makeMember(orgA.id);
+    await enableEmail(m.id);
+    const provider = new FakeNotificationProvider();
+    const { callout } = await activate(
+      orgA.id,
+      {
+        title: "Orphan repair",
+        audience: "MEMBERS",
+        memberIds: [m.id],
+      },
+      provider,
+    );
+    const invitation = await prisma.calloutInvitation.findFirstOrThrow({
+      where: { calloutId: callout.id, memberId: m.id },
+    });
+    const emailed = tokenFromCall(provider.calls[0]!.text);
+    // Simulate a crash after the notification row was created but before
+    // the invitation was linked — and a rotated hash left behind.
+    await resetInvitationForDispatch(invitation.id, {
+      claimedAt: new Date(),
+    });
+    await prisma.calloutInvitation.update({
+      where: { id: invitation.id },
+      data: { responseTokenHash: "0".repeat(64) },
+    });
+
+    const provider2 = new FakeNotificationProvider();
+    await replay(callout.id, provider2);
+    const after = await prisma.calloutInvitation.findUniqueOrThrow({
+      where: { id: invitation.id },
+    });
+    expect(provider2.calls).toHaveLength(0); // no resend
+    expect(after.notificationId).toBe(invitation.notificationId);
+    expect(after.dispatchClaimedAt).toBeNull();
+    expect(after.responseTokenHash).toBe(hashResponseToken(emailed));
+    // And the originally emailed link still resolves.
+    const resolved = await getInvitationForToken(emailed);
+    expect(resolved?.id).toBe(invitation.id);
+  });
+
+  it("a failed dispatch releases the claim so a replay retries immediately", async () => {
+    const m = await makeMember(orgA.id);
+    await enableEmail(m.id);
+    const { callout } = await activate(orgA.id, {
+      title: "Failed dispatch",
+      audience: "MEMBERS",
+      memberIds: [m.id],
+    });
+    const invitation = await prisma.calloutInvitation.findFirstOrThrow({
+      where: { calloutId: callout.id, memberId: m.id },
+    });
+    // Pending with no claim and no notification row.
+    await resetInvitationForDispatch(invitation.id, {
+      deleteNotification: true,
+      claimedAt: null,
+    });
+
+    // Force requestNotification to throw before persisting: no provider
+    // dep, and env says resend without RESEND_API_KEY →
+    // NotificationConfigError.
+    const prevProviderEnv = process.env.NOTIFICATION_PROVIDER;
+    const prevKeyEnv = process.env.RESEND_API_KEY;
+    process.env.NOTIFICATION_PROVIDER = "resend";
+    delete process.env.RESEND_API_KEY;
+    try {
+      await replay(callout.id);
+    } finally {
+      if (prevProviderEnv === undefined) {
+        delete process.env.NOTIFICATION_PROVIDER;
+      } else {
+        process.env.NOTIFICATION_PROVIDER = prevProviderEnv;
+      }
+      if (prevKeyEnv !== undefined) {
+        process.env.RESEND_API_KEY = prevKeyEnv;
+      }
+    }
+    const afterFail = await prisma.calloutInvitation.findUniqueOrThrow({
+      where: { id: invitation.id },
+    });
+    expect(afterFail.notificationId).toBeNull();
+    // The claim was released — a subsequent replay can retry now rather
+    // than waiting out the stale window.
+    expect(afterFail.dispatchClaimedAt).toBeNull();
+
+    const provider = new FakeNotificationProvider();
+    await replay(callout.id, provider);
+    const afterRetry = await prisma.calloutInvitation.findUniqueOrThrow({
+      where: { id: invitation.id },
+    });
+    expect(provider.calls).toHaveLength(1);
+    expect(afterRetry.notificationId).not.toBeNull();
+    expect(afterRetry.dispatchClaimedAt).toBeNull();
+  });
+
   /* ---------------- response tokens ---------------- */
 
   it("stores only the token hash; the emailed raw token resolves the invitation", async () => {

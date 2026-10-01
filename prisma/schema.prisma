@@ -1331,7 +1331,9 @@ model Callout {
 // rewrite who was actually invited.
 //
 // `responseTokenHash` is SHA-256 of the high-entropy raw token carried
-// in the emailed response link. The raw token is NEVER stored.
+// in the emailed response link. The raw token is never stored on the
+// invitation itself — though the delivered email body (and thus the
+// link) persists on the Notification row as its honest send-record.
 model CalloutInvitation {
   id                String           @id @default(cuid())
   organizationId    String
@@ -1342,6 +1344,10 @@ model CalloutInvitation {
   // notification idempotency key lets a replay link it later.
   notificationId    String?
   responseTokenHash String           @unique
+  // Dispatch claim timestamp: set by the dispatcher that owns the
+  // in-flight send so a concurrent dispatcher cannot rotate the token
+  // mid-flight; reclaimable once stale (DISPATCH_CLAIM_STALE_MS).
+  dispatchClaimedAt DateTime?
   invitedAt         DateTime         @default(now())
   // Current response state for fast display; the full timeline lives in
   // CalloutResponseChange. NULL = no response.

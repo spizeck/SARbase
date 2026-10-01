@@ -28,14 +28,14 @@ emailed to invitees), `activationKey`, `intentHash`, `status`
 `closedByAuthIdentityId`.
 
 `@@unique([organizationId, activationKey])` provides durable
-application-level idempotency, same contract as `Notification`: same key
-
-- same `intentHash` replays (returns the existing callout and resumes
-  any undispatched invitations); same key + different intent throws
-  `CalloutIdempotencyConflictError`. The admin form generates a fresh UUID
-  per render, so a double-click or browser resubmit replays instead of
-  duplicating. Concurrent duplicate activations race the unique index —
-  the loser re-reads and applies the same replay/conflict semantics.
+application-level idempotency, same contract as `Notification`: a key
+replayed with the same `intentHash` returns the existing callout and
+resumes any undispatched invitations; the same key with different intent
+throws `CalloutIdempotencyConflictError`. The admin form generates a
+fresh UUID per render, so a double-click or browser resubmit replays
+instead of duplicating. Concurrent duplicate activations race the unique
+index — the loser re-reads and applies the same replay/conflict
+semantics.
 
 ### `CalloutInvitation` — the materialized audience
 
@@ -93,22 +93,35 @@ diverge.
    never disappears because one send failed. Replaying the activation
    (same key) resumes invitations that have no notification row.
 
-A resumed dispatch rotates the invitation's token via a compare-and-swap
-on the stored hash (guarded on `notificationId IS NULL`): exactly one
-concurrent dispatcher wins, and the stored hash always matches the token
-in the email actually sent. When a notification row already exists under
-the deterministic key, the invitation is simply linked — the emailed
-link stays valid. A raw token is never stored anywhere.
+A resumed or concurrent dispatch claims the invitation's send by
+rotating `responseTokenHash` and stamping `dispatchClaimedAt` in one
+compare-and-swap (guarded on the previously-read hash,
+`notificationId IS NULL`, and no live claim). A second dispatcher sees
+the fresh claim and stops — it cannot rotate an in-flight token; a
+claim stale beyond `DISPATCH_CLAIM_STALE_MS` (10 minutes) is
+reclaimable so a crashed dispatcher stays resumable. Whenever a
+Notification row already exists under the deterministic key, the
+invitation is linked AND its hash repaired to match the token carried
+by that row's stored email — so the stored hash always equals the
+emailed credential, under every crash/reclaim ordering. On dispatch
+failure the claim is released so a replay can retry immediately.
 
 ## The response token
 
 - `mintInvitationToken()` draws 32 bytes from `crypto.randomBytes`
   (256-bit, base64url — 43 characters).
-- The raw token appears only in the emailed link
-  `GET /respond?t=<token>`. The database stores `responseTokenHash =
-SHA-256(token)` with a unique index. `GET /respond` resolves the hash;
-  the value is invalid for any other invitation, contains no member or
-  organization data, and is never logged.
+- The raw token appears in the emailed link `GET /respond?t=<token>`.
+  The invitation row stores `responseTokenHash = SHA-256(token)` with a
+  unique index; `GET /respond` resolves the hash. The value is invalid
+  for any other invitation, contains no member or organization data,
+  and is never logged.
+- The delivered email body — including the link — is also persisted on
+  the `Notification` row (`bodyText`), per the notification
+  foundation's honest send-record design: retries replay the exact
+  stored body. The token therefore also lives inside that org-scoped
+  record, the member's mailbox, and the provider copy — the same
+  exposure any emailed credential carries. Closing the callout revokes
+  every link, bounding that exposure to the callout's active window.
 - The page is `noindex`, and Sentry/privacy scrubbing drops query
   strings — the token never reaches telemetry.
 - Lifetime is tied to the callout: a token responds while the callout is
