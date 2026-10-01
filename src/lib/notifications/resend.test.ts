@@ -157,6 +157,17 @@ describe("ResendEmailProvider", () => {
   });
 });
 
+describe("normalizeResendError ordering", () => {
+  it("a named rejection wins over a 403 status (unverified domain case)", () => {
+    // Resend returns validation_error with HTTP 403 for an unverified
+    // sending domain or test-mode recipient restriction — the message is
+    // wrong, not the credentials. The name check must run first.
+    expect(
+      normalizeResendError({ name: "validation_error", statusCode: 403 }),
+    ).toMatchObject({ errorCode: "provider_rejected", retryable: false });
+  });
+});
+
 describe("normalizeResendError", () => {
   it("treats 5xx and unknown names as retryable provider errors", () => {
     expect(

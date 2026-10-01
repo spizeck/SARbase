@@ -576,6 +576,33 @@ describe.skipIf(!hasDb)("notification requests and attempts", () => {
     expect(list.every((n) => n.organizationId === orgA.id)).toBe(true);
   });
 
+  it("a provider configuration error writes no request row", async () => {
+    // Selecting resend without credentials must throw BEFORE the
+    // Notification row is created — otherwise a later replay of the same
+    // idempotency key would silently "succeed" against the orphan.
+    const prior = process.env.NOTIFICATION_PROVIDER;
+    process.env.NOTIFICATION_PROVIDER = "resend";
+    const before = await prisma.notification.count({
+      where: { organizationId: orgA.id },
+    });
+    try {
+      await expect(request({})).rejects.toThrow(
+        /RESEND_API_KEY|NOTIFICATION_EMAIL_FROM/,
+      );
+    } finally {
+      if (prior === undefined) {
+        delete process.env.NOTIFICATION_PROVIDER;
+      } else {
+        process.env.NOTIFICATION_PROVIDER = prior;
+      }
+    }
+    expect(
+      await prisma.notification.count({
+        where: { organizationId: orgA.id },
+      }),
+    ).toBe(before);
+  });
+
   it("default provider resolution in tests uses the fake — never the network", async () => {
     // No RESEND_API_KEY and NODE_ENV=test → the resolver returns the
     // deterministic fake. This exercises the unconfigured default path.

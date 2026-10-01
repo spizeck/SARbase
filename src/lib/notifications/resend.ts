@@ -84,6 +84,19 @@ export function normalizeResendError(error: {
   name: string;
   statusCode: number | null;
 }): Extract<ProviderSendResult, { status: "failed" }> {
+  // Name checks run before the 401/403 status fallback: Resend can
+  // return a named rejection (e.g. validation_error for an unverified
+  // sending domain, or a test-mode recipient restriction) with a 403 —
+  // that is a message problem, not a credentials problem.
+  if (REJECTION_ERROR_NAMES.has(error.name)) {
+    return {
+      status: "failed",
+      errorCode: "provider_rejected",
+      errorSummary:
+        "The email provider rejected the message as invalid. Retrying the unchanged request will not succeed.",
+      retryable: false,
+    };
+  }
   if (
     AUTH_ERROR_NAMES.has(error.name) ||
     error.statusCode === 401 ||
@@ -104,15 +117,6 @@ export function normalizeResendError(error: {
       errorSummary:
         "The email provider rate-limited the request. Retrying later may succeed.",
       retryable: true,
-    };
-  }
-  if (REJECTION_ERROR_NAMES.has(error.name)) {
-    return {
-      status: "failed",
-      errorCode: "provider_rejected",
-      errorSummary:
-        "The email provider rejected the message as invalid. Retrying the unchanged request will not succeed.",
-      retryable: false,
     };
   }
   if (

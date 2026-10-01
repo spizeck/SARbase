@@ -480,6 +480,14 @@ export async function requestNotification(
     metadata: input.metadata ?? null,
   });
 
+  // Resolve the provider BEFORE writing the row: a configuration error
+  // must leave no orphaned PENDING request (and no row that a later
+  // identical-key replay could silently "succeed" against). Suppressed
+  // requests never reach a provider, so none is resolved for them.
+  const provider = recipient.suppression
+    ? null
+    : (deps.provider ?? resolveNotificationProvider(input.channel));
+
   const createData = {
     organizationId: input.organizationId,
     memberId: recipient.memberId,
@@ -551,8 +559,7 @@ export async function requestNotification(
     return { notification, deduplicated: false };
   }
 
-  const provider = deps.provider ?? resolveNotificationProvider(input.channel);
-  const dispatched = await dispatchAttempt(notification, provider, "initial");
+  const dispatched = await dispatchAttempt(notification, provider!, "initial");
   return { notification: dispatched, deduplicated: false };
 }
 
