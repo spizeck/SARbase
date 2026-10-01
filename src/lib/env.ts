@@ -299,3 +299,33 @@ export function isFirebaseAdminConfigured(
 ): boolean {
   return firebaseAdminEnvironmentSchema.safeParse(values).success;
 }
+
+/**
+ * Notification delivery configuration (issue #13) — server-only.
+ *
+ * - NOTIFICATION_PROVIDER: explicit provider selection, "resend" or
+ *   "fake". Optional; when unset the resolver picks "resend" if
+ *   RESEND_API_KEY is present and otherwise fails closed in production
+ *   or falls back to "fake" in development/test (see
+ *   src/lib/notifications/resolve.ts for the exact rules).
+ * - RESEND_API_KEY: Resend API credential. SECRET — never in client
+ *   bundles, CI, or logs.
+ * - NOTIFICATION_EMAIL_FROM: verified sender identity, e.g.
+ *   "SARbase Notifications <notify@example.org>". Required for the
+ *   resend provider.
+ */
+export const notificationEnvironmentSchema = z.object({
+  NOTIFICATION_PROVIDER: z.enum(["resend", "fake"]).optional(),
+  RESEND_API_KEY: z.string().min(1).optional(),
+  NOTIFICATION_EMAIL_FROM: z.string().trim().min(1).max(320).optional(),
+});
+
+export type NotificationEnvironment = z.infer<
+  typeof notificationEnvironmentSchema
+>;
+
+export function parseNotificationEnvironment(
+  values: Record<string, string | undefined> = process.env,
+): NotificationEnvironment {
+  return notificationEnvironmentSchema.parse(values);
+}

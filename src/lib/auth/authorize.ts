@@ -350,3 +350,24 @@ export async function requireOrgAdminForAssetMeter(
   }
   return meter;
 }
+
+/**
+ * Issue #13 notification lookup — same rule: the caller-supplied id is
+ * an untrusted selector; the record's own organizationId decides which
+ * grant must exist.
+ */
+export async function requireOrgAdminForNotification(
+  ctx: AuthContext,
+  notificationId: string,
+) {
+  const notification = await prisma.notification.findUnique({
+    where: { id: notificationId },
+  });
+  if (!notification || !isOrgAdmin(ctx, notification.organizationId)) {
+    logDenial("authz.notification_scope_denied", ctx, {
+      entityId: notificationId,
+    });
+    throw new AuthorizationError();
+  }
+  return notification;
+}

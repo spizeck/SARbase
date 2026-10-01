@@ -692,3 +692,56 @@ export const contactPreferenceSchema = z.object({
   notifyPush: checkboxSchema,
 });
 export type ContactPreferenceInput = z.infer<typeof contactPreferenceSchema>;
+
+/* ------------------------------------------------------------------ */
+/* Notifications (issue #13)                                           */
+/*                                                                     */
+/* The admin test-send is a human-authored administrative message —    */
+/* subject + body are stored on the notification so retries replay the */
+/* exact content. Either a member target (preference-enforced) or a    */
+/* direct destination, never both.                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Idempotency key supplied by the caller (a per-form-render UUID for the
+ * admin send). Bounded printable characters — it is stored verbatim and
+ * used in provider idempotency headers.
+ */
+export const idempotencyKeySchema = z
+  .string()
+  .trim()
+  .regex(
+    /^[A-Za-z0-9][A-Za-z0-9:._/-]{7,199}$/,
+    "A valid idempotency key is required.",
+  );
+
+export const adminNotificationSendSchema = z
+  .object({
+    memberId: optionalId,
+    destination: emailSchema,
+    subject: z
+      .string()
+      .trim()
+      .min(1, "Subject is required.")
+      .max(120, "Keep the subject under 120 characters."),
+    body: z
+      .string()
+      .trim()
+      .min(1, "Message is required.")
+      .max(4000, "Keep the message under 4000 characters."),
+    idempotencyKey: idempotencyKeySchema,
+  })
+  .check((ctx) => {
+    const { memberId, destination } = ctx.value;
+    if ((memberId == null) === (destination == null)) {
+      ctx.issues.push({
+        code: "custom",
+        message: "Choose a member or enter an email address — not both.",
+        path: ["memberId"],
+        input: ctx.value,
+      });
+    }
+  });
+export type AdminNotificationSendInput = z.infer<
+  typeof adminNotificationSendSchema
+>;
