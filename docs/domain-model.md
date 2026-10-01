@@ -202,6 +202,60 @@ qualification inference, or callout dispatch — those are operational
 decisions for the organization, and later issues (notifications,
 callouts) build on these records without changing their factual nature.
 
+## Notification requests and delivery records
+
+Issue #13 adds the notification foundation: the durable records behind
+every message SARbase is asked to send. Two entities — the request and
+its append-only attempts — keep application intent, provider dispatch,
+and audit history cleanly separated. Full architecture, provider
+resolution, idempotency, and retry semantics live in
+[`docs/notifications.md`](notifications.md).
+
+> SARbase records and delivers communication requests. Delivery state is
+> a factual record and is not an operational readiness or response
+> conclusion.
+
+### `Notification` — the durable request
+
+One row per logical send: `organizationId`, optional `memberId`
+(composite same-org FK), `channel` (`EMAIL` — SMS/WhatsApp/push are
+deferred), `template`, stored `subject`/`bodyText` (retries replay the
+exact message), `destination` **snapshot** (the address used at request
+time — history stays accurate when `Member.email` changes; never an
+authorization input), `metadata` (structured ids/codes only),
+`idempotencyKey`, `intentHash`, `status`, `statusReason`, and
+`requestedByAuthIdentityId` — a deliberately plain scalar per the actor
+policy: history outlives identity deletion, display resolves
+best-effort.
+
+`@@unique([organizationId, idempotencyKey])` makes requests idempotent:
+same key + same intent returns the existing row; same key + different
+intent fails loudly. Statuses are facts: `PENDING`, `SUPPRESSED` (with a
+factual `statusReason` such as `preference_disabled` or
+`destination_missing` — not a failure), `ACCEPTED` (provider took the
+message — **not** proof of delivery), `FAILED`.
+
+Member-targeted requests enforce `MemberNotificationPreference` at
+creation time: `notifyEmail` off or absent suppresses without ever
+invoking the provider; preference on with no `Member.email` records a
+`destination_missing` suppression. Requests without a member (direct
+administrative sends) have no member preference to check.
+
+### `NotificationAttempt` — append-only provider invocations
+
+One row per provider call: `attemptNumber` (unique per notification),
+`provider` name, `DISPATCHING`/`ACCEPTED`/`FAILED` status,
+`providerMessageId`, safe `errorCode`/`errorSummary` (provider error
+messages are never copied — they can echo recipient data), `retryable`,
+`attemptedAt`/`resolvedAt`. Attempts are never overwritten — a retry
+appends a new row — and `Restrict` deletes preserve the audit trail.
+A permanently `DISPATCHING` attempt honestly means "invoked the
+provider; outcome never recorded".
+
+Admin visibility is a compact org-scoped history page
+(`/admin/organizations/{orgId}/notifications`) with a labeled
+administrative test-send — explicitly not a callout interface.
+
 ## Qualifications and certifications
 
 Issue #8 adds the first member-record domain: administrative

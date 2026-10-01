@@ -44,6 +44,7 @@ import {
   meterReadingInputSchema,
   availabilityUpdateSchema,
   contactPreferenceSchema,
+  adminNotificationSendSchema,
 } from "@/lib/domain/schemas";
 import {
   requireAuth,
@@ -62,6 +63,7 @@ import {
   requireOrgAdminForMaintenanceRecord,
   requireOrgAdminForDefect,
   requireOrgAdminForAssetMeter,
+  requireOrgAdminForNotification,
 } from "@/lib/auth/authorize";
 import {
   createTrainingEvent,
@@ -121,9 +123,21 @@ import {
   AvailabilityInputError,
   ContactPreferenceDestinationError,
 } from "@/lib/domain/availability";
+import {
+  requestNotification,
+  retryNotification,
+  NotificationIdempotencyConflictError,
+  NotificationConcurrentDispatchError,
+  NotificationRecipientError,
+  NotificationRetryError,
+} from "@/lib/domain/notifications";
+import { NotificationConfigError } from "@/lib/notifications/provider";
+import { checkRateLimit } from "@/lib/rate-limit/rate-limit";
+import { rateLimitKey } from "@/lib/rate-limit/keys";
+import { InMemoryRateLimitStore } from "@/lib/rate-limit/memory-store";
 import { AuthenticationError, AuthorizationError } from "@/lib/auth/context";
 import { emailSchema } from "@/lib/domain/schemas";
-import { log } from "@/lib/logging";
+import { log, logExpected } from "@/lib/logging";
 
 /**
  * Server actions for the internal administration surface.
@@ -230,6 +244,26 @@ function mapDomainError(error: unknown): ActionState {
   ) {
     // Input rules about the caller's own organization — safe to surface.
     return { message: error.message };
+  }
+  if (error instanceof NotificationRecipientError) {
+    // Opaque — a member id outside this organization must not leak.
+    return { message: "Not found." };
+  }
+  if (error instanceof NotificationIdempotencyConflictError) {
+    return { message: error.message };
+  }
+  if (error instanceof NotificationConcurrentDispatchError) {
+    return { message: error.message };
+  }
+  if (error instanceof NotificationRetryError) {
+    return { message: error.message };
+  }
+  if (error instanceof NotificationConfigError) {
+    // Env var names are fine for operators; values never surface.
+    return {
+      message:
+        "Email delivery is not configured for this deployment. Contact the operator.",
+    };
   }
   throw error;
 }
@@ -1698,5 +1732,138 @@ export async function updateMemberContactPreferenceAction(
     return mapDomainError(error);
   }
   revalidatePath(`/admin/members/${member.id}`);
+  return {};
+}
+
+/* ------------------------------------------------------------------ */
+/* Notifications (issue #13)                                           */
+/*                                                                     */
+/* A compact admin surface: send one administrative test notification  */
+/* and retry failed requests. ADMIN-only; organizationId from the page */
+/* binding is still an untrusted selector checked against              */
+/* OrganizationAccess. This is administrative/testing tooling — it is  */
+/* deliberately NOT a callout or dispatch interface.                   */
+/*                                                                     */
+/* Rate limiting uses the existing fixed-window foundation with opaque */
+/* hashed keys (org id + actor id — never an email or member id). The */
+/* in-memory store is a per-process best-effort throttle; see          */
+/* src/lib/rate-limit/rate-limit.ts for its documented limits.         */
+/* ------------------------------------------------------------------ */
+
+const notificationRateLimitStore = new InMemoryRateLimitStore();
+const NOTIFICATION_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
+
+async function checkNotificationRateLimit(
+  scope: "notification.send" | "notification.retry",
+  organizationId: string,
+  actorId: string,
+): Promise<ActionState | null> {
+  const result = await checkRateLimit(
+    notificationRateLimitStore,
+    rateLimitKey(scope, organizationId, actorId),
+    NOTIFICATION_RATE_LIMIT,
+  );
+  if (result.allowed) {
+    return null;
+  }
+  logExpected({
+    event: "notification.rate_limited",
+    subsystem: "notifications",
+    actorId,
+    organizationId,
+    rateLimitScope: scope,
+  });
+  return {
+    message:
+      "Too many notification requests. Please wait a moment and try again.",
+  };
+}
+
+/**
+ * Send one administrative test notification — a member target (whose
+ * channel preferences are enforced) or a one-off destination address.
+ * The request is idempotent on the hidden form-render key: resubmitting
+ * the same form returns the existing request instead of sending twice.
+ */
+export async function sendAdminNotificationAction(
+  organizationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const limited = await checkNotificationRateLimit(
+    "notification.send",
+    organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+
+  const parsed = adminNotificationSendSchema.safeParse({
+    memberId: formData.get("memberId"),
+    destination: formData.get("destination"),
+    subject: formData.get("subject"),
+    body: formData.get("body"),
+    idempotencyKey: formData.get("idempotencyKey"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await requestNotification(
+      {
+        organizationId,
+        channel: "EMAIL",
+        memberId: parsed.data.memberId,
+        destination: parsed.data.destination,
+        template: "admin_test",
+        subject: parsed.data.subject,
+        bodyText: `${parsed.data.body}\n\n—\nThis is an administrative test notification sent via SARbase. It is not an operational alert.`,
+        metadata: { source: "admin_test_send" },
+        idempotencyKey: parsed.data.idempotencyKey,
+      },
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/organizations/${organizationId}/notifications`);
+  return {};
+}
+
+/**
+ * Explicitly re-dispatch a failed/stuck notification — appends a new
+ * attempt row; the domain refuses terminal or non-retryable states.
+ */
+export async function retryNotificationAction(
+  notificationId: string,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let notification;
+  try {
+    notification = await requireOrgAdminForNotification(ctx, notificationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const limited = await checkNotificationRateLimit(
+    "notification.retry",
+    notification.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+
+  try {
+    await retryNotification(notification.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${notification.organizationId}/notifications`,
+  );
   return {};
 }

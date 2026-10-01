@@ -93,6 +93,8 @@ import {
   recordMeterReadingAction,
   setMemberAvailabilityAction,
   updateMemberContactPreferenceAction,
+  sendAdminNotificationAction,
+  retryNotificationAction,
 } from "@/app/admin/actions";
 import {
   updateMyAvailabilityAction,
@@ -319,6 +321,14 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.memberNotificationPreference.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    // Issue #13 — attempts before requests (append-only children), then
+    // the requests' Restrict edges to members/organizations.
+    await prisma.notificationAttempt.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.notification.deleteMany({
       where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.authIdentity.deleteMany({
@@ -2328,6 +2338,127 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
           form({ notifyEmail: "on" }),
         ),
       ).toEqual({ message: "Not found." });
+    });
+  });
+
+  describe("notification administration (issue #13)", () => {
+    // The provider resolves to the deterministic fake in tests — these
+    // calls never touch the network.
+    function sendForm(overrides: Record<string, string> = {}) {
+      return form({
+        memberId: "",
+        destination: `dest-${counter}@example.test`,
+        subject: "Radio check",
+        body: "Synthetic test notification.",
+        idempotencyKey: uniq("idem"),
+        ...overrides,
+      });
+    }
+
+    it("admin A sends a one-off notification in org A — actor attributed server-side", async () => {
+      signInAs(adminAUid);
+      const result = await sendAdminNotificationAction(orgA.id, {}, sendForm());
+      expect(result).toEqual({});
+      const saved = await prisma.notification.findFirstOrThrow({
+        where: { organizationId: orgA.id, template: "admin_test" },
+        orderBy: { createdAt: "desc" },
+      });
+      expect(saved.status).toBe("ACCEPTED");
+      expect(saved.requestedByAuthIdentityId).toBe(adminAIdentityId);
+      expect(
+        await prisma.notificationAttempt.count({
+          where: { notificationId: saved.id },
+        }),
+      ).toBe(1);
+    });
+
+    it("a forged actor field in the form cannot redirect attribution", async () => {
+      signInAs(adminAUid);
+      const result = await sendAdminNotificationAction(
+        orgA.id,
+        {},
+        sendForm({ requestedByAuthIdentityId: "attacker" }),
+      );
+      expect(result).toEqual({});
+      const saved = await prisma.notification.findFirstOrThrow({
+        where: { organizationId: orgA.id },
+        orderBy: { createdAt: "desc" },
+      });
+      expect(saved.requestedByAuthIdentityId).toBe(adminAIdentityId);
+    });
+
+    it("rejects a member target from another organization", async () => {
+      signInAs(adminAUid);
+      const result = await sendAdminNotificationAction(
+        orgA.id,
+        {},
+        sendForm({ memberId: memberB.id, destination: "" }),
+      );
+      expect(result).toEqual({ message: "Not found." });
+      expect(
+        await prisma.notification.count({ where: { memberId: memberB.id } }),
+      ).toBe(0);
+    });
+
+    it("MEMBER role and unauthenticated callers are denied", async () => {
+      const before = await prisma.notification.count({
+        where: { organizationId: orgA.id },
+      });
+      signInAs(memberRoleUid);
+      expect(
+        await sendAdminNotificationAction(orgA.id, {}, sendForm()),
+      ).toEqual({ message: "Not found." });
+      signInAs(null);
+      await expect(
+        sendAdminNotificationAction(orgA.id, {}, sendForm()),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
+      expect(
+        await prisma.notification.count({
+          where: { organizationId: orgA.id },
+        }),
+      ).toBe(before); // nothing was written by either denied call
+    });
+
+    it("admin A cannot retry a notification belonging to org B", async () => {
+      const foreign = await prisma.notification.create({
+        data: {
+          organizationId: orgB.id,
+          channel: "EMAIL",
+          template: "admin_test",
+          destination: "b@example.test",
+          idempotencyKey: uniq("foreign"),
+          intentHash: "x",
+          status: "FAILED",
+        },
+      });
+      signInAs(adminAUid);
+      const result = await retryNotificationAction(foreign.id);
+      expect(result).toEqual({ message: "Not found." });
+      expect(
+        await prisma.notificationAttempt.count({
+          where: { notificationId: foreign.id },
+        }),
+      ).toBe(0);
+    });
+
+    it("rate limiting denies sends beyond the per-actor window", async () => {
+      signInAs(adminAUid);
+      const limit = 10; // NOTIFICATION_SEND_LIMIT in actions.ts
+      let denied: unknown = null;
+      for (let i = 0; i < limit + 2; i++) {
+        const result = await sendAdminNotificationAction(
+          orgA.id,
+          {},
+          sendForm(),
+        );
+        if (result && "message" in result && result.message !== "Not found.") {
+          denied = result;
+        }
+      }
+      expect(denied).toEqual({
+        message:
+          "Too many notification requests. Please wait a moment and try again.",
+      });
     });
   });
 });

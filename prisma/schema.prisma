@@ -82,6 +82,8 @@ model Organization {
 
   availabilityUpdates     MemberAvailabilityUpdate[]
   notificationPreferences MemberNotificationPreference[]
+  notifications           Notification[]
+  notificationAttempts    NotificationAttempt[]
 }
 
 // An internal operational/administrative grouping within an organization
@@ -152,6 +154,11 @@ model Member {
   // notification-preference row is the member's mutable channel config.
   availabilityUpdates    MemberAvailabilityUpdate[]
   notificationPreference MemberNotificationPreference?
+
+  // Issue #13 — notification requests that targeted this member.
+  // Restrict: a member row cannot be hard-deleted out from under
+  // recorded send history.
+  notifications Notification[]
 
   // Optional link to a login identity. Nullable — most members never sign
   // in. SetNull on identity deletion: removing a login must never destroy
@@ -1084,4 +1091,150 @@ model MemberNotificationPreference {
   // one-to-one FK target on the defining side.
   @@unique([memberId, organizationId])
   @@index([organizationId])
+}
+
+// ---------------------------------------------------------------------------
+// Issue #13 — notification provider foundation and delivery records.
+//
+// SARbase records and delivers communication REQUESTS. A Notification row
+// is the durable statement "the application asked to send this message";
+// each NotificationAttempt row is one append-only record of a provider
+// invocation. Delivery state is a factual record — provider acceptance is
+// never presented as delivery, and none of it is an operational readiness
+// or response conclusion.
+// ---------------------------------------------------------------------------
+
+// Delivery channels SARbase can send on. EMAIL is the baseline; SMS,
+// WhatsApp, and push are deliberately deferred (the provider seam is
+// documented in docs/notifications.md).
+enum NotificationChannel {
+  EMAIL
+}
+
+// The factual lifecycle of a notification request:
+// - PENDING    — recorded; either dispatch is in flight or an attempt's
+//                outcome is still unknown (a DISPATCHING attempt exists).
+// - SUPPRESSED — never dispatched. `statusReason` records the factual
+//                cause (e.g. "preference_disabled", "destination_missing")
+//                rather than pretending a provider failed.
+// - ACCEPTED   — the provider accepted the message for delivery. This is
+//                NOT proof of delivery — actual delivery confirmation
+//                would require a provider webhook (deferred).
+// - FAILED     — dispatched and the provider did not accept it. The last
+//                attempt carries the safe error classification.
+enum NotificationStatus {
+  PENDING
+  SUPPRESSED
+  ACCEPTED
+  FAILED
+}
+
+// One provider invocation's recorded outcome. DISPATCHING is written
+// before the provider call and resolved to ACCEPTED/FAILED after — a
+// permanently DISPATCHING attempt honestly means "we invoked the
+// provider; the outcome was never recorded" (e.g. the process died).
+enum NotificationAttemptStatus {
+  DISPATCHING
+  ACCEPTED
+  FAILED
+}
+
+// A single logical notification request — the application's intent to
+// send one message on one channel to one destination.
+//
+// - Idempotency: (organizationId, idempotencyKey) is unique, and
+//   `intentHash` (sha256 of the canonical request intent) detects a key
+//   reused with materially different content — replay returns the
+//   existing row, conflict fails loudly. Application-level and durable;
+//   provider idempotency keys are a second layer where supported.
+// - Destination snapshot: `destination` records the address used at
+//   request time so history stays accurate when Member.email changes.
+//   It is a historical fact, never an authorization input.
+// - memberId is nullable: member-targeted requests carry the composite
+//   (memberId, organizationId) FK; direct administrative sends (e.g.
+//   provider smoke tests to an arbitrary address) leave it null. When
+//   present, member notification preferences are enforced before
+//   dispatch — see src/lib/domain/notifications.ts.
+// - subject/bodyText are stored so retries replay the EXACT message —
+//   a notification whose content cannot be reproduced cannot be
+//   retried deterministically. They are org-scoped records like any
+//   other content field and are never logged (the logging module strips
+//   content fields and values).
+// - requestedByAuthIdentityId is a deliberately PLAIN scalar (the issue
+//   #12 actor policy): notification history must outlive the identity
+//   that requested it; display resolves best-effort with raw-id
+//   fallback.
+// - metadata is small structured context (template params, related
+//   record ids) — never message bodies or recipient PII by contract.
+model Notification {
+  id                        String              @id @default(cuid())
+  organizationId            String
+  memberId                  String?
+  channel                   NotificationChannel
+  template                  String
+  subject                   String?
+  bodyText                  String?
+  destination               String?
+  metadata                  Json?
+  idempotencyKey            String
+  intentHash                String
+  status                    NotificationStatus  @default(PENDING)
+  statusReason              String?
+  requestedByAuthIdentityId String?
+  createdAt                 DateTime            @default(now())
+  updatedAt                 DateTime            @updatedAt
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  member       Member?                @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  attempts     NotificationAttempt[]
+
+  // Application-level idempotency: one logical request per
+  // (organization, key). A second request with the same key is either a
+  // replay (same intentHash → return this row) or a conflict (different
+  // intentHash → the caller gets an explicit error).
+  @@unique([organizationId, idempotencyKey])
+  // Composite-FK target so NotificationAttempt enforces same-org rows.
+  @@unique([id, organizationId])
+  @@index([organizationId, createdAt])
+  @@index([memberId, createdAt])
+}
+
+// Append-only record of one provider invocation for a Notification.
+// A retry creates a NEW attempt row — previous attempts are never
+// overwritten, so the full send history (including the provider's own
+// message ids) is preserved.
+//
+// - attemptNumber is assigned inside a transaction and unique per
+//   notification: two concurrent dispatches for the same request race
+//   the unique index and the loser aborts before ever calling the
+//   provider — the database, not timing, prevents double-sends.
+// - provider is the provider name from the abstraction seam ("resend",
+//   "fake") — a plain string, so adding providers needs no migration.
+// - errorCode/errorSummary are the SAFE failure record: machine code
+//   plus a short operator-facing string that never contains the
+//   provider's raw message (provider errors can echo recipient
+//   addresses and request payloads).
+// - resolvedAt is when SARbase recorded the provider outcome. ACCEPTED
+//   means "the provider accepted the message" — real delivery would be
+//   a later webhook (deferred), not this timestamp.
+model NotificationAttempt {
+  id                String                    @id @default(cuid())
+  organizationId    String
+  notificationId    String
+  attemptNumber     Int
+  provider          String
+  status            NotificationAttemptStatus @default(DISPATCHING)
+  providerMessageId String?
+  errorCode         String?
+  errorSummary      String?
+  retryable         Boolean                   @default(false)
+  attemptedAt       DateTime                  @default(now())
+  resolvedAt        DateTime?
+
+  notification Notification @relation(fields: [notificationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@unique([notificationId, attemptNumber])
+  @@index([organizationId, attemptedAt])
+  @@index([notificationId])
 }
