@@ -130,8 +130,14 @@ const CALLOUT_NOTIFICATION_TEMPLATE = "callout_invitation";
  */
 const DISPATCH_CLAIM_STALE_MS = 10 * 60 * 1000;
 
-/** The emailed response link embeds the raw token — used to recover it. */
-const RESPONSE_URL_TOKEN_PATTERN = /\/respond\?t=([A-Za-z0-9_-]+)/;
+/**
+ * The emailed response link embeds the raw token — used to recover it
+ * from a stored notification body. Global so recovery can take the
+ * LAST match: the template writes the real link after the optional
+ * admin message, which could itself contain a pasted respond URL —
+ * the genuine link is always the final one in the body.
+ */
+const RESPONSE_URL_TOKEN_PATTERN = /\/respond\?t=([A-Za-z0-9_-]+)/g;
 
 /* ------------------------------------------------------------------ */
 /* Response tokens                                                     */
@@ -302,9 +308,9 @@ async function linkRecordedNotification(
   invitation: CalloutInvitation,
   notification: { id: string; bodyText: string | null },
 ): Promise<void> {
-  const emailedToken = notification.bodyText?.match(
-    RESPONSE_URL_TOKEN_PATTERN,
-  )?.[1];
+  const emailedToken = [
+    ...(notification.bodyText ?? "").matchAll(RESPONSE_URL_TOKEN_PATTERN),
+  ].at(-1)?.[1];
   await prisma.calloutInvitation.updateMany({
     where: {
       id: invitation.id,

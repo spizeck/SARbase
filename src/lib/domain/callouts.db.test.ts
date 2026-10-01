@@ -98,9 +98,15 @@ function activate(
   );
 }
 
-/** Pull the emailed response token out of a captured provider call. */
+/**
+ * Pull the emailed response token out of a captured provider call.
+ * Takes the LAST respond URL, matching the domain's recovery rule —
+ * the real link is written after any coordinator-supplied message.
+ */
 function tokenFromCall(text: string | null | undefined): string {
-  const match = /\/respond\?t=([A-Za-z0-9_-]+)/.exec(text ?? "");
+  const match = [...(text ?? "").matchAll(/\/respond\?t=([A-Za-z0-9_-]+)/g)].at(
+    -1,
+  );
   if (!match) throw new Error("no response URL in provider call");
   return decodeURIComponent(match[1]!);
 }
@@ -687,6 +693,45 @@ describe.skipIf(!hasDb)("callouts (issue #14)", () => {
     // And the originally emailed link still resolves.
     const resolved = await getInvitationForToken(emailed);
     expect(resolved?.id).toBe(invitation.id);
+  });
+
+  it("token recovery ignores a pasted respond URL inside the coordinator message", async () => {
+    const m = await makeMember(orgA.id);
+    await enableEmail(m.id);
+    const provider = new FakeNotificationProvider();
+    const { callout } = await activate(
+      orgA.id,
+      {
+        title: "Pasted link",
+        // A stale link from an earlier callout, pasted into the
+        // message — precedes the genuine link in the stored body.
+        message:
+          "Heads up, not this: https://sarbase.example/respond?t=stalePastedToken123",
+        audience: "MEMBERS",
+        memberIds: [m.id],
+      },
+      provider,
+    );
+    const invitation = await prisma.calloutInvitation.findFirstOrThrow({
+      where: { calloutId: callout.id, memberId: m.id },
+    });
+    const emailed = tokenFromCall(provider.calls[0]!.text);
+    expect(emailed).not.toBe("stalePastedToken123");
+    // Force the orphan-repair path: unlink and scramble the hash.
+    await resetInvitationForDispatch(invitation.id, {});
+    await prisma.calloutInvitation.update({
+      where: { id: invitation.id },
+      data: { responseTokenHash: "0".repeat(64) },
+    });
+
+    await replay(callout.id, new FakeNotificationProvider());
+    const after = await prisma.calloutInvitation.findUniqueOrThrow({
+      where: { id: invitation.id },
+    });
+    // Repaired to the genuine emailed token — the last respond URL in
+    // the stored body — not the stale one pasted into the message.
+    expect(after.notificationId).toBe(invitation.notificationId);
+    expect(after.responseTokenHash).toBe(hashResponseToken(emailed));
   });
 
   it("a failed dispatch releases the claim so a replay retries immediately", async () => {
