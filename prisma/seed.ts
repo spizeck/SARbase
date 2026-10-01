@@ -287,11 +287,41 @@ async function main() {
     },
   });
 
+  // Issue #12 fixture — one recorded availability statement and a
+  // contact-preference row for the seed member. Factual seed data only.
+  await prisma.memberAvailabilityUpdate.upsert({
+    where: { id: "seed-availability-1" },
+    update: {},
+    create: {
+      id: "seed-availability-1",
+      organizationId: organization.id,
+      memberId: member.id,
+      status: "AVAILABLE",
+      selfReported: false,
+      actorAuthIdentityId: seedIdentity.id,
+    },
+  });
+  await prisma.memberNotificationPreference.upsert({
+    where: {
+      memberId_organizationId: {
+        memberId: member.id,
+        organizationId: organization.id,
+      },
+    },
+    update: {},
+    create: {
+      organizationId: organization.id,
+      memberId: member.id,
+      notifyEmail: true,
+    },
+  });
+
   console.log(
     `Seeded organization (${organization.id}) with 1 unit, 1 member, ` +
       `2 assets, 3 locations, 2 inventory items, 1 inspection type + ` +
-      `record, 1 meter + reading, 1 maintenance plan + record, and ` +
-      `1 open defect.`,
+      `record, 1 meter + reading, 1 maintenance plan + record, ` +
+      `1 open defect, and 1 availability statement + contact ` +
+      `preference row.`,
   );
 }
 

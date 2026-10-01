@@ -59,3 +59,22 @@ export function formatDateOnly(d: Date | null | undefined): string | null {
   if (!d) return null;
   return d.toISOString().slice(0, 10);
 }
+
+/**
+ * Compact "how long ago" label for a timestamp ("updated 2 hours ago").
+ * Exact instants, not calendar dates — an instant is unambiguous
+ * regardless of which organization's zone it is displayed in, so this
+ * deliberately takes no timezone. Beyond a month the absolute date is
+ * clearer than a large day count.
+ */
+export function relativeTimeLabel(date: Date, now: Date = new Date()): string {
+  const elapsedSeconds = Math.round((now.getTime() - date.getTime()) / 1000);
+  if (elapsedSeconds < 60) return "just now";
+  const minutes = Math.floor(elapsedSeconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 31) return `${days} day${days === 1 ? "" : "s"} ago`;
+  return formatDateOnly(date) ?? "";
+}

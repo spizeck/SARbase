@@ -8,7 +8,22 @@ import {
   expiryLabel,
 } from "@/lib/domain/qualification";
 import { listMemberTraining } from "@/lib/domain/training";
-import { calendarDateInZone, formatDateOnly } from "@/lib/dates";
+import {
+  getMemberAvailability,
+  getMemberContactPreference,
+  AVAILABILITY_STATUS_LABELS,
+} from "@/lib/domain/availability";
+import {
+  calendarDateInZone,
+  formatDateOnly,
+  relativeTimeLabel,
+} from "@/lib/dates";
+
+import {
+  updateMyAvailabilityAction,
+  updateMyContactPreferencesAction,
+} from "./actions";
+import { AvailabilityForm, ContactPreferencesForm } from "./forms";
 
 export const metadata = { title: "Account" };
 
@@ -55,6 +70,18 @@ export default async function AccountPage() {
     linkedMembers.map(async (member) => ({
       member,
       records: await listMemberTraining(member.id),
+    })),
+  );
+
+  // Self-service availability + contact preferences for each linked,
+  // accessible member record — one block per (member, organization) so a
+  // person volunteering across orgs is always explicit about which
+  // record they are updating. Facts only: no sufficiency or readiness.
+  const ownAvailability = await Promise.all(
+    linkedMembers.map(async (member) => ({
+      member,
+      availability: await getMemberAvailability(member.id),
+      preference: await getMemberContactPreference(member.id),
     })),
   );
 
@@ -110,6 +137,98 @@ export default async function AccountPage() {
           </ul>
         )}
       </section>
+
+      {linkedMembers.length > 0 && (
+        <section aria-labelledby="availability-heading" className="mt-8">
+          <h2 id="availability-heading" className="text-lg font-medium">
+            Availability
+          </h2>
+          <p className="mt-1 text-sm text-neutral-600">
+            Record your current availability for each organization you volunteer
+            with. These are factual statements — your organization decides what
+            they mean.
+          </p>
+          {ownAvailability.map(({ member, availability, preference }) => (
+            <div
+              key={member.id}
+              className="mt-3 rounded-md border border-neutral-200 p-4"
+            >
+              <h3 className="text-sm font-medium text-neutral-500">
+                {member.displayName} — {orgName(member.organizationId)}
+              </h3>
+              <div className="mt-2 text-sm">
+                <span
+                  className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                    availability.status === "AVAILABLE"
+                      ? "bg-green-100 text-green-800"
+                      : availability.status === "UNKNOWN"
+                        ? "bg-neutral-100 text-neutral-600"
+                        : "bg-amber-100 text-amber-800"
+                  }`}
+                >
+                  {AVAILABILITY_STATUS_LABELS[availability.status]}
+                </span>
+                {availability.latest?.until &&
+                  !availability.expired &&
+                  availability.status !== "UNKNOWN" && (
+                    <span className="ml-2 text-neutral-600">
+                      Until{" "}
+                      {new Intl.DateTimeFormat("en-US", {
+                        dateStyle: "medium",
+                        timeZone: "UTC",
+                      }).format(availability.latest.until)}
+                    </span>
+                  )}
+              </div>
+              <p className="mt-1 text-xs text-neutral-500">
+                {availability.latest
+                  ? `Last updated ${relativeTimeLabel(availability.latest.createdAt)}`
+                  : "Not recorded yet"}
+                {availability.expired && availability.latest
+                  ? ` — last recorded as ${
+                      AVAILABILITY_STATUS_LABELS[availability.latest.status]
+                    }${
+                      availability.latest.until
+                        ? ` until ${formatDateOnly(availability.latest.until)}`
+                        : ""
+                    }, which has passed`
+                  : ""}
+              </p>
+              <details className="mt-3">
+                <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+                  Update availability
+                </summary>
+                <div className="mt-2">
+                  <AvailabilityForm
+                    action={updateMyAvailabilityAction.bind(null, member.id)}
+                    defaultStatus={availability.status}
+                    defaultUntil={formatDateOnly(availability.latest?.until)}
+                    defaultNote={availability.latest?.note}
+                    idPrefix={`availability-${member.id}`}
+                  />
+                </div>
+              </details>
+              <details className="mt-3">
+                <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+                  Contact preferences
+                </summary>
+                <div className="mt-2">
+                  <ContactPreferencesForm
+                    action={updateMyContactPreferencesAction.bind(
+                      null,
+                      member.id,
+                    )}
+                    email={member.email}
+                    phone={member.phone}
+                    defaults={preference}
+                    idPrefix={`contact-${member.id}`}
+                  />
+                </div>
+              </details>
+            </div>
+          ))}
+        </section>
+      )}
 
       {ownQualifications.some((g) => g.records.length > 0) && (
         <section aria-labelledby="qualifications-heading" className="mt-8">

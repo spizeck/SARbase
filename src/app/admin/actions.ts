@@ -42,6 +42,8 @@ import {
   assetMeterInputSchema,
   assetMeterStatusSchema,
   meterReadingInputSchema,
+  availabilityUpdateSchema,
+  contactPreferenceSchema,
 } from "@/lib/domain/schemas";
 import {
   requireAuth,
@@ -113,6 +115,12 @@ import {
   MeterReadingDecreaseError,
   DefectTransitionError,
 } from "@/lib/domain/maintenance";
+import {
+  recordMemberAvailability,
+  setMemberContactPreference,
+  AvailabilityInputError,
+  ContactPreferenceDestinationError,
+} from "@/lib/domain/availability";
 import { AuthenticationError, AuthorizationError } from "@/lib/auth/context";
 import { emailSchema } from "@/lib/domain/schemas";
 import { log } from "@/lib/logging";
@@ -214,6 +222,13 @@ function mapDomainError(error: unknown): ActionState {
     error instanceof DefectTransitionError
   ) {
     // Configuration facts about the caller's own organization — safe.
+    return { message: error.message };
+  }
+  if (
+    error instanceof AvailabilityInputError ||
+    error instanceof ContactPreferenceDestinationError
+  ) {
+    // Input rules about the caller's own organization — safe to surface.
     return { message: error.message };
   }
   throw error;
@@ -1611,5 +1626,77 @@ export async function recordMeterReadingAction(
       : mapped;
   }
   revalidateMaintenance(meter.organizationId, meter.assetId);
+  return {};
+}
+
+/* ------------------------------------------------------------------ */
+/* Availability and contact preferences (issue #12)                    */
+/*                                                                     */
+/* Admin records availability statements on a member's behalf and      */
+/* edits their contact preferences. memberId is an untrusted selector  */
+/* — requireOrgAdminForMember resolves the record's real               */
+/* organizationId and demands an ADMIN grant there. Statements are     */
+/* append-only; admins create new rows, never rewrite history.         */
+/* ------------------------------------------------------------------ */
+
+export async function setMemberAvailabilityAction(
+  memberId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let member;
+  try {
+    member = await requireOrgAdminForMember(ctx, memberId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = availabilityUpdateSchema.safeParse({
+    status: formData.get("status"),
+    until: formData.get("until"),
+    note: formData.get("note"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await recordMemberAvailability(member.id, parsed.data, ctx.identity.id, {
+      selfReported: false,
+    });
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/members/${member.id}`);
+  revalidatePath(`/admin/organizations/${member.organizationId}`);
+  return {};
+}
+
+export async function updateMemberContactPreferenceAction(
+  memberId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let member;
+  try {
+    member = await requireOrgAdminForMember(ctx, memberId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = contactPreferenceSchema.safeParse({
+    notifyEmail: formData.get("notifyEmail"),
+    notifySms: formData.get("notifySms"),
+    notifyWhatsapp: formData.get("notifyWhatsapp"),
+    notifyPush: formData.get("notifyPush"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await setMemberContactPreference(member.id, parsed.data);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/members/${member.id}`);
   return {};
 }

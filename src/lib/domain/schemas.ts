@@ -52,6 +52,11 @@ export const phoneSchema = z.preprocess(
     .string()
     .trim()
     .regex(/^\+?[0-9][0-9\s().-]{4,31}$/, "Enter a valid phone number.")
+    // Normalize for storage: digits plus an optional leading "+" —
+    // E.164-shaped when the caller supplies a country code, a plain
+    // national number otherwise. No country is invented; whatever
+    // prefix the organization recorded is preserved.
+    .transform((value) => value.replace(/[\s().-]/g, ""))
     .optional(),
 );
 
@@ -637,3 +642,53 @@ export const meterReadingInputSchema = z.object({
   notes: optionalText(500),
 });
 export type MeterReadingInput = z.infer<typeof meterReadingInputSchema>;
+
+/* ------------------------------------------------------------------ */
+/* Availability and contact preferences (issue #12)                    */
+/*                                                                     */
+/* Availability is a recorded statement, not a readiness judgment. The */
+/* status set is deliberately small; `until` is the org's local        */
+/* calendar date through which the statement applies (inclusive),      */
+/* after which the computed status falls back to UNKNOWN — expiry      */
+/* never invents AVAILABLE.                                            */
+/* ------------------------------------------------------------------ */
+
+export const availabilityStatusSchema = z.enum([
+  "AVAILABLE",
+  "UNAVAILABLE",
+  "OFF_ISLAND",
+  "UNKNOWN",
+]);
+export type AvailabilityStatusInput = z.infer<typeof availabilityStatusSchema>;
+
+export const availabilityUpdateSchema = z.object({
+  status: availabilityStatusSchema,
+  // Optional local calendar date the statement applies through — the
+  // org-timezone past-check lives in the domain (it needs the
+  // organization's clock, which input validation does not have).
+  until: dateOnlySchema,
+  note: optionalText(200),
+});
+export type AvailabilityUpdateInput = z.infer<typeof availabilityUpdateSchema>;
+
+/** Checkbox form value: absent/"on"/"true" → boolean. */
+const checkboxSchema = z.preprocess(
+  (value) => value === "on" || value === "true" || value === true,
+  z.boolean(),
+);
+
+/**
+ * Notification channel willingness — four explicit booleans rather than
+ * a generic channel list, matching the model's fixed columns. Turning a
+ * channel on requires the matching destination on the member record
+ * (email → email; SMS/WhatsApp → phone); that rule lives in the domain
+ * because the schema cannot see the member row. Push records
+ * willingness only — no destination exists yet.
+ */
+export const contactPreferenceSchema = z.object({
+  notifyEmail: checkboxSchema,
+  notifySms: checkboxSchema,
+  notifyWhatsapp: checkboxSchema,
+  notifyPush: checkboxSchema,
+});
+export type ContactPreferenceInput = z.infer<typeof contactPreferenceSchema>;
