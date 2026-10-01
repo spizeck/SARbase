@@ -98,6 +98,16 @@ to check.
   (`deduplicated: true`), no second send.
 - Same key + different intent → `NotificationIdempotencyConflictError`,
   loud and explicit — never a silent reuse of the wrong message.
+- Ordering is contractual: the `(organizationId, idempotencyKey)` lookup
+  and intent comparison run **before** provider resolution. A replay of
+  an already-recorded request is answered from the durable record alone
+  — it keeps succeeding even if provider configuration has since become
+  invalid, and it never resolves a provider at all. Provider resolution
+  happens only for a genuinely new, non-suppressed request, still before
+  the row is created, so a configuration error can never leave an
+  orphaned `PENDING` row. The unique index remains underneath as the
+  concurrent-create race protection (`P2002` → the same
+  replay/conflict settlement).
 - Where the provider supports it, SARbase sends a per-attempt provider
   idempotency key (`{notificationId}/attempt-N`) as a second layer: a
   re-invoked same attempt can dedupe at the provider, while a deliberate
@@ -226,8 +236,10 @@ production, so CI never sends real email and needs no credentials.
 
 ## Deferred — deliberately not built
 
-Callout orchestration (#14), responder RSVP, SMS/WhatsApp/push providers,
+Responder-facing channels beyond email, SMS/WhatsApp/push providers,
 multi-channel escalation, automatic/background retries, provider delivery
 webhooks (real `DELIVERED` state), a generic workflow engine, incident
-workflow (#15), and global search (#18). The records and seams here are
-designed so those features can build without rework.
+workflow (#15), and global search (#18). Callout orchestration (#14)
+builds on this foundation — one `callout_invitation` request per
+invitation with a deterministic idempotency key — see
+[`docs/callouts.md`](callouts.md).

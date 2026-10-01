@@ -453,11 +453,54 @@ async function dispatchAttempt(
 }
 
 /**
+ * Settle an already-recorded request for a replayed idempotency key:
+ * identical intent returns the existing row; conflicting intent fails
+ * loudly. Pure lookup semantics — no provider contact, so a replay is
+ * answered from the durable record even when provider configuration
+ * has since become invalid.
+ */
+function replayResult(
+  existing: Notification,
+  intentHash: string,
+  input: NotificationRequestInput,
+): NotificationRequestResult {
+  if (existing.intentHash !== intentHash) {
+    logExpected({
+      event: "notification.idempotency_conflict",
+      subsystem: "notifications",
+      entityType: "Notification",
+      entityId: existing.id,
+      organizationId: input.organizationId,
+      channel: input.channel,
+    });
+    throw new NotificationIdempotencyConflictError();
+  }
+  log({
+    event: "notification.replayed",
+    subsystem: "notifications",
+    entityType: "Notification",
+    entityId: existing.id,
+    organizationId: input.organizationId,
+    channel: input.channel,
+  });
+  return { notification: existing, deduplicated: true };
+}
+
+/**
  * Create and dispatch a notification request — the application-facing
  * entry point. Idempotent on (organizationId, idempotencyKey): a replay
  * with identical intent returns the existing row (deduplicated: true);
  * a replay with conflicting intent throws
  * NotificationIdempotencyConflictError.
+ *
+ * Ordering is deliberate: the idempotency-key lookup runs BEFORE any
+ * provider resolution. A replay of a completed request must be answered
+ * from the durable record alone — re-checking provider configuration on
+ * replay could fail a request that already succeeded. Provider
+ * resolution happens only for a genuinely new, non-suppressed request,
+ * still BEFORE the row is created so a configuration error leaves no
+ * orphaned PENDING record. The unique constraint remains underneath as
+ * the concurrent-create race protection.
  *
  * Authorization is the CALLER's job — this function trusts that the
  * caller already established ADMIN access to `organizationId`. The
@@ -479,6 +522,20 @@ export async function requestNotification(
     bodyText: input.bodyText ?? null,
     metadata: input.metadata ?? null,
   });
+
+  // Replay check first: an identical-keyed request that was already
+  // recorded is returned as-is — the provider is never resolved for it.
+  const existing = await prisma.notification.findUnique({
+    where: {
+      organizationId_idempotencyKey: {
+        organizationId: input.organizationId,
+        idempotencyKey: input.idempotencyKey,
+      },
+    },
+  });
+  if (existing) {
+    return replayResult(existing, intentHash, input);
+  }
 
   // Resolve the provider BEFORE writing the row: a configuration error
   // must leave no orphaned PENDING request (and no row that a later
@@ -513,9 +570,9 @@ export async function requestNotification(
     if (!isUniqueViolation(error)) {
       throw error;
     }
-    // Idempotent replay: the key exists in this organization — return it
-    // when the intent matches, fail loudly when it does not.
-    const existing = await prisma.notification.findUniqueOrThrow({
+    // A concurrent request won the create race — settle it with the same
+    // replay/conflict semantics as the early lookup above.
+    const raced = await prisma.notification.findUniqueOrThrow({
       where: {
         organizationId_idempotencyKey: {
           organizationId: input.organizationId,
@@ -523,26 +580,7 @@ export async function requestNotification(
         },
       },
     });
-    if (existing.intentHash !== intentHash) {
-      logExpected({
-        event: "notification.idempotency_conflict",
-        subsystem: "notifications",
-        entityType: "Notification",
-        entityId: existing.id,
-        organizationId: input.organizationId,
-        channel: input.channel,
-      });
-      throw new NotificationIdempotencyConflictError();
-    }
-    log({
-      event: "notification.replayed",
-      subsystem: "notifications",
-      entityType: "Notification",
-      entityId: existing.id,
-      organizationId: input.organizationId,
-      channel: input.channel,
-    });
-    return { notification: existing, deduplicated: true };
+    return replayResult(raced, intentHash, input);
   }
 
   if (notification.status === "SUPPRESSED") {

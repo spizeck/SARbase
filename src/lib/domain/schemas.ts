@@ -745,3 +745,73 @@ export const adminNotificationSendSchema = z
 export type AdminNotificationSendInput = z.infer<
   typeof adminNotificationSendSchema
 >;
+
+/* ------------------------------------------------------------------ */
+/* Callouts and volunteer responses (issue #14)                        */
+/*                                                                     */
+/* A callout is a factual record: these members were invited at this  */
+/* time with this coordinator-entered information, and each responded */
+/* (or did not). No severity, no readiness, no sufficiency — the       */
+/* inputs below describe only what a human coordinator typed and who  */
+/* they chose to invite.                                               */
+/* ------------------------------------------------------------------ */
+
+export const calloutAudienceSchema = z.enum([
+  "ORGANIZATION",
+  "UNIT",
+  "MEMBERS",
+]);
+export type CalloutAudienceInput = z.infer<typeof calloutAudienceSchema>;
+
+/**
+ * One-action activation input. `activationKey` is a per-form-render
+ * UUID — the durable idempotency key that makes double-click/browser
+ * resubmission replay rather than duplicate.
+ */
+export const calloutActivationSchema = z
+  .object({
+    title: z
+      .string()
+      .trim()
+      .min(1, "Title is required.")
+      .max(120, "Keep the title under 120 characters."),
+    // The bounded initial-information block emailed to invitees.
+    message: optionalText(1000),
+    audience: calloutAudienceSchema,
+    unitId: optionalId,
+    memberIds: z.array(z.string().min(1)).max(500).default([]),
+    activationKey: idempotencyKeySchema,
+  })
+  .check((ctx) => {
+    const { audience, unitId, memberIds } = ctx.value;
+    if (audience === "UNIT" && unitId == null) {
+      ctx.issues.push({
+        code: "custom",
+        message: "Choose a unit.",
+        path: ["unitId"],
+        input: ctx.value,
+      });
+    }
+    if (audience === "MEMBERS" && memberIds.length === 0) {
+      ctx.issues.push({
+        code: "custom",
+        message: "Select at least one member.",
+        path: ["memberIds"],
+        input: ctx.value,
+      });
+    }
+  });
+export type CalloutActivationInput = z.infer<typeof calloutActivationSchema>;
+
+/** Factual response choices offered on the response surface. */
+export const calloutResponseSchema = z.enum(["COMING", "UNAVAILABLE"]);
+export type CalloutResponseInput = z.infer<typeof calloutResponseSchema>;
+
+/** Admin-recorded response (e.g. a phone call) — optional factual note. */
+export const adminCalloutResponseSchema = z.object({
+  response: calloutResponseSchema,
+  note: optionalText(200),
+});
+export type AdminCalloutResponseInput = z.infer<
+  typeof adminCalloutResponseSchema
+>;

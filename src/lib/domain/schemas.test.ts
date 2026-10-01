@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   assetInputSchema,
+  calloutActivationSchema,
+  adminCalloutResponseSchema,
   dateOnlySchema,
   defectTransitionSchema,
   inspectionDefinitionInputSchema,
@@ -567,5 +569,75 @@ describe("meterReadingInputSchema", () => {
         }).success,
       ).toBe(false);
     }
+  });
+});
+
+describe("calloutActivationSchema", () => {
+  const base = {
+    title: "Assistance requested",
+    audience: "ORGANIZATION",
+    memberIds: [],
+    activationKey: "8f14e45f-ceea-4b6c-bf59-2a1c4f8c1a2b",
+  };
+
+  it("accepts an organization-wide activation", () => {
+    expect(calloutActivationSchema.safeParse(base).success).toBe(true);
+  });
+
+  it("requires a unit when the audience is UNIT", () => {
+    expect(
+      calloutActivationSchema.safeParse({ ...base, audience: "UNIT" }).success,
+    ).toBe(false);
+    expect(
+      calloutActivationSchema.safeParse({
+        ...base,
+        audience: "UNIT",
+        unitId: "unit-1",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("requires at least one member when the audience is MEMBERS", () => {
+    expect(
+      calloutActivationSchema.safeParse({ ...base, audience: "MEMBERS" })
+        .success,
+    ).toBe(false);
+    expect(
+      calloutActivationSchema.safeParse({
+        ...base,
+        audience: "MEMBERS",
+        memberIds: ["m-1"],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects blank titles and bogus activation keys", () => {
+    expect(
+      calloutActivationSchema.safeParse({ ...base, title: "  " }).success,
+    ).toBe(false);
+    expect(
+      calloutActivationSchema.safeParse({ ...base, activationKey: "x" })
+        .success,
+    ).toBe(false);
+    expect(
+      calloutActivationSchema.safeParse({ ...base, activationKey: "" }).success,
+    ).toBe(false);
+  });
+});
+
+describe("adminCalloutResponseSchema", () => {
+  it("accepts a factual response with an optional note", () => {
+    expect(
+      adminCalloutResponseSchema.safeParse({ response: "COMING" }).success,
+    ).toBe(true);
+    expect(
+      adminCalloutResponseSchema.safeParse({
+        response: "UNAVAILABLE",
+        note: "Confirmed by phone",
+      }).success,
+    ).toBe(true);
+    expect(
+      adminCalloutResponseSchema.safeParse({ response: "MAYBE" }).success,
+    ).toBe(false);
   });
 });

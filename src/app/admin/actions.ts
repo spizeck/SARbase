@@ -45,6 +45,8 @@ import {
   availabilityUpdateSchema,
   contactPreferenceSchema,
   adminNotificationSendSchema,
+  calloutActivationSchema,
+  adminCalloutResponseSchema,
 } from "@/lib/domain/schemas";
 import {
   requireAuth,
@@ -64,6 +66,8 @@ import {
   requireOrgAdminForDefect,
   requireOrgAdminForAssetMeter,
   requireOrgAdminForNotification,
+  requireOrgAdminForCallout,
+  requireOrgAdminForCalloutInvitation,
 } from "@/lib/auth/authorize";
 import {
   createTrainingEvent,
@@ -132,6 +136,16 @@ import {
   NotificationRetryError,
 } from "@/lib/domain/notifications";
 import { NotificationConfigError } from "@/lib/notifications/provider";
+import {
+  activateCallout,
+  closeCallout,
+  recordInvitationResponse,
+  CalloutAudienceError,
+  CalloutClosedError,
+  CalloutIdempotencyConflictError,
+  CalloutTokenInvalidError,
+  CrossOrganizationCalloutError,
+} from "@/lib/domain/callouts";
 import { checkRateLimit } from "@/lib/rate-limit/rate-limit";
 import { rateLimitKey } from "@/lib/rate-limit/keys";
 import { InMemoryRateLimitStore } from "@/lib/rate-limit/memory-store";
@@ -264,6 +278,23 @@ function mapDomainError(error: unknown): ActionState {
       message:
         "Email delivery is not configured for this deployment. Contact the operator.",
     };
+  }
+  if (error instanceof CrossOrganizationCalloutError) {
+    // Opaque — foreign-org unit/member ids must not leak existence.
+    return { message: "Not found." };
+  }
+  if (
+    error instanceof CalloutAudienceError ||
+    error instanceof CalloutIdempotencyConflictError ||
+    error instanceof CalloutClosedError
+  ) {
+    // Facts about the caller's own organization — safe to surface.
+    return { message: error.message };
+  }
+  if (error instanceof CalloutTokenInvalidError) {
+    // Admin surface: an invitation id that no longer resolves is "not
+    // found" — the token-specific wording belongs to the public route.
+    return { message: "Not found." };
   }
   throw error;
 }
@@ -1864,6 +1895,151 @@ export async function retryNotificationAction(
   }
   revalidatePath(
     `/admin/organizations/${notification.organizationId}/notifications`,
+  );
+  return {};
+}
+
+/* ------------------------------------------------------------------ */
+/* Callouts (issue #14)                                                */
+/*                                                                     */
+/* ADMIN-only activation/close/recording of factual volunteer          */
+/* responses. Every id arriving via a binding is an untrusted          */
+/* selector — authorization resolves the record's real organization.   */
+/* Nothing here judges sufficiency, readiness, or crew fitness: a      */
+/* callout is an invitation record plus its responses.                 */
+/* ------------------------------------------------------------------ */
+
+const calloutRateLimitStore = new InMemoryRateLimitStore();
+const CALLOUT_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
+
+/**
+ * Activate a callout: materialize the invited audience, mint secure
+ * response links, and dispatch one email notification per invitee via
+ * the notification foundation. Idempotent on the hidden per-render
+ * activationKey — a double-submit returns the existing callout and
+ * resumes any undispatched invitations rather than duplicating.
+ */
+export async function activateCalloutAction(
+  organizationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const limited = await checkCalloutRateLimit(organizationId, ctx.identity.id);
+  if (limited) return limited;
+
+  const parsed = calloutActivationSchema.safeParse({
+    title: formData.get("title"),
+    message: formData.get("message"),
+    audience: formData.get("audience"),
+    unitId: formData.get("unitId"),
+    memberIds: formData.getAll("memberIds"),
+    activationKey: formData.get("activationKey"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  let result;
+  try {
+    result = await activateCallout(
+      organizationId,
+      parsed.data,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  redirect(
+    `/admin/organizations/${organizationId}/callouts/${result.callout.id}`,
+  );
+}
+
+async function checkCalloutRateLimit(
+  organizationId: string,
+  actorId: string,
+): Promise<ActionState | null> {
+  const result = await checkRateLimit(
+    calloutRateLimitStore,
+    rateLimitKey("callout.activate", organizationId, actorId),
+    CALLOUT_RATE_LIMIT,
+  );
+  if (result.allowed) {
+    return null;
+  }
+  logExpected({
+    event: "callout.rate_limited",
+    subsystem: "callouts",
+    actorId,
+    organizationId,
+    rateLimitScope: "callout.activate",
+  });
+  return {
+    message: "Too many callout requests. Please wait a moment and try again.",
+  };
+}
+
+/** Close a callout — preserves history; tokens stop accepting responses. */
+export async function closeCalloutAction(
+  calloutId: string,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let callout;
+  try {
+    callout = await requireOrgAdminForCallout(ctx, calloutId);
+    await closeCallout(callout.id, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${callout.organizationId}/callouts/${callout.id}`,
+  );
+  revalidatePath(`/admin/organizations/${callout.organizationId}/callouts`);
+  return {};
+}
+
+/**
+ * Record a member's response on their behalf — e.g. the member phoned
+ * the duty officer. The history row's source is ADMIN and the actor is
+ * the acting admin's identity, so it never masquerades as a token
+ * response.
+ */
+export async function recordCalloutResponseAction(
+  invitationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let invitation;
+  try {
+    invitation = await requireOrgAdminForCalloutInvitation(ctx, invitationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = adminCalloutResponseSchema.safeParse({
+    response: formData.get("response"),
+    note: formData.get("note"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await recordInvitationResponse(
+      invitation.id,
+      parsed.data.response,
+      "ADMIN",
+      ctx.identity.id,
+      parsed.data.note ?? null,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${invitation.organizationId}/callouts/${invitation.calloutId}`,
   );
   return {};
 }

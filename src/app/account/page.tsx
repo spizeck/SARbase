@@ -14,6 +14,10 @@ import {
   AVAILABILITY_STATUS_LABELS,
 } from "@/lib/domain/availability";
 import {
+  listMemberCalloutInvitations,
+  CALLOUT_RESPONSE_LABELS,
+} from "@/lib/domain/callouts";
+import {
   calendarDateInZone,
   formatDateOnly,
   relativeTimeLabel,
@@ -22,8 +26,13 @@ import {
 import {
   updateMyAvailabilityAction,
   updateMyContactPreferencesAction,
+  respondToMyInvitationAction,
 } from "./actions";
-import { AvailabilityForm, ContactPreferencesForm } from "./forms";
+import {
+  AvailabilityForm,
+  CalloutResponseForm,
+  ContactPreferencesForm,
+} from "./forms";
 
 export const metadata = { title: "Account" };
 
@@ -71,6 +80,13 @@ export default async function AccountPage() {
       member,
       records: await listMemberTraining(member.id),
     })),
+  );
+
+  // Active callout invitations for the caller's own linked, accessible
+  // member records (issue #14) — the same two factual response options
+  // as the emailed token link.
+  const calloutInvitations = await listMemberCalloutInvitations(
+    linkedMembers.map((m) => m.id),
   );
 
   // Self-service availability + contact preferences for each linked,
@@ -137,6 +153,48 @@ export default async function AccountPage() {
           </ul>
         )}
       </section>
+
+      {calloutInvitations.length > 0 && (
+        <section aria-labelledby="callouts-heading" className="mt-8">
+          <h2 id="callouts-heading" className="text-lg font-medium">
+            Active callouts
+          </h2>
+          <p className="mt-1 text-sm text-neutral-600">
+            Your organization has invited you to respond. These are recorded
+            facts — your coordinator decides what they mean.
+          </p>
+          <ul className="mt-2 divide-y divide-neutral-200 rounded-md border border-neutral-200">
+            {calloutInvitations.map((invitation) => (
+              <li key={invitation.id} className="px-4 py-3 text-sm">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="font-medium text-neutral-900">
+                    {invitation.callout.title}
+                  </span>
+                  <span className="text-xs text-neutral-600">
+                    {invitation.response
+                      ? CALLOUT_RESPONSE_LABELS[invitation.response]
+                      : "No response yet"}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-xs text-neutral-500">
+                  {invitation.callout.organization.name} · invited{" "}
+                  {relativeTimeLabel(invitation.invitedAt)}
+                  {" · "}as {invitation.member.displayName}
+                </p>
+                {invitation.callout.message && (
+                  <p className="mt-1 whitespace-pre-line text-xs text-neutral-600">
+                    {invitation.callout.message}
+                  </p>
+                )}
+                <CalloutResponseForm
+                  action={respondToMyInvitationAction.bind(null, invitation.id)}
+                  currentResponse={invitation.response}
+                />
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {linkedMembers.length > 0 && (
         <section aria-labelledby="availability-heading" className="mt-8">

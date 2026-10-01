@@ -371,3 +371,40 @@ export async function requireOrgAdminForNotification(
   }
   return notification;
 }
+
+/**
+ * Issue #14 callout lookups — same rule: the caller-supplied id is an
+ * untrusted selector; the record's own organizationId decides which
+ * grant must exist. Invitations are managed through their callout, so
+ * the invitation variant resolves via the invitation's denormalized
+ * organizationId.
+ */
+export async function requireOrgAdminForCallout(
+  ctx: AuthContext,
+  calloutId: string,
+) {
+  const callout = await prisma.callout.findUnique({
+    where: { id: calloutId },
+  });
+  if (!callout || !isOrgAdmin(ctx, callout.organizationId)) {
+    logDenial("authz.callout_scope_denied", ctx, { entityId: calloutId });
+    throw new AuthorizationError();
+  }
+  return callout;
+}
+
+export async function requireOrgAdminForCalloutInvitation(
+  ctx: AuthContext,
+  invitationId: string,
+) {
+  const invitation = await prisma.calloutInvitation.findUnique({
+    where: { id: invitationId },
+  });
+  if (!invitation || !isOrgAdmin(ctx, invitation.organizationId)) {
+    logDenial("authz.callout_invitation_scope_denied", ctx, {
+      entityId: invitationId,
+    });
+    throw new AuthorizationError();
+  }
+  return invitation;
+}
