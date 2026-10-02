@@ -852,6 +852,64 @@ describe.skipIf(!hasDb)("callouts (issue #14)", () => {
     expect(hashResponseToken(retriedToken)).toBe(invitation.responseTokenHash);
   });
 
+  it("rotating the token secret revokes outstanding links; the next send delivers the new one", async () => {
+    const m = await makeMember(orgA.id);
+    await enableEmail(m.id);
+    // Script the first send to fail so the notification is retryable.
+    const failing = new FakeNotificationProvider({
+      results: [fakeFailure.unavailable()],
+    });
+    const { callout } = await activate(
+      orgA.id,
+      {
+        title: "Rotation",
+        audience: "MEMBERS",
+        memberIds: [m.id],
+      },
+      failing,
+    );
+    const invitation = await prisma.calloutInvitation.findFirstOrThrow({
+      where: { calloutId: callout.id, memberId: m.id },
+    });
+    const oldToken = tokenFromCall(failing.calls[0]!.text);
+
+    const prev = process.env.CALLOUT_RESPONSE_TOKEN_SECRET;
+    process.env.CALLOUT_RESPONSE_TOKEN_SECRET = uniq("rotated");
+    try {
+      // The old link stops resolving immediately — the presented token
+      // no longer equals the live derivation, even though its stored
+      // hash still matches the lookup index.
+      expect(await getInvitationForToken(oldToken)).toBeNull();
+      await expect(respondToCalloutToken(oldToken, "COMING")).rejects.toThrow(
+        CalloutTokenInvalidError,
+      );
+
+      // The next send (the admin retry path) substitutes the NEW
+      // derivation and refreshes the stored hash — the new link works.
+      const retrying = new FakeNotificationProvider();
+      const retried = await retryNotification(invitation.notificationId!, {
+        provider: retrying,
+      });
+      expect(retried.status).toBe("ACCEPTED");
+      const newToken = tokenFromCall(retrying.calls[0]!.text);
+      expect(newToken).not.toBe(oldToken);
+
+      const after = await prisma.calloutInvitation.findUniqueOrThrow({
+        where: { id: invitation.id },
+      });
+      expect(after.responseTokenHash).toBe(hashResponseToken(newToken));
+      expect((await getInvitationForToken(newToken))?.id).toBe(invitation.id);
+      // And the retired token stays dead after the hash refresh too.
+      expect(await getInvitationForToken(oldToken)).toBeNull();
+    } finally {
+      if (prev === undefined) {
+        delete process.env.CALLOUT_RESPONSE_TOKEN_SECRET;
+      } else {
+        process.env.CALLOUT_RESPONSE_TOKEN_SECRET = prev;
+      }
+    }
+  });
+
   it("an invalid token resolves nothing and cannot respond", async () => {
     expect(await getInvitationForToken("nonsense-token")).toBeNull();
     await expect(

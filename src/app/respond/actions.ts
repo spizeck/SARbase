@@ -21,9 +21,9 @@ import type { ActionState } from "../admin/actions";
  * Public token-gated response action (issue #14).
  *
  * The token itself is the credential — no sign-in is required. It is a
- * 256-bit random value carried in the emailed link; only its SHA-256
- * hash is ever persisted or rate-limited against. The raw token is
- * never logged and never appears in rate-limit keys.
+ * high-entropy HMAC-derived value carried in the emailed link; only its
+ * SHA-256 hash is ever persisted or rate-limited against. The raw token
+ * is never logged and never appears in rate-limit keys.
  *
  * Failures are deliberately opaque and identical for every invalid
  * input — a bad token cannot probe whether an invitation exists.

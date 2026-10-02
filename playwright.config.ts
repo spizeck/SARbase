@@ -39,6 +39,12 @@ export default defineConfig({
       NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: "smoke-test.firebaseapp.com",
       NEXT_PUBLIC_FIREBASE_PROJECT_ID: "smoke-test-project",
       NEXT_PUBLIC_FIREBASE_APP_ID: "1:0:web:smoke-test",
+      // `next start` runs as production — the callout token derivation
+      // fails closed without a secret. Test-only value; the spec
+      // derives the fixture token with the same pepper.
+      CALLOUT_RESPONSE_TOKEN_SECRET:
+        process.env.CALLOUT_RESPONSE_TOKEN_SECRET ??
+        "smoke-test-callout-token-secret",
     },
   },
 });

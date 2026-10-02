@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 import { resolveSiteUrl } from "@/lib/site";
 
@@ -75,4 +75,26 @@ export function invitationResponseUrl(
 ): string {
   const token = deriveInvitationResponseToken(calloutId, memberId);
   return `${resolveSiteUrl()}/respond?t=${encodeURIComponent(token)}`;
+}
+
+/**
+ * Whether `presentedToken` is the LIVE credential for this invitation —
+ * a timing-safe comparison against the current derivation. The stored
+ * hash gets the caller to the row; this check is what makes secret
+ * rotation actually revoke: a token minted under an old pepper no
+ * longer equals today's derivation even while its stale stored hash
+ * still matches for the lookup.
+ */
+export function verifyInvitationResponseToken(
+  calloutId: string,
+  memberId: string,
+  presentedToken: string,
+): boolean {
+  const expected = Buffer.from(
+    deriveInvitationResponseToken(calloutId, memberId),
+  );
+  const presented = Buffer.from(presentedToken);
+  return (
+    expected.length === presented.length && timingSafeEqual(expected, presented)
+  );
 }

@@ -216,10 +216,12 @@ throttle; a distributed store can replace it later.
   resolves the exact send text at provider-call time
   (`resolveDispatchBodyText`): a callout invitation's link is a
   deterministic HMAC derivation recomputed per send, so the durable
-  record holds no usable token while initial sends and retries alike
-  deliver the same working URL. A placeholder that cannot be resolved
-  fails loudly — no attempt is recorded and nobody is emailed a dead
-  link. See `src/lib/domain/calloutTokens.ts` and
+  record holds no usable token while every send delivers a working URL.
+  The substitution also refreshes the invitation's stored token hash —
+  after a `CALLOUT_RESPONSE_TOKEN_SECRET` rotation the next send emails
+  the new derivation and keeps it valid. A placeholder that cannot be
+  resolved fails loudly — no attempt is recorded and nobody is emailed
+  a dead link. See `src/lib/domain/calloutTokens.ts` and
   [`docs/callouts.md`](callouts.md).
 
 ## Environment variables

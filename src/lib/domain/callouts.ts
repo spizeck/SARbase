@@ -16,6 +16,7 @@ import {
   CALLOUT_INVITATION_TEMPLATE,
   CALLOUT_RESPONSE_URL_PLACEHOLDER,
   deriveInvitationResponseToken,
+  verifyInvitationResponseToken,
 } from "@/lib/domain/calloutTokens";
 
 import {
@@ -708,7 +709,13 @@ export async function recordInvitationResponse(
   });
 }
 
-/** Resolve a response token to its invitation for the public page. */
+/**
+ * Resolve a response token to its invitation for the public page.
+ * The stored hash locates the row; the presented token must then equal
+ * the CURRENT derivation (timing-safe) — so rotating the token secret
+ * revokes outstanding links even while a stale stored hash still
+ * matches the lookup.
+ */
 export async function getInvitationForToken(rawToken: string) {
   const hash = hashResponseToken(rawToken);
   const invitation = await prisma.calloutInvitation.findUnique({
@@ -728,6 +735,16 @@ export async function getInvitationForToken(rawToken: string) {
       },
     },
   });
+  if (
+    !invitation ||
+    !verifyInvitationResponseToken(
+      invitation.calloutId,
+      invitation.memberId,
+      rawToken,
+    )
+  ) {
+    return null;
+  }
   return invitation;
 }
 
@@ -739,9 +756,16 @@ export async function respondToCalloutToken(
   const hash = hashResponseToken(rawToken);
   const invitation = await prisma.calloutInvitation.findUnique({
     where: { responseTokenHash: hash },
-    select: { id: true },
+    select: { id: true, calloutId: true, memberId: true },
   });
-  if (!invitation) {
+  if (
+    !invitation ||
+    !verifyInvitationResponseToken(
+      invitation.calloutId,
+      invitation.memberId,
+      rawToken,
+    )
+  ) {
     throw new CalloutTokenInvalidError();
   }
   return recordInvitationResponse(invitation.id, response, "TOKEN_LINK", null);

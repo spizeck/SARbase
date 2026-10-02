@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 
 import { test, expect } from "@playwright/test";
 import { AxeBuilder } from "@axe-core/playwright";
@@ -43,11 +43,15 @@ test.describe("callout response — invalid link", () => {
 
 test.describe("callout response — token flow", () => {
   const prisma = new PrismaClient();
-  // Deterministic fixture token — the raw value exists only in this
-  // test and the URL it builds; only its hash reaches the database.
-  const rawToken = `e2e-callout-token-${Date.now()}`;
-  const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+  // The fixture token must be the token the server would derive for
+  // this invitation — the response path verifies against the live
+  // derivation, not just the stored hash. Same pepper as the smoke
+  // server's webServer env (playwright.config.ts).
+  const TOKEN_SECRET =
+    process.env.CALLOUT_RESPONSE_TOKEN_SECRET ??
+    "smoke-test-callout-token-secret";
 
+  let rawToken = "";
   let organizationId = "";
   let memberId = "";
   let calloutId = "";
@@ -89,12 +93,17 @@ test.describe("callout response — token flow", () => {
       },
     });
     calloutId = callout.id;
+    // Derivation mirrors src/lib/domain/calloutTokens.ts —
+    // base64url(HMAC-SHA256(pepper, "callout-response:<calloutId>:<memberId>")).
+    rawToken = createHmac("sha256", TOKEN_SECRET)
+      .update(`callout-response:${calloutId}:${memberId}`)
+      .digest("base64url");
     const invitation = await prisma.calloutInvitation.create({
       data: {
         organizationId,
         calloutId,
         memberId,
-        responseTokenHash: tokenHash,
+        responseTokenHash: createHash("sha256").update(rawToken).digest("hex"),
       },
     });
     invitationId = invitation.id;

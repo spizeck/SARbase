@@ -115,9 +115,12 @@ the send genuinely completes.
   send — initial dispatch and `retryNotification` alike — and the raw
   value never needs to exist at rest.
 - The invitation row stores `responseTokenHash = SHA-256(token)` with a
-  unique index; `GET /respond` resolves the hash. The value is invalid
-  for any other invitation, contains no member or organization data,
-  and is never logged.
+  unique index; `GET /respond` resolves the hash, then verifies the
+  presented token equals the CURRENT derivation (`timingSafeEqual`) —
+  so a link minted under a retired secret is rejected even though its
+  hash still matches the index. The value is invalid for any other
+  invitation, contains no member or organization data, and is never
+  logged.
 - The stored `Notification.bodyText` carries a literal
   `{callout-response-url}` placeholder where the link belongs. At
   provider-send time, `resolveDispatchBodyText` (notifications.ts)
@@ -130,7 +133,11 @@ the send genuinely completes.
 - `CALLOUT_RESPONSE_TOKEN_SECRET` is required in production (activation
   fails closed without it); non-production uses a fixed dev value.
   Rotating the secret changes every derivation, which revokes all
-  outstanding response links.
+  outstanding response links — verification compares against the live
+  derivation, not just the stored hash. A send after rotation refreshes
+  `responseTokenHash` to the token it actually emails (see the
+  substitution bullet), so the first post-rotation dispatch or retry
+  delivers a working new link.
 - The page is `noindex`, and Sentry/privacy scrubbing drops query
   strings — the token never reaches telemetry.
 - Lifetime is tied to the callout: a token responds while the callout is

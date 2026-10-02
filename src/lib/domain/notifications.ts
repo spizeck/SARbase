@@ -13,8 +13,9 @@ import {
 import {
   CALLOUT_INVITATION_TEMPLATE,
   CALLOUT_RESPONSE_URL_PLACEHOLDER,
-  invitationResponseUrl,
+  deriveInvitationResponseToken,
 } from "@/lib/domain/calloutTokens";
+import { resolveSiteUrl } from "@/lib/site";
 import type {
   NotificationChannelName,
   NotificationProvider,
@@ -326,15 +327,33 @@ async function resolveDispatchBodyText(
   }
   const metadata = (notification.metadata ?? null) as {
     calloutId?: string;
+    invitationId?: string;
   } | null;
   if (
     notification.template === CALLOUT_INVITATION_TEMPLATE &&
     metadata?.calloutId &&
+    metadata?.invitationId &&
     notification.memberId
   ) {
+    const token = deriveInvitationResponseToken(
+      metadata.calloutId,
+      notification.memberId,
+    );
+    // Keep the invitation's lookup hash aligned with the credential this
+    // send actually carries — a send after secret rotation delivers a
+    // working link (and the superseded token stops resolving).
+    await prisma.calloutInvitation.updateMany({
+      where: {
+        id: metadata.invitationId,
+        organizationId: notification.organizationId,
+      },
+      data: {
+        responseTokenHash: createHash("sha256").update(token).digest("hex"),
+      },
+    });
     return text.replaceAll(
       CALLOUT_RESPONSE_URL_PLACEHOLDER,
-      invitationResponseUrl(metadata.calloutId, notification.memberId),
+      `${resolveSiteUrl()}/respond?t=${encodeURIComponent(token)}`,
     );
   }
   throw new Error(
