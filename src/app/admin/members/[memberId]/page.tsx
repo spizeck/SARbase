@@ -39,6 +39,7 @@ import {
   LinkIdentityForm,
   MemberQualificationForm,
 } from "../../forms";
+import { AttachmentSection } from "../../attachment-section";
 import {
   AvailabilityForm,
   ContactPreferencesForm,
@@ -385,6 +386,16 @@ export default async function MemberPage({
                     />
                   </div>
                 </details>
+                {/* Issue #16 — scanned certificates and supporting files.
+                    Qualification documents may contain personal data and
+                    stay ADMIN-only. */}
+                <AttachmentSection
+                  entityType="MEMBER_QUALIFICATION"
+                  entityId={record.id}
+                  organizationId={orgId}
+                  heading="Certificate files"
+                  compact
+                />
               </li>
             ))}
           </ul>

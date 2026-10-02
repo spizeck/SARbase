@@ -31,6 +31,7 @@ import {
   AddIncidentNoteForm,
   CorrectNoteForm,
 } from "../../../../incident-forms";
+import { AttachmentSection } from "../../../../attachment-section";
 
 export const metadata = { title: "Incident" };
 
@@ -369,6 +370,17 @@ export default async function IncidentDetailPage({
         </div>
       </section>
 
+      {/* Issue #16 — documentary files on the incident record itself.
+          On a CLOSED incident every attachment mutation is a correction
+          and requires a recorded reason. */}
+      <AttachmentSection
+        entityType="INCIDENT"
+        entityId={incident.id}
+        organizationId={incident.organizationId}
+        requireReason={incident.status === "CLOSED"}
+        heading="Incident files"
+      />
+
       <section aria-labelledby="timeline-heading" className="mt-10">
         <h2 id="timeline-heading" className="text-lg font-medium">
           Timeline and notes
@@ -445,6 +457,14 @@ export default async function IncidentDetailPage({
                         </ul>
                       </details>
                     )}
+                    <AttachmentSection
+                      entityType="INCIDENT_NOTE"
+                      entityId={item.note.id}
+                      organizationId={incident.organizationId}
+                      requireReason={incident.status === "CLOSED"}
+                      heading="Note files"
+                      compact
+                    />
                     <details className="mt-2">
                       <summary className="cursor-pointer text-xs font-medium text-neutral-600 hover:text-neutral-900">
                         Correct this note

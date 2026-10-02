@@ -16,6 +16,7 @@ import {
   setTrainingAttendanceAction,
 } from "../../actions";
 import { TrainingEventForm, TrainingAttendanceForm } from "../../forms";
+import { AttachmentSection } from "../../attachment-section";
 
 export const metadata = { title: "Training event" };
 
@@ -213,6 +214,14 @@ export default async function TrainingEventPage({
           </div>
         )}
       </section>
+
+      {/* Issue #16 — attendance sheets, syllabi, and course documents. */}
+      <AttachmentSection
+        entityType="TRAINING_EVENT"
+        entityId={event.id}
+        organizationId={orgId}
+        heading="Event files"
+      />
 
       <section aria-labelledby="edit-heading" className="mt-8">
         <h2 id="edit-heading" className="text-lg font-medium">

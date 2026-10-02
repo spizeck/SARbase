@@ -55,6 +55,10 @@ import {
   incidentAssetSchema,
   incidentNoteSchema,
   incidentNoteCorrectionSchema,
+  attachmentUploadSchema,
+  attachmentMutationSchema,
+  organizationDocumentInputSchema,
+  documentVersionSchema,
 } from "@/lib/domain/schemas";
 import {
   requireAuth,
@@ -80,6 +84,9 @@ import {
   requireOrgAdminForIncidentMember,
   requireOrgAdminForIncidentAsset,
   requireOrgAdminForIncidentNote,
+  requireOrgAdminForAttachment,
+  requireOrgAdminForAttachmentTarget,
+  requireOrgAdminForOrganizationDocument,
 } from "@/lib/auth/authorize";
 import {
   createTrainingEvent,
@@ -148,6 +155,22 @@ import {
   NotificationRetryError,
 } from "@/lib/domain/notifications";
 import { NotificationConfigError } from "@/lib/notifications/provider";
+import {
+  uploadAttachment,
+  unlinkAttachment,
+  deleteAttachment,
+  createOrganizationDocument,
+  addOrganizationDocumentVersion,
+  updateOrganizationDocument,
+  setOrganizationDocumentStatus,
+  isAttachmentEntityType,
+  AttachmentInputError,
+  AttachmentReasonRequiredError,
+  AttachmentDeletedError,
+  CrossOrganizationAttachmentError,
+  type AttachmentFileInput,
+} from "@/lib/domain/attachments";
+import { StorageConfigError, StorageError } from "@/lib/storage/provider";
 import {
   activateCallout,
   closeCallout,
@@ -339,6 +362,35 @@ function mapDomainError(error: unknown): ActionState {
   ) {
     // Facts about the caller's own organization — safe to surface.
     return { message: error.message };
+  }
+  if (error instanceof CrossOrganizationAttachmentError) {
+    // Opaque — foreign-org attachment/link targets must not leak.
+    return { message: "Not found." };
+  }
+  if (
+    error instanceof AttachmentInputError ||
+    error instanceof AttachmentReasonRequiredError ||
+    error instanceof AttachmentDeletedError
+  ) {
+    // Upload policy and own-org lifecycle facts — safe to surface.
+    return { message: error.message };
+  }
+  if (error instanceof StorageConfigError) {
+    // Env var names are fine for operators; values never surface.
+    return {
+      message:
+        "File storage is not configured for this deployment. Contact the operator.",
+    };
+  }
+  if (error instanceof StorageError) {
+    // Raw provider text never surfaces; only the normalized class.
+    if (error.code === "object_not_found") {
+      return { message: "Not found." };
+    }
+    return {
+      message:
+        "File storage could not complete the operation. Please try again.",
+    };
   }
   throw error;
 }
@@ -2499,6 +2551,388 @@ export async function correctIncidentNoteAction(
   }
   revalidatePath(
     `/admin/organizations/${note.organizationId}/incidents/${note.incidentId}`,
+  );
+  return {};
+}
+
+/* ------------------------------------------------------------------ */
+/* Issue #16 — attachments and organizational documents               */
+/* ------------------------------------------------------------------ */
+
+const attachmentRateLimitStore = new InMemoryRateLimitStore();
+const ATTACHMENT_RATE_LIMIT = { limit: 60, windowMs: 60 * 60 * 1000 };
+
+/**
+ * Throttle attachment mutations (uploads write real bytes; unlinks and
+ * deletes churn storage). Same in-memory caveat as the other limiters —
+ * best-effort per process on serverless. See docs/attachments.md.
+ */
+async function checkAttachmentRateLimit(
+  organizationId: string,
+  actorId: string,
+): Promise<ActionState | null> {
+  const result = await checkRateLimit(
+    attachmentRateLimitStore,
+    rateLimitKey("attachment.write", organizationId, actorId),
+    ATTACHMENT_RATE_LIMIT,
+  );
+  if (result.allowed) return null;
+  logExpected({
+    event: "attachment.rate_limited",
+    subsystem: "attachments",
+    actorId,
+    organizationId,
+    rateLimitScope: "attachment.write",
+  });
+  return {
+    message: "Too many file changes. Please wait a moment and try again.",
+  };
+}
+
+/**
+ * Extract the uploaded file from FormData. An absent file is null; a
+ * real File becomes the domain's untrusted AttachmentFileInput. The
+ * browser-declared name/type flow through untouched — validateUpload
+ * treats both as untrusted hints.
+ */
+async function fileFromFormData(
+  formData: FormData,
+): Promise<AttachmentFileInput | null> {
+  const file = formData.get("file");
+  if (!(file instanceof File) || (!file.name && file.size === 0)) {
+    return null;
+  }
+  return {
+    name: file.name,
+    mediaType: file.type || "application/octet-stream",
+    bytes: new Uint8Array(await file.arrayBuffer()),
+  };
+}
+
+/** Revalidate the admin page that renders the attachment's record. */
+function revalidateAttachmentTarget(
+  entityType: string,
+  entityId: string,
+  target: { organizationId: string } & Record<string, unknown>,
+) {
+  const orgId = target.organizationId;
+  switch (entityType) {
+    case "INCIDENT":
+      revalidatePath(`/admin/organizations/${orgId}/incidents/${entityId}`);
+      break;
+    case "INCIDENT_NOTE":
+      revalidatePath(
+        `/admin/organizations/${orgId}/incidents/${String(target.incidentId)}`,
+      );
+      break;
+    case "MEMBER_QUALIFICATION":
+      revalidatePath(`/admin/members/${String(target.memberId)}`);
+      break;
+    case "TRAINING_EVENT":
+      revalidatePath(`/admin/training/${entityId}`);
+      break;
+    case "ASSET":
+      revalidatePath(`/admin/assets/${entityId}`);
+      break;
+    case "INSPECTION_RECORD":
+    case "MAINTENANCE_RECORD":
+    case "DEFECT":
+      revalidatePath(`/admin/assets/${String(target.assetId)}`);
+      break;
+  }
+}
+
+/**
+ * Upload a file onto a supported record. The entity pair is an
+ * untrusted selector: the target record is resolved and org-checked
+ * before any byte is stored, and the domain layer re-resolves inside
+ * its transaction before writing.
+ */
+export async function uploadAttachmentAction(
+  entityType: string,
+  entityId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  if (!isAttachmentEntityType(entityType)) {
+    return { message: "Not found." };
+  }
+  let target;
+  try {
+    target = await requireOrgAdminForAttachmentTarget(
+      ctx,
+      entityType,
+      entityId,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkAttachmentRateLimit(
+    target.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+
+  const file = await fileFromFormData(formData);
+  if (!file) {
+    return { fieldErrors: { file: ["Choose a file to upload."] } };
+  }
+  const parsed = attachmentUploadSchema.safeParse({
+    description: formData.get("description"),
+    reason: formData.get("reason"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await uploadAttachment(
+      { type: entityType, id: entityId },
+      file,
+      parsed.data,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidateAttachmentTarget(entityType, entityId, target);
+  return {};
+}
+
+/** Remove an attachment from one record — the file itself survives. */
+export async function unlinkAttachmentAction(
+  entityType: string,
+  entityId: string,
+  attachmentId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  if (!isAttachmentEntityType(entityType)) {
+    return { message: "Not found." };
+  }
+  let target;
+  try {
+    target = await requireOrgAdminForAttachmentTarget(
+      ctx,
+      entityType,
+      entityId,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkAttachmentRateLimit(
+    target.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+
+  const parsed = attachmentMutationSchema.safeParse({
+    reason: formData.get("reason"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await unlinkAttachment(
+      { type: entityType, id: entityId },
+      attachmentId,
+      parsed.data,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidateAttachmentTarget(entityType, entityId, target);
+  return {};
+}
+
+/**
+ * Tombstone an attachment and attempt physical object deletion. The
+ * metadata record and audit history are never hard-deleted.
+ */
+export async function deleteAttachmentAction(
+  attachmentId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let attachment;
+  try {
+    attachment = await requireOrgAdminForAttachment(ctx, attachmentId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkAttachmentRateLimit(
+    attachment.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+
+  const parsed = attachmentMutationSchema.safeParse({
+    reason: formData.get("reason"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await deleteAttachment(attachmentId, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  // The attachment may be rendered on several record pages — clear the
+  // admin section's data cache rather than guess which lists contain it.
+  revalidatePath("/admin", "layout");
+  return {};
+}
+
+/* -------- Organization documents -------- */
+
+export async function createOrganizationDocumentAction(
+  organizationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkAttachmentRateLimit(
+    organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+
+  const file = await fileFromFormData(formData);
+  if (!file) {
+    return { fieldErrors: { file: ["Choose a file to upload."] } };
+  }
+  const parsed = organizationDocumentInputSchema.safeParse({
+    title: formData.get("title"),
+    category: formData.get("category"),
+    effectiveOn: formData.get("effectiveOn"),
+    expiresOn: formData.get("expiresOn"),
+    notes: formData.get("notes"),
+    description: formData.get("description"),
+    versionNote: formData.get("versionNote"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await createOrganizationDocument(
+      organizationId,
+      file,
+      parsed.data,
+      parsed.data.versionNote ?? null,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/organizations/${organizationId}/documents`);
+  return {};
+}
+
+/** Upload the next version's file for an existing document. */
+export async function addDocumentVersionAction(
+  documentId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let document;
+  try {
+    document = await requireOrgAdminForOrganizationDocument(ctx, documentId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkAttachmentRateLimit(
+    document.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+
+  const file = await fileFromFormData(formData);
+  if (!file) {
+    return { fieldErrors: { file: ["Choose a file to upload."] } };
+  }
+  const parsed = documentVersionSchema.safeParse({
+    note: formData.get("note"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await addOrganizationDocumentVersion(
+      documentId,
+      file,
+      parsed.data.note ?? null,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/organizations/${document.organizationId}/documents`);
+  revalidatePath(
+    `/admin/organizations/${document.organizationId}/documents/${documentId}`,
+  );
+  return {};
+}
+
+/** Edit document metadata — title/category/dates/notes, not files. */
+export async function updateOrganizationDocumentAction(
+  documentId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let document;
+  try {
+    document = await requireOrgAdminForOrganizationDocument(ctx, documentId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const parsed = organizationDocumentInputSchema.safeParse({
+    title: formData.get("title"),
+    category: formData.get("category"),
+    effectiveOn: formData.get("effectiveOn"),
+    expiresOn: formData.get("expiresOn"),
+    notes: formData.get("notes"),
+    description: formData.get("description"),
+    versionNote: null,
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await updateOrganizationDocument(documentId, parsed.data);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/organizations/${document.organizationId}/documents`);
+  revalidatePath(
+    `/admin/organizations/${document.organizationId}/documents/${documentId}`,
+  );
+  return {};
+}
+
+/** Archive or restore a document — never deletes files. */
+export async function setOrganizationDocumentStatusAction(
+  documentId: string,
+  status: "ACTIVE" | "ARCHIVED",
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let document;
+  try {
+    document = await requireOrgAdminForOrganizationDocument(ctx, documentId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  try {
+    await setOrganizationDocumentStatus(documentId, status, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/organizations/${document.organizationId}/documents`);
+  revalidatePath(
+    `/admin/organizations/${document.organizationId}/documents/${documentId}`,
   );
   return {};
 }

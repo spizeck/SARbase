@@ -135,6 +135,8 @@ interface TimelineMetadata {
   assetName?: string;
   changeId?: string;
   noteId?: string;
+  attachmentId?: string;
+  reason?: string;
 }
 
 /**
@@ -164,6 +166,10 @@ export function describeIncidentTimelineEvent(event: {
       return `Asset removed: ${meta.assetName ?? "asset"}`;
     case "CORRECTION_RECORDED":
       return "Incident record corrected";
+    case "ATTACHMENT_ADDED":
+      return "File added to the incident record";
+    case "ATTACHMENT_REMOVED":
+      return "File removed from the incident record";
     default:
       return event.type;
   }

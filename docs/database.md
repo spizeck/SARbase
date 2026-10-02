@@ -108,6 +108,12 @@ Restores go to a TEMPORARY database first, are verified, then promoted —
 never `pg_restore` straight into production. The full operator procedure
 lives in `runbooks/database-backup-restore.md`.
 
+**Attachment bytes are not in the database.** Both backup layers cover
+only attachment _metadata_ (rows, links, document versions, audit
+events). File contents live in the configured object store —
+`FILE_STORAGE_LOCAL_ROOT` for the `local` provider, the bucket for `s3`
+— and must be backed up separately. See `docs/attachments.md`.
+
 ### Restore drill
 
 `npm run db:restore-drill -- --target development --confirm`
@@ -124,7 +130,8 @@ a backup path that can't restore is a release-blocking defect.
 
 `src/lib/env.ts` provides lazy per-concern zod parsing
 (`parseDatabaseEnvironment`, `parseDatabaseAdminEnvironment`,
-`parseAppEnvironment`). Nothing validates at import time — `next build`
+`parseAppEnvironment`, `parseStorageEnvironment`). Nothing validates at
+import time — `next build`
 with zero env vars must keep working. The admin schema proves
 `DATABASE_URL` and `DATABASE_URL_UNPOOLED` resolve to the same database
 (Neon `-pooler` suffix normalized) and rejects Vercel `[SENSITIVE]`

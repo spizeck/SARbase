@@ -248,7 +248,7 @@ TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/sarbase_test npm
 npm run test:e2e       # Playwright smoke + accessibility suite
 ```
 
-The database environment/migration contract — pooled vs unpooled URLs, expand/contract discipline, preview isolation, backup posture — is documented in [`docs/database.md`](docs/database.md). Operator recovery procedures live in [`runbooks/database-backup-restore.md`](runbooks/database-backup-restore.md). Architectural principles are in [`docs/architecture.md`](docs/architecture.md).
+The database environment/migration contract — pooled vs unpooled URLs, expand/contract discipline, preview isolation, backup posture — is documented in [`docs/database.md`](docs/database.md). Operator recovery procedures live in [`runbooks/database-backup-restore.md`](runbooks/database-backup-restore.md). Architectural principles are in [`docs/architecture.md`](docs/architecture.md). File storage, attachments, and organizational documents are covered in [`docs/attachments.md`](docs/attachments.md).
 
 ## Security
 

@@ -957,3 +957,59 @@ export const incidentNoteCorrectionSchema = z.object({
 export type IncidentNoteCorrectionInput = z.infer<
   typeof incidentNoteCorrectionSchema
 >;
+
+/* ------------------------------------------------------------------ */
+/* Issue #16 — attachments and organizational documents               */
+/* ------------------------------------------------------------------ */
+
+/** Optional human context on an upload; `reason` is required by the domain for closed-incident mutations. */
+export const attachmentUploadSchema = z.object({
+  description: optionalText(500),
+  reason: optionalText(500),
+});
+export type AttachmentUploadInput = z.infer<typeof attachmentUploadSchema>;
+
+/** Unlink/delete carry only an optional reason. */
+export const attachmentMutationSchema = z.object({
+  reason: optionalText(500),
+});
+export type AttachmentMutationInput = z.infer<typeof attachmentMutationSchema>;
+
+/**
+ * Organization-document metadata. The file itself is not part of this
+ * schema — it arrives as FormData `File` and is validated by
+ * `validateUpload` in the domain layer.
+ */
+export const organizationDocumentInputSchema = z
+  .object({
+    title: z
+      .string()
+      .trim()
+      .min(1, "Title is required.")
+      .max(200, "Keep the title under 200 characters."),
+    category: optionalText(60),
+    effectiveOn: dateOnlySchema,
+    expiresOn: dateOnlySchema,
+    notes: optionalText(2000),
+    description: optionalText(500),
+    versionNote: optionalText(200),
+  })
+  .refine(
+    (value) =>
+      !value.effectiveOn ||
+      !value.expiresOn ||
+      value.expiresOn >= value.effectiveOn,
+    {
+      message: "Expiry cannot be earlier than the effective date.",
+      path: ["expiresOn"],
+    },
+  );
+export type OrganizationDocumentFormInput = z.infer<
+  typeof organizationDocumentInputSchema
+>;
+
+/** Version-upload form: just the change note. */
+export const documentVersionSchema = z.object({
+  note: optionalText(200),
+});
+export type DocumentVersionInput = z.infer<typeof documentVersionSchema>;

@@ -476,3 +476,74 @@ export async function requireOrgAdminForIncidentNote(
   }
   return note;
 }
+
+/**
+ * Issue #16 lookups — same rule: the caller-supplied id is an untrusted
+ * selector; the record's own organizationId decides which grant must
+ * exist. Attachment metadata, downloads, and organization documents are
+ * all ADMIN-only — knowing an attachment id discloses nothing, and
+ * every read/mutation passes through one of these helpers first.
+ */
+export async function requireOrgAdminForAttachment(
+  ctx: AuthContext,
+  attachmentId: string,
+) {
+  const attachment = await prisma.attachment.findUnique({
+    where: { id: attachmentId },
+  });
+  if (!attachment || !isOrgAdmin(ctx, attachment.organizationId)) {
+    logDenial("authz.attachment_scope_denied", ctx, {
+      entityId: attachmentId,
+    });
+    throw new AuthorizationError();
+  }
+  return attachment;
+}
+
+export async function requireOrgAdminForOrganizationDocument(
+  ctx: AuthContext,
+  documentId: string,
+) {
+  const document = await prisma.organizationDocument.findUnique({
+    where: { id: documentId },
+  });
+  if (!document || !isOrgAdmin(ctx, document.organizationId)) {
+    logDenial("authz.document_scope_denied", ctx, { entityId: documentId });
+    throw new AuthorizationError();
+  }
+  return document;
+}
+
+/**
+ * Upload/unlink target resolution. `entityType` arrives from the client
+ * and selects WHICH record helper verifies the grant — the grant is
+ * still derived from the record's own organizationId, never from the
+ * selector. Unknown types fail closed.
+ */
+export async function requireOrgAdminForAttachmentTarget(
+  ctx: AuthContext,
+  entityType: string,
+  entityId: string,
+) {
+  switch (entityType) {
+    case "INCIDENT":
+      return await requireOrgAdminForIncident(ctx, entityId);
+    case "INCIDENT_NOTE":
+      return await requireOrgAdminForIncidentNote(ctx, entityId);
+    case "MEMBER_QUALIFICATION":
+      return await requireOrgAdminForQualification(ctx, entityId);
+    case "TRAINING_EVENT":
+      return await requireOrgAdminForTrainingEvent(ctx, entityId);
+    case "ASSET":
+      return await requireOrgAdminForAsset(ctx, entityId);
+    case "INSPECTION_RECORD":
+      return await requireOrgAdminForInspectionRecord(ctx, entityId);
+    case "MAINTENANCE_RECORD":
+      return await requireOrgAdminForMaintenanceRecord(ctx, entityId);
+    case "DEFECT":
+      return await requireOrgAdminForDefect(ctx, entityId);
+    default:
+      logDenial("authz.attachment_target_denied", ctx, { entityId });
+      throw new AuthorizationError();
+  }
+}
