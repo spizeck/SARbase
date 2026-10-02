@@ -207,6 +207,16 @@ describe("attachmentContentDisposition", () => {
     expect(cd).toContain(`filename*=UTF-8''r%C3%A9sum%C3%A9.pdf`);
   });
 
+  it("never emits non-ASCII in the quoted fallback (Headers ByteString)", () => {
+    // "报告.pdf" — CJK code points > U+00FF in filename="..." would make
+    // Fetch Headers throw TypeError, turning a download into a 500.
+    const cd = attachmentContentDisposition("报告.pdf");
+    expect(cd).toContain('filename="__.pdf"');
+    expect(cd).toContain(`filename*=UTF-8''${encodeURIComponent("报告")}.pdf`);
+    // The whole header value must be a valid ByteString.
+    expect(() => new Headers({ "content-disposition": cd })).not.toThrow();
+  });
+
   it("rejects bytes above the text probe as binary for text types", () => {
     // A NUL in the first 4KB marks text/plain as binary masquerade.
     const bytes = new Uint8Array(5000).fill(0x41);

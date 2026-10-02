@@ -333,9 +333,9 @@ export function parseNotificationEnvironment(
 /**
  * File storage configuration (issue #16) — server-only.
  *
- * - FILE_STORAGE_PROVIDER: explicit selection, "local" or "s3". Optional;
- *   when unset the resolver fails closed in production and falls back to
- *   the local provider in development/test (see
+ * - FILE_STORAGE_PROVIDER: explicit selection, "local" or "s3". In a real
+ *   production deployment the resolver fails closed when it is unset;
+ *   development/test may leave it unset for the local provider (see
  *   src/lib/storage/resolve.ts for the exact rules).
  * - FILE_STORAGE_LOCAL_ROOT: absolute directory the local provider stores
  *   objects under. Required for "local" except that the resolver supplies
@@ -343,36 +343,64 @@ export function parseNotificationEnvironment(
  * - FILE_STORAGE_S3_*: endpoint/bucket/region/credentials for any
  *   S3-compatible object store (AWS S3, Cloudflare R2, MinIO, ...).
  *   SECRETS — never in client bundles, CI, or logs.
+ *
+ * Blank values (an uncommented-but-empty .env.example line, a Vercel var
+ * saved empty) normalize to undefined rather than failing validation —
+ * an unset option and an empty option mean the same thing.
  */
+const storageBlankToUndefined = (value: unknown) =>
+  typeof value === "string" && value.trim() === "" ? undefined : value;
+
 export const storageEnvironmentSchema = z.object({
-  FILE_STORAGE_PROVIDER: z.enum(["local", "s3"]).optional(),
-  FILE_STORAGE_LOCAL_ROOT: z
-    .string()
-    .trim()
-    .min(1)
-    .max(1024)
-    .refine((root) => !root.includes(".."), {
-      message: "FILE_STORAGE_LOCAL_ROOT must not contain '..'",
-    })
-    .optional(),
-  FILE_STORAGE_S3_ENDPOINT: z
-    .string()
-    .url("FILE_STORAGE_S3_ENDPOINT must be a valid URL")
-    .max(2048)
-    .optional(),
-  FILE_STORAGE_S3_REGION: z.string().trim().min(1).max(128).optional(),
-  FILE_STORAGE_S3_BUCKET: z
-    .string()
-    .trim()
-    .min(1)
-    .max(255)
-    .regex(
-      /^[a-zA-Z0-9.\-_]+$/,
-      "FILE_STORAGE_S3_BUCKET may only contain letters, digits, '.', '-' and '_'",
-    )
-    .optional(),
-  FILE_STORAGE_S3_ACCESS_KEY_ID: z.string().trim().min(1).max(512).optional(),
-  FILE_STORAGE_S3_SECRET_ACCESS_KEY: z.string().min(1).max(2048).optional(),
+  FILE_STORAGE_PROVIDER: z.preprocess(
+    storageBlankToUndefined,
+    z.enum(["local", "s3"]).optional(),
+  ),
+  FILE_STORAGE_LOCAL_ROOT: z.preprocess(
+    storageBlankToUndefined,
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(1024)
+      .refine((root) => !root.includes(".."), {
+        message: "FILE_STORAGE_LOCAL_ROOT must not contain '..'",
+      })
+      .optional(),
+  ),
+  FILE_STORAGE_S3_ENDPOINT: z.preprocess(
+    storageBlankToUndefined,
+    z
+      .string()
+      .url("FILE_STORAGE_S3_ENDPOINT must be a valid URL")
+      .max(2048)
+      .optional(),
+  ),
+  FILE_STORAGE_S3_REGION: z.preprocess(
+    storageBlankToUndefined,
+    z.string().trim().min(1).max(128).optional(),
+  ),
+  FILE_STORAGE_S3_BUCKET: z.preprocess(
+    storageBlankToUndefined,
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(255)
+      .regex(
+        /^[a-zA-Z0-9.\-_]+$/,
+        "FILE_STORAGE_S3_BUCKET may only contain letters, digits, '.', '-' and '_'",
+      )
+      .optional(),
+  ),
+  FILE_STORAGE_S3_ACCESS_KEY_ID: z.preprocess(
+    storageBlankToUndefined,
+    z.string().trim().min(1).max(512).optional(),
+  ),
+  FILE_STORAGE_S3_SECRET_ACCESS_KEY: z.preprocess(
+    storageBlankToUndefined,
+    z.string().min(1).max(2048).optional(),
+  ),
 });
 
 export type StorageEnvironment = z.infer<typeof storageEnvironmentSchema>;

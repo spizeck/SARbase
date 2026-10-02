@@ -4,7 +4,6 @@ import {
   HeadObjectCommand,
   NoSuchKey,
   NotFound,
-  ObjectCannedACL,
   PutObjectCommand,
   S3Client,
   S3ServiceException,
@@ -69,9 +68,10 @@ export class S3FileStorageProvider implements FileStorageProvider {
           Key: key,
           Body: body,
           ContentType: contentType,
-          // Defense-in-depth: even a mistakenly public bucket/prefix keeps
-          // SARbase objects private.
-          ACL: ObjectCannedACL.private,
+          // No canned ACL: buckets with Object Ownership
+          // BucketOwnerEnforced (the AWS default) reject ACL headers
+          // outright. Bucket policy/privacy is the operator's control —
+          // SARbase never constructs public object URLs.
         }),
       );
     } catch (error) {

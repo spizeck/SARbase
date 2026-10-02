@@ -2775,6 +2775,16 @@ export async function deleteAttachmentAction(
   try {
     await deleteAttachment(attachmentId, parsed.data, ctx.identity.id);
   } catch (error) {
+    if (error instanceof StorageError) {
+      // The tombstone and DELETED event already committed — only the
+      // physical object removal failed. Revalidate so the UI shows the
+      // real state and report the honest partial outcome.
+      revalidatePath("/admin", "layout");
+      return {
+        message:
+          "The file record was deleted, but the stored content could not be removed. It is recorded as failed deletion and can be retried.",
+      };
+    }
     return mapDomainError(error);
   }
   // The attachment may be rendered on several record pages — clear the

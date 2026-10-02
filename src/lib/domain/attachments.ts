@@ -5,10 +5,7 @@ import type { Attachment, AttachmentEventAction } from "@prisma/client";
 
 import { log } from "@/lib/logging";
 import { prisma } from "@/lib/prisma";
-import {
-  getFileStorageProvider,
-  resolveFileStorageProvider,
-} from "@/lib/storage/resolve";
+import { getFileStorageProvider } from "@/lib/storage/resolve";
 import { StorageError, type FileStorageProvider } from "@/lib/storage/provider";
 
 /**
@@ -242,7 +239,10 @@ export function sanitizeDisplayFilename(name: string): string {
 export function attachmentContentDisposition(filename: string): string {
   const fallback =
     filename
-      .replace(/[\x00-\x1f\x7f-\xff]/g, "_")
+      // Fetch Headers require ByteString — every character outside
+      // printable ASCII must leave the quoted fallback (the UTF-8
+      // filename* parameter carries the real name).
+      .replace(/[^\x20-\x7e]/g, "_")
       .replace(/["\\]/g, "_")
       .trim() || "attachment";
   const encoded = encodeURIComponent(filename).replace(
@@ -814,7 +814,16 @@ export async function deleteAttachment(
     });
     if (!attachment) throw new CrossOrganizationAttachmentError();
     if (attachment.status === "DELETED") {
-      return { attachment, changed: false };
+      // Already tombstoned — but if a previous DELETED event recorded a
+      // FAILED physical removal, fall through so the storage delete can
+      // be retried. A second DELETED event keeps history append-only.
+      const lastDelete = await tx.attachmentEvent.findFirst({
+        where: { attachmentId, action: "DELETED" },
+        orderBy: { createdAt: "desc" },
+        select: { storageDeleted: true },
+      });
+      const retryNeeded = lastDelete?.storageDeleted === false;
+      return { attachment, changed: false, retryStorage: retryNeeded };
     }
 
     const touchesClosedIncident =
@@ -834,10 +843,10 @@ export async function deleteAttachment(
         deletedByAuthIdentityId: actorAuthIdentityId,
       },
     });
-    return { attachment, changed: marked.count === 1 };
+    return { attachment, changed: marked.count === 1, retryStorage: false };
   });
 
-  if (!tombstoned.changed) {
+  if (!tombstoned.changed && !tombstoned.retryStorage) {
     return tombstoned.attachment;
   }
 
@@ -904,7 +913,7 @@ export interface AttachmentDownload {
  */
 export async function openAttachmentDownload(
   attachment: Attachment,
-  storage: FileStorageProvider = resolveFileStorageProvider(),
+  storage: FileStorageProvider = getFileStorageProvider(),
 ): Promise<AttachmentDownload> {
   if (attachment.status !== "ACTIVE") {
     throw new AttachmentDeletedError();

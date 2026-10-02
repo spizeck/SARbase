@@ -8,6 +8,7 @@ import {
   parseDatabaseAdminEnvironment,
   parseDatabaseEnvironment,
   parsePostgresqlUrl,
+  parseStorageEnvironment,
   tryParseFirebaseClientEnvironment,
 } from "./env";
 
@@ -196,6 +197,48 @@ describe("parseAppEnvironment", () => {
       parseAppEnvironment({
         APP_PRODUCTION_DB_HOST: "postgresql://host/db",
       }),
+    ).toThrow();
+  });
+});
+
+describe("parseStorageEnvironment (issue #16)", () => {
+  it("accepts a complete s3 configuration", () => {
+    const env = parseStorageEnvironment({
+      FILE_STORAGE_PROVIDER: "s3",
+      FILE_STORAGE_S3_BUCKET: "sarbase-files",
+      FILE_STORAGE_S3_REGION: "us-east-1",
+      FILE_STORAGE_S3_ACCESS_KEY_ID: "key",
+      FILE_STORAGE_S3_SECRET_ACCESS_KEY: "secret",
+    });
+    expect(env.FILE_STORAGE_PROVIDER).toBe("s3");
+    expect(env.FILE_STORAGE_S3_BUCKET).toBe("sarbase-files");
+  });
+
+  it("treats blank FILE_STORAGE_* values as unset", () => {
+    // An uncommented-but-empty .env line or an empty Vercel var must not
+    // explode with a raw ZodError — blank means absent.
+    const env = parseStorageEnvironment({
+      FILE_STORAGE_PROVIDER: "",
+      FILE_STORAGE_LOCAL_ROOT: "   ",
+      FILE_STORAGE_S3_ENDPOINT: "",
+      FILE_STORAGE_S3_REGION: "",
+      FILE_STORAGE_S3_BUCKET: "",
+      FILE_STORAGE_S3_ACCESS_KEY_ID: "",
+      FILE_STORAGE_S3_SECRET_ACCESS_KEY: "",
+    });
+    expect(env.FILE_STORAGE_PROVIDER).toBeUndefined();
+    expect(env.FILE_STORAGE_S3_ENDPOINT).toBeUndefined();
+  });
+
+  it("rejects an unknown provider name", () => {
+    expect(() =>
+      parseStorageEnvironment({ FILE_STORAGE_PROVIDER: "ftp" }),
+    ).toThrow();
+  });
+
+  it("rejects a local root containing traversal", () => {
+    expect(() =>
+      parseStorageEnvironment({ FILE_STORAGE_LOCAL_ROOT: "../outside" }),
     ).toThrow();
   });
 });

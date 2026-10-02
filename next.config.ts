@@ -12,6 +12,16 @@ const nextConfig: NextConfig = {
   // lockfiles. Pinning the root stops Next from inferring a parent
   // directory as the workspace root.
   turbopack: { root: dirname(fileURLToPath(import.meta.url)) },
+  experimental: {
+    serverActions: {
+      // Attachment uploads (issue #16) submit files through Server
+      // Actions; the default 1 MB cap would reject anything larger
+      // before it reaches validation. 32mb covers the 25 MiB file cap
+      // plus multipart overhead; the domain layer enforces the real
+      // policy.
+      bodySizeLimit: "32mb",
+    },
+  },
   poweredByHeader: false,
   images: {
     // AVIF encodes photographic content meaningfully smaller than WebP at

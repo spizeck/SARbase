@@ -914,13 +914,15 @@ provider abstraction, upload/download flow, security model — is
   change history.
 - **`OrganizationDocument`** + **`OrganizationDocumentVersion`** model
   org-level documents (policies, SOPs, manuals, registrations,
-  insurance). Versions are append-only rows over attachments;
-  `currentVersionId` points at the live one and archiving is a status,
-  not a deletion — replacing a policy never erases the prior file.
-- **Deletion is a tombstone**, not a hard delete: status flips, links
-  are removed, physical object deletion is attempted and its outcome
-  recorded. Attachment mutations on `CLOSED` incidents require an
-  explicit correction reason, matching the incident record posture.
+  insurance). Versions are append-only rows over attachments; the
+  current file is the highest `versionNumber` and archiving is a
+  status, not a deletion — replacing a policy never erases the prior
+  file.
+- **Deletion is a tombstone**, not a hard delete: status flips, link
+  rows are retained (rendered as deleted), physical object deletion is
+  attempted and its outcome recorded on the `DELETED` event. Attachment
+  mutations on `CLOSED` incidents require an explicit correction
+  reason, matching the incident record posture.
 
 ## Lifecycle and history
 

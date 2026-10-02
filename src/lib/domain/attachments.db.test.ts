@@ -446,6 +446,17 @@ describe.skipIf(!hasDb)("attachments (issue #16)", () => {
     expect(events[0]!.storageDeleted).toBe(false);
     // The object is still in storage — nothing claimed it was removed.
     expect(storage.objects.has(row.storageKey)).toBe(true);
+
+    // Retrying the delete on an already-tombstoned record retries the
+    // physical removal and appends a second honest DELETED event.
+    await deleteAttachment(attachment.id, {}, actorA.id, storage);
+    expect(storage.objects.has(row.storageKey)).toBe(false);
+    const eventsAfter = await prisma.attachmentEvent.findMany({
+      where: { attachmentId: attachment.id, action: "DELETED" },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(eventsAfter).toHaveLength(2);
+    expect(eventsAfter[1]!.storageDeleted).toBe(true);
   });
 
   /* ---------------- download ---------------- */

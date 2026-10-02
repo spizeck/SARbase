@@ -27,12 +27,13 @@ Attachment row + append-only AttachmentEvent
 | Local dev adapter | `LocalFileStorageProvider` (`src/lib/storage/local.ts`)     |
 | Test fake         | `InMemoryFileStorageProvider` (`src/lib/storage/memory.ts`) |
 | Cloud adapter     | `S3FileStorageProvider` (`src/lib/storage/s3.ts`)           |
-| Resolution        | `resolveStorageProvider` (`src/lib/storage/resolve.ts`)     |
+| Resolution        | `resolveFileStorageProvider` (`src/lib/storage/resolve.ts`) |
 | Domain            | `src/lib/domain/attachments.ts` — never sees SDK types      |
 
 `FileStorageProvider` exposes `put`, `openRead`, `head`, and `delete`. All
 provider failures normalize to `StorageError` with a small `StorageErrorCode`
-(`object_not_found`, `provider_unavailable`, `provider_error`) — provider SDK
+(`config_missing`, `object_not_found`, `provider_unavailable`,
+`provider_error`) — provider SDK
 types and raw error strings never cross the boundary, so credentials, bucket
 URLs, and request metadata cannot leak into logs or responses.
 
@@ -45,12 +46,13 @@ URLs, and request metadata cannot leak into logs or responses.
   `@aws-sdk/client-s3`. Buckets are expected to be **private**; SARbase never
   builds public or presigned object URLs — every download streams through the
   authorized route.
-- **`memory`**: deterministic in-process fake for tests; never selectable in
-  production (`resolveStorageProvider` refuses it there).
+- **`memory`**: deterministic in-process fake for tests; never selectable via
+  configuration at all — tests inject it directly.
 
 Production fails closed: `FILE_STORAGE_PROVIDER` must be explicit, `s3` without
-complete credentials is a configuration error, and the local/memory providers
-are rejected.
+complete credentials is a configuration error, and `local` requires an explicit
+`FILE_STORAGE_LOCAL_ROOT` (self-hosting is supported; an ephemeral default root
+is not).
 
 ### Environment
 
@@ -111,12 +113,12 @@ removed — the history row still says what happened.
 Organization-level records that are not attached to another row — policies,
 SOPs, manuals, insurance, registrations, forms.
 
-- `OrganizationDocument`: `title`, `category`, `effectiveDate`, `expiresOn`,
+- `OrganizationDocument`: `title`, `category`, `effectiveOn`, `expiresOn`,
   `notes`, `status` (`ACTIVE`/`ARCHIVED`), scalar creator.
 - `OrganizationDocumentVersion`: append-oriented rows pointing at an
-  `Attachment` with a monotonically increasing `versionNumber`. Replacing a
-  policy **adds** a version; the old file stays downloadable and auditable.
-  `currentVersionId` is a plain pointer — history is never overwritten.
+  `Attachment` with a monotonically increasing `versionNumber`. The current
+  file is the highest `versionNumber`; replacing a policy **adds** a version —
+  the old file stays downloadable and auditable.
 - Archiving is a status flag, not deletion: the document and all versions
   remain, it just leaves the "current" list.
 
@@ -176,9 +178,11 @@ auto-merge — two records may intentionally reference identical bytes.
 - **Unlink** removes the link row and appends `UNLINKED`; the file and its
   metadata survive.
 - **Delete** tombstones: `status=DELETED`, `deletedAt`, `deletedByAuthIdentityId`,
-  `DELETED` event, all live links removed. Physical `storage.delete` is
-  attempted and the outcome recorded in the event's `storageDeleted` flag — a
-  provider failure is reported honestly, never claimed as success.
+  `DELETED` event. Link rows are retained (record pages render them as deleted
+  with strikethrough — the historical association is itself evidence). Physical
+  `storage.delete` is attempted and the outcome recorded in the event's
+  `storageDeleted` flag — a provider failure is reported honestly, never claimed
+  as success, and a later delete retries the physical removal.
 - No hard-delete path exists. Tombstones and events persist.
 
 SARbase provides the mechanics; each organization sets its own retention

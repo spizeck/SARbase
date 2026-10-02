@@ -14,14 +14,15 @@ import { StorageConfigError, type FileStorageProvider } from "./provider";
  * - `FILE_STORAGE_PROVIDER=s3` → S3-compatible object store; requires
  *   bucket, region, and credentials — missing pieces throw
  *   StorageConfigError at resolution time, not a cryptic SDK error.
- * - `FILE_STORAGE_PROVIDER=local`, or unset → the local filesystem
- *   provider under FILE_STORAGE_LOCAL_ROOT (or an OS temp-dir default in
- *   development).
- * - In a real production deployment (VERCEL_ENV=production or
- *   NODE_ENV=production) an unset provider still resolves to `local`,
- *   but it then requires an explicit FILE_STORAGE_LOCAL_ROOT — silently
- *   writing production evidence into an ephemeral temp dir would lose
- *   files and backups. Operators choose "s3" or an explicit local root.
+ * - `FILE_STORAGE_PROVIDER=local` → the local filesystem provider under
+ *   FILE_STORAGE_LOCAL_ROOT (or an OS temp-dir default in development).
+ * - Unset → local with a temp-dir default in development/test only. In a
+ *   real production deployment (VERCEL_ENV=production or
+ *   NODE_ENV=production) an unset provider is a StorageConfigError —
+ *   silently writing production evidence into an ephemeral filesystem
+ *   would lose files and backups. Operators choose "s3" explicitly, or
+ *   "local" with an explicit root for self-hosting.
+ * - The in-memory fake is never selectable — tests inject it directly.
  *
  * Resolution is lazy — called at first use so `next build` with zero
  * env vars never touches provider config.
@@ -34,6 +35,11 @@ export function resolveFileStorageProvider(
   const isProduction =
     app.VERCEL_ENV === "production" || process.env.NODE_ENV === "production";
 
+  if (isProduction && !env.FILE_STORAGE_PROVIDER) {
+    throw new StorageConfigError(
+      "FILE_STORAGE_PROVIDER is not set. Production deployments must choose a provider explicitly ('s3', or 'local' with FILE_STORAGE_LOCAL_ROOT for self-hosting).",
+    );
+  }
   const selection = env.FILE_STORAGE_PROVIDER ?? "local";
 
   if (selection === "s3") {
