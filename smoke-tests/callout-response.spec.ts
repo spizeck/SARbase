@@ -48,7 +48,7 @@ test.describe("callout response — token flow", () => {
   // derivation, not just the stored hash. Same pepper as the smoke
   // server's webServer env (playwright.config.ts).
   const TOKEN_SECRET =
-    process.env.CALLOUT_RESPONSE_TOKEN_SECRET ??
+    process.env.CALLOUT_RESPONSE_TOKEN_SECRET ||
     "smoke-test-callout-token-secret";
 
   let rawToken = "";

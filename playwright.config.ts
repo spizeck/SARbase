@@ -43,7 +43,7 @@ export default defineConfig({
       // fails closed without a secret. Test-only value; the spec
       // derives the fixture token with the same pepper.
       CALLOUT_RESPONSE_TOKEN_SECRET:
-        process.env.CALLOUT_RESPONSE_TOKEN_SECRET ??
+        process.env.CALLOUT_RESPONSE_TOKEN_SECRET ||
         "smoke-test-callout-token-secret",
     },
   },
