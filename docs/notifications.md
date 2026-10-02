@@ -211,14 +211,25 @@ throttle; a distributed store can replace it later.
   record governed by the same access rules as any other org data. It
   exists so retries replay the exact message and history is honest; it
   must stay out of logs, telemetry, and rate-limit keys.
+- Stored `bodyText` may carry `{callout-response-url}` placeholders for
+  bearer credentials that must never sit at rest. `dispatchAttempt`
+  resolves the exact send text at provider-call time
+  (`resolveDispatchBodyText`): a callout invitation's link is a
+  deterministic HMAC derivation recomputed per send, so the durable
+  record holds no usable token while initial sends and retries alike
+  deliver the same working URL. A placeholder that cannot be resolved
+  fails loudly — no attempt is recorded and nobody is emailed a dead
+  link. See `src/lib/domain/calloutTokens.ts` and
+  [`docs/callouts.md`](callouts.md).
 
 ## Environment variables
 
-| Variable                  | Scope              | Purpose                                                            |
-| ------------------------- | ------------------ | ------------------------------------------------------------------ |
-| `NOTIFICATION_PROVIDER`   | server             | `resend` or `fake`; optional (see resolution rules)                |
-| `RESEND_API_KEY`          | server, **secret** | Resend API credential                                              |
-| `NOTIFICATION_EMAIL_FROM` | server             | Verified sender, e.g. `SARbase Notifications <notify@example.org>` |
+| Variable                        | Scope              | Purpose                                                            |
+| ------------------------------- | ------------------ | ------------------------------------------------------------------ |
+| `NOTIFICATION_PROVIDER`         | server             | `resend` or `fake`; optional (see resolution rules)                |
+| `RESEND_API_KEY`                | server, **secret** | Resend API credential                                              |
+| `NOTIFICATION_EMAIL_FROM`       | server             | Verified sender, e.g. `SARbase Notifications <notify@example.org>` |
+| `CALLOUT_RESPONSE_TOKEN_SECRET` | server, **secret** | Pepper for derived callout response links; required in production  |
 
 CI runs with none of these set — the resolver returns the fake outside
 production, so CI never sends real email and needs no credentials.

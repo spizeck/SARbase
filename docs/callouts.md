@@ -81,7 +81,7 @@ diverge.
    never invited. **Availability and qualifications are never
    consulted** — they are context, not a filter.
 3. Callout + invitation rows commit in one transaction (with one
-   minted token _hash_ per invitee).
+   derived token _hash_ per invitee — see below).
 4. After commit — never inside the transaction — one notification per
    invitation is requested through `requestNotification` (issue #13)
    with the deterministic key
@@ -93,35 +93,44 @@ diverge.
    never disappears because one send failed. Replaying the activation
    (same key) resumes invitations that have no notification row.
 
-A resumed or concurrent dispatch claims the invitation's send by
-rotating `responseTokenHash` and stamping `dispatchClaimedAt` in one
-compare-and-swap (guarded on the previously-read hash,
-`notificationId IS NULL`, and no live claim). A second dispatcher sees
-the fresh claim and stops — it cannot rotate an in-flight token; a
-claim stale beyond `DISPATCH_CLAIM_STALE_MS` (10 minutes) is
-reclaimable so a crashed dispatcher stays resumable. Whenever a
-Notification row already exists under the deterministic key, the
-invitation is linked AND its hash repaired to match the token carried
-by that row's stored email — so the stored hash always equals the
-emailed credential, under every crash/reclaim ordering. On dispatch
-failure the claim is released so a replay can retry immediately.
+Concurrent and replayed dispatch is convergent by construction — there
+is nothing to claim or rotate. Every dispatcher asks
+`requestNotification` for the SAME body under the same deterministic
+key, so the unique `(organizationId, idempotencyKey)` constraint picks
+exactly one Notification row and whichever dispatcher reaches it first
+links it. Because the response token is derived deterministically (see
+below), the emailed link always matches the stored hash no matter
+which dispatcher's send wins. A replay that finds an existing row
+links it — and if that row is still `PENDING` (created but never
+dispatched, i.e. a crash between create and send), it is resumed
+through the same `retryNotification` path the admin surface uses, so
+the send genuinely completes.
 
 ## The response token
 
-- `mintInvitationToken()` draws 32 bytes from `crypto.randomBytes`
-  (256-bit, base64url — 43 characters).
-- The raw token appears in the emailed link `GET /respond?t=<token>`.
-  The invitation row stores `responseTokenHash = SHA-256(token)` with a
+- The token is **derived, never stored**:
+  `base64url(HMAC-SHA256(CALLOUT_RESPONSE_TOKEN_SECRET,
+"callout-response:<calloutId>:<memberId>"))`. The derivation is
+  deterministic, so the same token is recomputed identically at every
+  send — initial dispatch and `retryNotification` alike — and the raw
+  value never needs to exist at rest.
+- The invitation row stores `responseTokenHash = SHA-256(token)` with a
   unique index; `GET /respond` resolves the hash. The value is invalid
   for any other invitation, contains no member or organization data,
   and is never logged.
-- The delivered email body — including the link — is also persisted on
-  the `Notification` row (`bodyText`), per the notification
-  foundation's honest send-record design: retries replay the exact
-  stored body. The token therefore also lives inside that org-scoped
-  record, the member's mailbox, and the provider copy — the same
-  exposure any emailed credential carries. Closing the callout revokes
-  every link, bounding that exposure to the callout's active window.
+- The stored `Notification.bodyText` carries a literal
+  `{callout-response-url}` placeholder where the link belongs. At
+  provider-send time, `resolveDispatchBodyText` (notifications.ts)
+  substitutes the recomputed URL — so the durable notification record
+  holds no usable credential while every send delivers the same working
+  link. The token exists only in the outbound email, the member's
+  mailbox, and the provider copy — the exposure any emailed link
+  inherently carries. Closing the callout revokes every link, bounding
+  that exposure to the callout's active window.
+- `CALLOUT_RESPONSE_TOKEN_SECRET` is required in production (activation
+  fails closed without it); non-production uses a fixed dev value.
+  Rotating the secret changes every derivation, which revokes all
+  outstanding response links.
 - The page is `noindex`, and Sentry/privacy scrubbing drops query
   strings — the token never reaches telemetry.
 - Lifetime is tied to the callout: a token responds while the callout is

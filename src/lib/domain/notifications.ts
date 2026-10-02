@@ -10,6 +10,11 @@ import {
   logOperational,
   summarizeError,
 } from "@/lib/logging";
+import {
+  CALLOUT_INVITATION_TEMPLATE,
+  CALLOUT_RESPONSE_URL_PLACEHOLDER,
+  invitationResponseUrl,
+} from "@/lib/domain/calloutTokens";
 import type {
   NotificationChannelName,
   NotificationProvider,
@@ -297,6 +302,47 @@ function dispatchEligibilityError(
 }
 
 /**
+ * The exact text this attempt sends to the provider.
+ *
+ * `bodyText` is the durable send-record — what was requested, verbatim —
+ * and it must never persist a live credential. A callout invitation's
+ * body therefore carries `{callout-response-url}` where the member's
+ * link belongs; the link is a deterministic HMAC derivation
+ * (calloutTokens.ts) recomputed identically on every send, so honest
+ * retries deliver the same working URL without the raw token ever
+ * reaching the database. Substitution needs only fields already on the
+ * row: `metadata.calloutId` plus the `memberId` column.
+ *
+ * A body whose placeholder cannot be resolved (wrong template, missing
+ * callout/member context) is a programming or data bug — throwing here
+ * records no attempt and emails nobody a dead link.
+ */
+async function resolveDispatchBodyText(
+  notification: Notification,
+): Promise<string | null> {
+  const text = notification.bodyText;
+  if (text == null || !text.includes(CALLOUT_RESPONSE_URL_PLACEHOLDER)) {
+    return text;
+  }
+  const metadata = (notification.metadata ?? null) as {
+    calloutId?: string;
+  } | null;
+  if (
+    notification.template === CALLOUT_INVITATION_TEMPLATE &&
+    metadata?.calloutId &&
+    notification.memberId
+  ) {
+    return text.replaceAll(
+      CALLOUT_RESPONSE_URL_PLACEHOLDER,
+      invitationResponseUrl(metadata.calloutId, notification.memberId),
+    );
+  }
+  throw new Error(
+    `Notification ${notification.id} carries an unresolvable response-link placeholder.`,
+  );
+}
+
+/**
  * Record one provider invocation attempt for an existing notification.
  *
  * Serialization: the notification row is locked FOR UPDATE inside the
@@ -317,6 +363,14 @@ async function dispatchAttempt(
   provider: NotificationProvider,
   mode: "initial" | "retry",
 ): Promise<Notification> {
+  // Resolve the text this attempt sends BEFORE any attempt row exists:
+  // the stored body is the durable request record and must never hold a
+  // live credential, so a callout invitation's response link is carried
+  // as a placeholder and recomputed here for each send — initial and
+  // retry alike. A placeholder that cannot be resolved fails loudly
+  // rather than emailing a member a dead link.
+  const dispatchText = await resolveDispatchBodyText(notification);
+
   let attempt;
   try {
     attempt = await prisma.$transaction(async (tx) => {
@@ -374,7 +428,7 @@ async function dispatchAttempt(
       channel: notification.channel as NotificationChannelName,
       to: notification.destination ?? "",
       subject: notification.subject,
-      text: notification.bodyText,
+      text: dispatchText,
       // Provider-level idempotency (Resend Idempotency-Key header): a
       // re-invoked SAME attempt dedupes at the provider; a deliberate
       // retry is a new attempt number and a new provider operation.

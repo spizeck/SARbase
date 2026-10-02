@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 
 import { Prisma } from "@prisma/client";
 import type {
@@ -11,10 +11,16 @@ import type {
 
 import { prisma } from "@/lib/prisma";
 import { log, logExpected, summarizeError } from "@/lib/logging";
-import { resolveSiteUrl } from "@/lib/site";
+import {
+  assertCalloutResponseTokenConfigured,
+  CALLOUT_INVITATION_TEMPLATE,
+  CALLOUT_RESPONSE_URL_PLACEHOLDER,
+  deriveInvitationResponseToken,
+} from "@/lib/domain/calloutTokens";
 
 import {
   requestNotification,
+  retryNotification,
   type NotificationDispatchDeps,
 } from "./notifications";
 import type { CalloutActivationInput } from "./schemas";
@@ -50,15 +56,16 @@ import type { CalloutActivationInput } from "./schemas";
  * (`callout:{id}:invitation:{id}:email`) so a retry/replay never
  * double-sends.
  *
- * Response tokens: the emailed link carries a 256-bit random token;
- * the invitation row stores only its SHA-256 hash, which is what the
- * response route verifies against. The delivered email content —
- * including the link — is also persisted on the Notification row as
- * the foundation's honest send-record (retries replay the exact
- * stored body), so a raw token additionally lives inside that
- * org-scoped notification record, exactly like any emailed link. It
- * is never stored on the invitation itself and never logged; closing
- * the callout revokes every link it appears in.
+ * Response tokens: the emailed link carries a bearer token DERIVED
+ * per invitation — HMAC-SHA256 of `callout-response:<calloutId>:
+ * <memberId>` under a server-held secret (calloutTokens.ts). It is
+ * recomputed identically at every send and NEVER persisted anywhere:
+ * the invitation stores only its SHA-256 hash for lookup, and the
+ * Notification row's stored body carries a `{callout-response-url}`
+ * placeholder that dispatch substitutes at provider-send time —
+ * covering retries too. No database row, log, or telemetry payload
+ * holds the raw token; closing the callout revokes every link it
+ * appears in.
  */
 
 /** A selector named a record outside this callout's organization. */
@@ -120,40 +127,15 @@ export const CALLOUT_RESPONSE_SOURCE_LABELS: Record<
   ADMIN: "Recorded by an administrator",
 };
 
-const CALLOUT_NOTIFICATION_TEMPLATE = "callout_invitation";
-
-/**
- * How long an invitation dispatch claim stays authoritative before a
- * replay may reclaim it. Mirrors DISPATCHING_STALE_MS in
- * notifications.ts: a crashed claim expires, a live one is respected.
- * Provider sends are bounded by HTTP timeouts far below this.
- */
-const DISPATCH_CLAIM_STALE_MS = 10 * 60 * 1000;
-
-/**
- * The emailed response link embeds the raw token — used to recover it
- * from a stored notification body. Global so recovery can take the
- * LAST match: the template writes the real link after the optional
- * admin message, which could itself contain a pasted respond URL —
- * the genuine link is always the final one in the body.
- */
-const RESPONSE_URL_TOKEN_PATTERN = /\/respond\?t=([A-Za-z0-9_-]+)/g;
-
 /* ------------------------------------------------------------------ */
 /* Response tokens                                                     */
 /* ------------------------------------------------------------------ */
 
 /**
- * Mint a high-entropy opaque response token. The raw token is returned
- * to the caller for the emailed link; the invitation row persists only
- * its hash. (The delivered email body — link included — persists on
- * the Notification row as the honest send-record; see module header.)
+ * SHA-256 of the raw bearer token — the only token material ever
+ * persisted. The token itself is derived, not stored; see
+ * calloutTokens.ts.
  */
-export function mintInvitationToken(): { rawToken: string; hash: string } {
-  const rawToken = randomBytes(32).toString("base64url");
-  return { rawToken, hash: hashResponseToken(rawToken) };
-}
-
 export function hashResponseToken(rawToken: string): string {
   return createHash("sha256").update(rawToken).digest("hex");
 }
@@ -270,11 +252,18 @@ function calloutNotificationKey(calloutId: string, invitationId: string) {
   return `callout:${calloutId}:invitation:${invitationId}:email`;
 }
 
+/**
+ * The stored email body. The response link is written as
+ * `{callout-response-url}` — a placeholder, never the credential —
+ * and substituted with the recomputed derived link at provider-send
+ * time (see resolveDispatchBodyText in notifications.ts). The durable
+ * record therefore holds no usable token while every send — initial
+ * or retry — delivers the same working link.
+ */
 function buildCalloutEmail(input: {
   organizationName: string;
   title: string;
   message: string | null;
-  responseUrl: string;
 }): { subject: string; bodyText: string } {
   return {
     subject: `${input.organizationName} — Callout: ${input.title}`,
@@ -285,7 +274,7 @@ function buildCalloutEmail(input: {
       ...(input.message ? ["", input.message] : []),
       "",
       "Please respond using this link:",
-      input.responseUrl,
+      CALLOUT_RESPONSE_URL_PLACEHOLDER,
       "",
       'You can answer "I\'m coming" or "Unavailable" — and you can change your response while the callout is active.',
       "",
@@ -295,58 +284,56 @@ function buildCalloutEmail(input: {
 }
 
 /**
- * Link an invitation to the Notification row already recorded under
- * its deterministic key — and, crucially, repair `responseTokenHash`
- * to match the token that row's stored email actually carries. The
- * hash on the invitation must always equal the emailed credential or
- * the member's link stops resolving; reconstructing it from the
- * recorded body keeps that invariant true under every crash/reclaim
- * ordering. A notification that never sent a link (e.g. SUPPRESSED)
- * has no token to recover — the hash is left as-is.
+ * Link an invitation to the Notification row recorded under its
+ * deterministic key, and refresh `responseTokenHash` to the hash of
+ * the token a send would carry today. The token is a pure derivation
+ * (calloutTokens.ts), so the stored hash always equals the emailed
+ * credential by construction — under every interleaving, and even
+ * after a token-secret rotation (the new link becomes authoritative;
+ * old links stop resolving, which is what rotation means).
  */
-async function linkRecordedNotification(
+async function linkNotification(
   invitation: CalloutInvitation,
-  notification: { id: string; bodyText: string | null },
+  notificationId: string,
 ): Promise<void> {
-  const emailedToken = [
-    ...(notification.bodyText ?? "").matchAll(RESPONSE_URL_TOKEN_PATTERN),
-  ].at(-1)?.[1];
   await prisma.calloutInvitation.updateMany({
     where: {
       id: invitation.id,
-      OR: [{ notificationId: null }, { notificationId: notification.id }],
+      OR: [{ notificationId: null }, { notificationId }],
     },
     data: {
-      notificationId: notification.id,
-      dispatchClaimedAt: null,
-      ...(emailedToken
-        ? { responseTokenHash: hashResponseToken(emailedToken) }
-        : {}),
+      notificationId,
+      responseTokenHash: hashResponseToken(
+        deriveInvitationResponseToken(
+          invitation.calloutId,
+          invitation.memberId,
+        ),
+      ),
     },
   });
 }
 
 /**
  * Dispatch the notification for one invitation that has no recorded
- * notification yet. Safe under every interleaving:
+ * notification yet. The invitation's token never changes — it is
+ * derived — so concurrent dispatchers are convergent by construction:
+ * every dispatcher requests an identical body under the same
+ * idempotency key, the unique constraint picks one Notification row,
+ * and whichever dispatcher reaches it first links it. There is no
+ * rotation and nothing to claim.
  *
  * 1. If a Notification row already exists under this invitation's
- *    deterministic key, link it and repair the stored token hash to
- *    match the emailed credential (linkRecordedNotification) — no
- *    re-send, no rotation.
- * 2. Otherwise the dispatcher CLAIMS the send by atomically rotating
- *    `responseTokenHash` and stamping `dispatchClaimedAt` — a
- *    compare-and-swap guarded on the hash the caller read,
- *    `notificationId IS NULL`, and no live claim. A second dispatcher
- *    sees the fresh claim and stops; it cannot rotate an in-flight
- *    token. A stale claim (older than DISPATCH_CLAIM_STALE_MS) is
- *    reclaimable so a crashed winner stays resumable.
- * 3. The claim holder re-checks for a raced notification row, then
- *    sends the email carrying ITS minted token. On success the link
- *    update is guarded on that claim still standing. On failure, a
- *    notification row that appeared meanwhile is linked (+repaired)
- *    instead; otherwise our own claim is released so the next replay
- *    retries immediately.
+ *    deterministic key, link it. A row still PENDING was created but
+ *    never dispatched (a crash between create and send) — resume it
+ *    through retryNotification so a replay genuinely completes the
+ *    send rather than only repairing the link.
+ * 2. Otherwise requestNotification creates + dispatches the row; its
+ *    own replay semantics settle a create-race, so whichever row comes
+ *    back is the one linked.
+ * 3. requestNotification throwing means nothing was persisted — a row
+ *    that appeared meanwhile is linked instead; otherwise the failure
+ *    is logged and the invitation stays unlinked, visible on the
+ *    admin surface, resumable by a replay.
  */
 async function dispatchInvitation(
   invitation: CalloutInvitation,
@@ -362,60 +349,37 @@ async function dispatchInvitation(
       idempotencyKey: key,
     },
   };
-  const keySelect = { id: true, bodyText: true };
 
   const existing = await prisma.notification.findUnique({
     where: keyWhere,
-    select: keySelect,
+    select: { id: true, status: true },
   });
   if (existing) {
-    await linkRecordedNotification(invitation, existing);
+    await linkNotification(invitation, existing.id);
+    if (existing.status === "PENDING") {
+      // Created but never dispatched — a crashed send. retryNotification
+      // re-checks eligibility authoritatively; a live in-flight attempt
+      // makes it decline, which is fine — that send is proceeding.
+      try {
+        await retryNotification(existing.id, deps);
+      } catch (error) {
+        logExpected({
+          event: "callout.invitation_resume_skipped",
+          subsystem: "callouts",
+          entityType: "Notification",
+          entityId: existing.id,
+          organizationId: callout.organizationId,
+          ...summarizeError(error),
+        });
+      }
+    }
     return;
   }
 
-  const minted = mintInvitationToken();
-  const claimed = await prisma.calloutInvitation.updateMany({
-    where: {
-      id: invitation.id,
-      notificationId: null,
-      responseTokenHash: invitation.responseTokenHash,
-      OR: [
-        { dispatchClaimedAt: null },
-        {
-          dispatchClaimedAt: {
-            lt: new Date(Date.now() - DISPATCH_CLAIM_STALE_MS),
-          },
-        },
-      ],
-    },
-    data: { responseTokenHash: minted.hash, dispatchClaimedAt: new Date() },
-  });
-  if (claimed.count === 0) {
-    // Another dispatcher claimed, rotated, or linked concurrently —
-    // its send owns the emailed token.
-    return;
-  }
-
-  // A crashed dispatcher may have created the notification row between
-  // our early check and the claim — link+repair instead of sending a
-  // competing token under the same key.
-  const raced = await prisma.notification.findUnique({
-    where: keyWhere,
-    select: keySelect,
-  });
-  if (raced) {
-    await linkRecordedNotification(invitation, raced);
-    return;
-  }
-
-  const responseUrl = `${resolveSiteUrl()}/respond?t=${encodeURIComponent(
-    minted.rawToken,
-  )}`;
   const { subject, bodyText } = buildCalloutEmail({
     organizationName,
     title: callout.title,
     message: callout.message,
-    responseUrl,
   });
 
   let notification: Notification;
@@ -425,7 +389,7 @@ async function dispatchInvitation(
         organizationId: callout.organizationId,
         channel: "EMAIL",
         memberId: invitation.memberId,
-        template: CALLOUT_NOTIFICATION_TEMPLATE,
+        template: CALLOUT_INVITATION_TEMPLATE,
         subject,
         bodyText,
         metadata: { calloutId: callout.id, invitationId: invitation.id },
@@ -435,26 +399,18 @@ async function dispatchInvitation(
       deps,
     ));
   } catch (error) {
-    // A notification row may have appeared under our key (a dispatcher
-    // whose claim we found stale finished its send): link+repair it.
+    // A notification row may have appeared under our key — link it.
     const created = await prisma.notification.findUnique({
       where: keyWhere,
-      select: keySelect,
+      select: { id: true, status: true },
     });
     if (created) {
-      await linkRecordedNotification(invitation, created);
+      await linkNotification(invitation, created.id);
       return;
     }
-    // Genuine failure — release OUR claim (guarded on the hash we set,
-    // so a stale-reclaimer's newer claim is never cleared) so a replay
-    // can retry immediately, and record the fact. One recipient's
-    // failure must not take the callout down: the invitation stays
+    // Genuine failure — nothing was persisted. The invitation stays
     // recorded without a linked notification, visible on the admin
     // surface; a replay (same activation key) resumes the gap.
-    await prisma.calloutInvitation.updateMany({
-      where: { id: invitation.id, responseTokenHash: minted.hash },
-      data: { dispatchClaimedAt: null },
-    });
     logExpected({
       event: "callout.invitation_dispatch_failed",
       subsystem: "callouts",
@@ -466,13 +422,7 @@ async function dispatchInvitation(
     return;
   }
 
-  // Link — guarded on our claim still standing (the hash we wrote). If
-  // a stale-reclaimer rotated meanwhile, its send owns the emailed
-  // token and performs the link itself.
-  await prisma.calloutInvitation.updateMany({
-    where: { id: invitation.id, responseTokenHash: minted.hash },
-    data: { notificationId: notification.id, dispatchClaimedAt: null },
-  });
+  await linkNotification(invitation, notification.id);
 }
 
 /**
@@ -521,6 +471,10 @@ export async function activateCallout(
   createdByAuthIdentityId: string,
   deps: NotificationDispatchDeps = {},
 ): Promise<CalloutActivationResult> {
+  // Fail fast if the deployment cannot mint response links — before
+  // any row is written.
+  assertCalloutResponseTokenConfigured();
+
   const members = await resolveAudienceMembers(organizationId, input);
   const intentHash = computeCalloutIntentHash(
     input,
@@ -546,15 +500,6 @@ export async function activateCallout(
     });
   }
 
-  // Mint one token hash per invitee up front — the raw tokens are
-  // discarded; dispatchInvitation mints the token that actually gets
-  // emailed under its dispatch claim, so no raw token is ever stored
-  // on the invitation.
-  const mintedByMember = members.map((member) => ({
-    member,
-    hash: mintInvitationToken().hash,
-  }));
-
   let callout: Callout;
   try {
     callout = await prisma.$transaction(async (tx) => {
@@ -572,13 +517,17 @@ export async function activateCallout(
         },
       });
       // One INSERT, not a loop of round trips — a large org roster
-      // must not blow the interactive transaction timeout.
+      // must not blow the interactive transaction timeout. Each row's
+      // responseTokenHash is the SHA-256 of the token derived for
+      // (calloutId, memberId) — the raw token itself is never stored.
       await tx.calloutInvitation.createMany({
-        data: mintedByMember.map(({ member, hash }) => ({
+        data: members.map((member) => ({
           organizationId,
           calloutId: created.id,
           memberId: member.id,
-          responseTokenHash: hash,
+          responseTokenHash: hashResponseToken(
+            deriveInvitationResponseToken(created.id, member.id),
+          ),
         })),
       });
       return created;
@@ -611,7 +560,7 @@ export async function activateCallout(
     organizationId,
     actorId: createdByAuthIdentityId,
     audience: input.audience,
-    invitationCount: mintedByMember.length,
+    invitationCount: members.length,
   });
 
   const org = await prisma.organization.findUniqueOrThrow({
