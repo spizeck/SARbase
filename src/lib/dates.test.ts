@@ -4,7 +4,10 @@ import {
   calendarDateInZone,
   daysBetween,
   formatDateOnly,
+  formatInstantInZone,
+  instantInZone,
   isValidTimeZone,
+  localDateTimeString,
   relativeTimeLabel,
   todayUtc,
 } from "./dates";
@@ -156,5 +159,58 @@ describe("relativeTimeLabel", () => {
     expect(relativeTimeLabel(INSTANT("2027-09-01T12:00:00.000Z"), now)).toBe(
       "2027-09-01",
     );
+  });
+});
+
+describe("instantInZone / localDateTimeString (incident wall times)", () => {
+  it("interprets the input as wall time in the named zone", () => {
+    // September is NZST (UTC+12) in Auckland — 14:00 local is 02:00Z.
+    expect(
+      instantInZone("Pacific/Auckland", "2026-09-15T14:00")?.toISOString(),
+    ).toBe("2026-09-15T02:00:00.000Z");
+    // November is NZDT (UTC+13) — the same wall time maps to 01:00Z.
+    expect(
+      instantInZone("Pacific/Auckland", "2026-11-15T14:00")?.toISOString(),
+    ).toBe("2026-11-15T01:00:00.000Z");
+    // Puerto Rico is UTC-4 year-round.
+    expect(
+      instantInZone("America/Puerto_Rico", "2026-11-15T14:00")?.toISOString(),
+    ).toBe("2026-11-15T18:00:00.000Z");
+    expect(instantInZone("UTC", "2026-11-15T14:00")?.toISOString()).toBe(
+      "2026-11-15T14:00:00.000Z",
+    );
+  });
+
+  it("rejects impossible dates, malformed input, and unknown zones", () => {
+    expect(instantInZone("UTC", "2027-02-30T12:00")).toBeNull();
+    expect(instantInZone("UTC", "2027-11-15T25:00")).toBeNull();
+    expect(instantInZone("UTC", "2027-13-01T12:00")).toBeNull();
+    expect(instantInZone("UTC", "not a date")).toBeNull();
+    expect(instantInZone("UTC", "2027-11-15")).toBeNull();
+    expect(instantInZone("Not/AZone", "2027-11-15T12:00")).toBeNull();
+  });
+
+  it("resolves a spring-forward gap to the nearest real instant", () => {
+    // America/New_York springs forward 2027-03-14 at 02:00 — 02:30 never
+    // exists locally. The result must still be a real instant displaying
+    // within one DST step of the typed wall time.
+    const instant = instantInZone("America/New_York", "2027-03-14T02:30");
+    expect(instant).not.toBeNull();
+    const shown = localDateTimeString(instant, "America/New_York");
+    expect(["2027-03-14T01:30", "2027-03-14T03:30"]).toContain(shown);
+  });
+
+  it("round-trips instant ↔ datetime-local in the same zone", () => {
+    const instant = instantInZone("Pacific/Auckland", "2026-09-15T14:00")!;
+    expect(localDateTimeString(instant, "Pacific/Auckland")).toBe(
+      "2026-09-15T14:00",
+    );
+    // Displayed in a different zone the wall time shifts honestly.
+    expect(localDateTimeString(instant, "UTC")).toBe("2026-09-15T02:00");
+    expect(localDateTimeString(null, "UTC")).toBeNull();
+    expect(
+      formatInstantInZone(INSTANT("2026-09-15T02:00:00.000Z"), "UTC"),
+    ).toBe("Sep 15, 2026, 2:00 AM");
+    expect(formatInstantInZone(null, "UTC")).toBeNull();
   });
 });

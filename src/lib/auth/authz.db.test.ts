@@ -95,7 +95,15 @@ import {
   updateMemberContactPreferenceAction,
   sendAdminNotificationAction,
   retryNotificationAction,
+  createIncidentAction,
+  transitionIncidentStatusAction,
+  updateIncidentAction,
+  addIncidentMemberAction,
+  removeIncidentMemberAction,
+  addIncidentNoteAction,
+  correctIncidentNoteAction,
 } from "@/app/admin/actions";
+import { createIncident } from "@/lib/domain/incidents";
 import {
   updateMyAvailabilityAction,
   updateMyContactPreferencesAction,
@@ -154,6 +162,11 @@ let maintenancePlanB: { id: string };
 let maintenanceRecordB: { id: string };
 let defectB: { id: string };
 let meterB: { id: string };
+// Issue #15 fixtures — incident records must be opaque across orgs.
+let incidentA: { id: string };
+let incidentB: { id: string };
+let incidentMemberB: { id: string };
+let incidentNoteB: { id: string };
 
 describe.skipIf(!hasDb)("organization-scoped authorization", () => {
   beforeAll(async () => {
@@ -273,6 +286,38 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
         unit: "hours",
       },
     });
+    // Issue #15 fixtures — one incident per org, plus org-B children that
+    // an org-A admin must never reach through the id selectors.
+    const incA = await createIncident(
+      orgA.id,
+      { title: uniq("incident-a") },
+      adminAIdentityId,
+    );
+    incidentA = { id: incA.id };
+    const incB = await createIncident(
+      orgB.id,
+      { title: uniq("incident-b") },
+      adminB!.id,
+    );
+    incidentB = { id: incB.id };
+    const pmB = await prisma.incidentMember.create({
+      data: {
+        organizationId: orgB.id,
+        incidentId: incB.id,
+        memberId: memberB.id,
+        recordedByAuthIdentityId: adminB!.id,
+      },
+    });
+    incidentMemberB = { id: pmB.id };
+    const noteB = await prisma.incidentNote.create({
+      data: {
+        organizationId: orgB.id,
+        incidentId: incB.id,
+        authorAuthIdentityId: adminB!.id,
+        body: uniq("note-b"),
+      },
+    });
+    incidentNoteB = { id: noteB.id };
   });
 
   afterAll(async () => {
@@ -354,6 +399,32 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       where: { member: { organization: { name: { startsWith: PREFIX } } } },
     });
     await prisma.qualificationDefinition.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    // Issue #15 fixtures — append-only children before incidents, and
+    // all of it before members (IncidentMember carries a member FK).
+    await prisma.incidentNoteCorrection.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.incidentNote.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.incidentTimelineEvent.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.incidentChange.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.incidentMember.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.incidentAsset.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.incidentSequence.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.incident.deleteMany({
       where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.memberUnit.deleteMany({
@@ -2459,6 +2530,115 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
         message:
           "Too many notification requests. Please wait a moment and try again.",
       });
+    });
+  });
+
+  describe("incident records (issue #15 — sensitive data, ADMIN-only)", () => {
+    it("denies unauthenticated callers before any lookup", async () => {
+      signInAs(null);
+      await expect(
+        createIncidentAction(orgA.id, {}, form({ title: "x" })),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
+      await expect(
+        transitionIncidentStatusAction(incidentA.id, "OPEN"),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
+    });
+
+    it("denies an ordinary MEMBER of the same organization", async () => {
+      signInAs(memberRoleUid);
+      expect(
+        await createIncidentAction(orgA.id, {}, form({ title: "x" })),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await transitionIncidentStatusAction(incidentA.id, "OPEN"),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await addIncidentNoteAction(
+          incidentA.id,
+          {},
+          form({ kind: "GENERAL", body: "snoop" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      // Nothing was written.
+      expect(
+        await prisma.incidentTimelineEvent.count({
+          where: { incidentId: incidentA.id },
+        }),
+      ).toBe(1); // only INCIDENT_CREATED
+    });
+
+    it("denies an org-A admin against every org-B incident surface", async () => {
+      signInAs(adminAUid);
+      expect(
+        await transitionIncidentStatusAction(incidentB.id, "OPEN"),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateIncidentAction(
+          incidentB.id,
+          {},
+          form({ title: uniq("hijack") }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await addIncidentMemberAction(
+          incidentB.id,
+          {},
+          form({ memberId: memberA.id }),
+        ),
+      ).toEqual({ message: "Not found." });
+      // Child-row selectors resolve to their own org — removing org-B
+      // participation or correcting org-B notes is equally opaque.
+      expect(await removeIncidentMemberAction(incidentMemberB.id)).toEqual({
+        message: "Not found.",
+      });
+      expect(
+        await correctIncidentNoteAction(
+          incidentNoteB.id,
+          {},
+          form({ body: "tampered" }),
+        ),
+      ).toEqual({ message: "Not found." });
+
+      const unchanged = await prisma.incident.findUnique({
+        where: { id: incidentB.id },
+      });
+      expect(unchanged?.status).toBe("DRAFT");
+      const noteB = await prisma.incidentNote.findUniqueOrThrow({
+        where: { id: incidentNoteB.id },
+      });
+      expect(noteB.body).toContain("note-b");
+    });
+
+    it("treats a foreign incident id identically to a nonexistent one", async () => {
+      signInAs(adminAUid);
+      const missing = await transitionIncidentStatusAction(
+        "nonexistent-id",
+        "OPEN",
+      );
+      const foreign = await transitionIncidentStatusAction(
+        incidentB.id,
+        "OPEN",
+      );
+      expect(missing).toEqual({ message: "Not found." });
+      expect(missing).toEqual(foreign);
+    });
+
+    it("ignores a forged actor id — attribution is the signed-in identity", async () => {
+      signInAs(adminAUid);
+      const fd = form({
+        kind: "GENERAL",
+        body: uniq("forged"),
+        occurredAt: "",
+      });
+      // A form-supplied author id must never reach the record.
+      fd.append("authorAuthIdentityId", "someone-else");
+      fd.append("organizationId", orgB.id);
+      expect(await addIncidentNoteAction(incidentA.id, {}, fd)).toEqual({});
+      const note = await prisma.incidentNote.findFirstOrThrow({
+        where: { incidentId: incidentA.id },
+      });
+      expect(note.authorAuthIdentityId).toBe(adminAIdentityId);
+      expect(note.organizationId).toBe(orgA.id);
     });
   });
 });

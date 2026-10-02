@@ -305,6 +305,73 @@ outcome, response history, admin-recorded response, close). Members
 respond via the emailed token link or `/account`. There is no readiness
 or sufficiency display — response counts are descriptive facts only.
 
+## Incident records
+
+Issue #15 adds the durable incident record — the administrative history
+of what an organization recorded about an event. Full architecture —
+correction semantics, timeline model, sensitive-data authorization —
+lives in [`docs/incidents.md`](incidents.md).
+
+> SARbase records incident facts and human-authored notes. It does not
+> provide search planning, navigation, tactics, readiness judgments, or
+> operational recommendations.
+
+An **Incident** is the record; a **Callout** is the notification event.
+`Incident.calloutId` is a unique optional link (at most one incident per
+callout, set once, never moved); incidents also create manually with no
+callout, and callouts never require one.
+
+### `Incident` — the record
+
+`reference` ("INC-<n>" from a per-organization `IncidentSequence`
+counter, unique per org), `title`, `summary` (the initial report),
+`status` (`DRAFT`/`OPEN`/`CLOSED`), manual factual instants
+(`reportedAt`, `departedAt`, `onSceneAt`, `returnedAt` — entered as org
+wall time, stored as instants, never fabricated), lifecycle instants
+(`openedAt`, `closedAt`, `closedByAuthIdentityId`), and scalar
+`createdByAuthIdentityId`. Transitions are validated and row-locked;
+same-status is a no-op; `CLOSED → OPEN` is an explicit human reopen.
+
+### `IncidentMember` / `IncidentAsset` — explicit participation
+
+Participation is a recorded fact, never inferred from callout RSVP.
+Each row carries `organizationId` (composite same-org FK), a free-text
+`roleNote`/`note`, `recordedAt`, and `recordedByAuthIdentityId`;
+`@@unique([incidentId, memberId])`/`[incidentId, assetId]` prevents
+duplicates. Removal deletes the row and appends a `*_REMOVED` timeline
+event so the history survives.
+
+### `IncidentTimelineEvent` — system facts
+
+Typed system events (`INCIDENT_CREATED`, `STATUS_CHANGED`,
+`CALLOUT_LINKED`, `MEMBER_/ASSET_ ADDED/REMOVED`,
+`CORRECTION_RECORDED`) with `occurredAt` (when it happened) distinct
+from `createdAt` (when recorded), scalar actor, and a narrow JSON
+metadata payload. Deterministic ordering.
+
+### `IncidentNote` + `IncidentNoteCorrection` — human-authored text
+
+Notes (`GENERAL`/`AFTER_ACTION`/`CLOSING`) carry scalar
+`authorAuthIdentityId`, `body`, and an optional manual `occurredAt`
+observation time. Corrections update `body` and append a correction row
+(before/after/reason/actor) — the original wording is always
+recoverable.
+
+### `IncidentChange` — material audit
+
+Editing material fields writes a typed before/after change row plus the
+update in one transaction — an auditable correction can never commit
+without its snapshot. `reason` is required once the incident is CLOSED;
+a correction never reopens it. All history rows use the scalar
+actor-ID policy — no `AuthIdentity` FK, best-effort display, raw-id
+fallback (issue #32 tracks the older FK-pinned tables).
+
+The entire incident surface is ADMIN-only — incident data may be
+sensitive, member roles get no incident access, and the public
+`/respond` route never touches these tables. Attachments (#16), search
+(#18), and reporting (#19) have documented relationship seams but are
+not implemented here.
+
 ## Qualifications and certifications
 
 Issue #8 adds the first member-record domain: administrative

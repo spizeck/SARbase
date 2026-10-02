@@ -88,6 +88,15 @@ model Organization {
   callouts               Callout[]
   calloutInvitations     CalloutInvitation[]
   calloutResponseChanges CalloutResponseChange[]
+
+  incidents               Incident[]
+  incidentSequences       IncidentSequence[]
+  incidentMembers         IncidentMember[]
+  incidentAssets          IncidentAsset[]
+  incidentTimelineEvents  IncidentTimelineEvent[]
+  incidentNotes           IncidentNote[]
+  incidentNoteCorrections IncidentNoteCorrection[]
+  incidentChanges         IncidentChange[]
 }
 
 // An internal operational/administrative grouping within an organization
@@ -168,6 +177,10 @@ model Member {
   // Issue #14 — callout invitations materialized for this member.
   // Restrict: invited history outlives membership changes.
   calloutInvitations CalloutInvitation[]
+
+  // Issue #15 — explicit incident participation records. Restrict:
+  // a member row can't be hard-deleted out from under incident history.
+  incidentParticipations IncidentMember[]
 
   // Optional link to a login identity. Nullable — most members never sign
   // in. SetNull on identity deletion: removing a login must never destroy
@@ -950,6 +963,10 @@ model Asset {
   defects            Defect[]
   meters             AssetMeter[]
 
+  // Issue #15 — explicit incident participation records. Restrict:
+  // asset rows can't be hard-deleted out from under incident history.
+  incidentParticipations IncidentAsset[]
+
   // Composite-FK targets so locations/children/units enforce
   // same-organization rows at the database level.
   @@unique([id, organizationId])
@@ -1318,6 +1335,11 @@ model Callout {
   organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   unit         Unit?               @relation(fields: [unitId, organizationId], references: [id, organizationId], onDelete: Restrict)
   invitations  CalloutInvitation[]
+  // Issue #15 — at most one incident record may link to this callout
+  // (unique calloutId on Incident). The callout itself never changes
+  // when an incident is created: its invitations and responses remain
+  // the standalone notification/response history.
+  incident     Incident?
 
   @@unique([organizationId, activationKey])
   // Composite-FK target so CalloutInvitation enforces same-org rows.
@@ -1392,4 +1414,303 @@ model CalloutResponseChange {
 
   @@index([organizationId, createdAt])
   @@index([invitationId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Issue #15 — incident records, timeline, notes, and audit history.
+//
+// An Incident is the durable ADMINISTRATIVE record: what was reported,
+// factual timestamps an operator entered, who participated, which assets
+// were recorded as used, human-authored notes, and what was later
+// corrected. It is deliberately NOT the callout: a callout is the
+// notification/response event; at most one incident may link to a callout
+// (unique calloutId), and an incident may exist with no callout at all.
+//
+// SARbase records incident facts and human-authored notes. It does not
+// provide search planning, navigation, tactics, readiness judgments, or
+// operational recommendations — there is no severity, priority, verdict,
+// or command state anywhere in these models.
+// ---------------------------------------------------------------------------
+
+// Minimal administrative lifecycle. OPEN means "the record is in
+// progress" — it carries NO operational command-state meaning. CLOSED is
+// a human administrative act; corrections remain possible afterwards
+// only through the audited correction path (reason required).
+enum IncidentStatus {
+  DRAFT
+  OPEN
+  CLOSED
+}
+
+// System-generated timeline event kinds. Facts only — each row records
+// that a state-changing action happened, not an interpretation of it.
+enum IncidentTimelineEventType {
+  INCIDENT_CREATED
+  STATUS_CHANGED
+  CALLOUT_LINKED
+  MEMBER_ADDED
+  MEMBER_REMOVED
+  ASSET_ADDED
+  ASSET_REMOVED
+  CORRECTION_RECORDED
+}
+
+// Human-authored note categories. A note is always a person's recorded
+// statement — never a system fact.
+enum IncidentNoteKind {
+  GENERAL
+  AFTER_ACTION
+  CLOSING
+}
+
+// A durable, organization-scoped incident record.
+//
+// `reference` is the human-facing identifier ("INC-7") drawn from the
+// per-organization IncidentSequence counter inside the create
+// transaction — operator references are never raw cuids.
+//
+// `reportedAt`/`departedAt`/`onSceneAt`/`returnedAt` are optional
+// MANUAL factual instants entered by an operator (wall time in the
+// organization's timezone). Unknown stays NULL — nothing is fabricated
+// from surrounding events, and none of them implies an operational
+// judgment.
+//
+// `summary` is the initial report narrative. It is never silently
+// overwritten — every material-field change writes an IncidentChange
+// before/after snapshot in the same transaction.
+//
+// createdByAuthIdentityId / closedByAuthIdentityId are plain scalar
+// references (no FK — the scalar actor policy): history must survive
+// auth identity deletion; display attribution resolves best-effort.
+model Incident {
+  id                      String         @id @default(cuid())
+  organizationId          String
+  // Optional link to the callout this record grew from. Unique: at most
+  // one incident per callout (Postgres NULLs are distinct, so unlinked
+  // incidents never collide). Set at creation or via the explicit link
+  // action; once set it is not relinked — a wrong link is corrected by
+  // a human through the audit trail, not by silent retargeting.
+  calloutId               String?
+  sequence                Int
+  reference               String
+  title                   String
+  summary                 String?
+  status                  IncidentStatus @default(DRAFT)
+  reportedAt              DateTime?
+  departedAt              DateTime?
+  onSceneAt               DateTime?
+  returnedAt              DateTime?
+  openedAt                DateTime?
+  closedAt                DateTime?
+  createdByAuthIdentityId String
+  closedByAuthIdentityId  String?
+  createdAt               DateTime       @default(now())
+  updatedAt               DateTime       @updatedAt
+
+  organization Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  callout      Callout?                @relation(fields: [calloutId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  members      IncidentMember[]
+  assets       IncidentAsset[]
+  notes        IncidentNote[]
+  timeline     IncidentTimelineEvent[]
+  changes      IncidentChange[]
+
+  // At most one incident per callout: calloutId is org-unique via the
+  // composite FK (a callout belongs to exactly one organization), so
+  // (calloutId, organizationId) unique is the full guarantee — and the
+  // one-to-one defining side Prisma requires. NULLs are distinct.
+  @@unique([calloutId, organizationId])
+  @@unique([organizationId, reference])
+  // Composite-FK target so every child enforces same-organization rows.
+  @@unique([id, organizationId])
+  @@index([organizationId, status])
+  @@index([organizationId, createdAt])
+}
+
+// Per-organization monotonic counter for incident references. The
+// create path upserts+increments atomically in the same transaction, so
+// concurrent creations can never hand out the same number. Gaps are
+// acceptable (a rolled-back creation consumes a number) — uniqueness,
+// not contiguity, is the contract.
+model IncidentSequence {
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  organizationId String       @id
+  nextNumber     Int          @default(1)
+}
+
+// An explicit factual participation record: "this member was recorded
+// as participating in this incident". NEVER inferred from callout RSVP
+// state — an admin records it deliberately. `roleNote` is optional free
+// factual text ("coxswain", "radio operator" as a fact of record); it is
+// NOT a rank, qualification, or operational-authority claim. Removing a
+// participant deletes this row — the MEMBER_REMOVED timeline event keeps
+// the historical fact of when they were added and removed.
+model IncidentMember {
+  id                       String   @id @default(cuid())
+  organizationId           String
+  incidentId               String
+  memberId                 String
+  roleNote                 String?
+  recordedByAuthIdentityId String
+  recordedAt               DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  incident     Incident     @relation(fields: [incidentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  member       Member       @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([incidentId, memberId])
+  @@unique([id, organizationId])
+  @@index([organizationId, incidentId])
+  @@index([memberId])
+}
+
+// An explicit factual participation record for a durable asset — "this
+// asset was recorded as used on this incident". Listing an asset is a
+// recordkeeping fact only; it says nothing about readiness. `note` is
+// optional free factual text about the recorded use.
+model IncidentAsset {
+  id                       String   @id @default(cuid())
+  organizationId           String
+  incidentId               String
+  assetId                  String
+  note                     String?
+  recordedByAuthIdentityId String
+  recordedAt               DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  incident     Incident     @relation(fields: [incidentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  asset        Asset        @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([incidentId, assetId])
+  @@unique([id, organizationId])
+  @@index([organizationId, incidentId])
+  @@index([assetId])
+}
+
+// One system-generated factual event on the incident record. These are
+// the machine's account of state-changing actions — distinct from
+// IncidentNote rows, which are human statements.
+//
+// occurredAt vs createdAt: `occurredAt` is when the recorded event
+// happened; `createdAt` is when SARbase wrote the row. For system events
+// the only honest occurrence time is the moment of the action, so both
+// are set to the same instant — they are kept as separate fields so the
+// semantic distinction survives for events that genuinely carry a
+// source-supplied time.
+//
+// `metadata` is a narrow, type-bound JSON payload (e.g.
+// {memberId, memberName} for MEMBER_ADDED) — names are snapshotted so
+// the history reads correctly even if the member is renamed later.
+// actorAuthIdentityId is a scalar reference (no FK): history outlives
+// the identity.
+model IncidentTimelineEvent {
+  id                  String                    @id @default(cuid())
+  organizationId      String
+  incidentId          String
+  type                IncidentTimelineEventType
+  occurredAt          DateTime
+  actorAuthIdentityId String
+  metadata            Json?
+  createdAt           DateTime                  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  incident     Incident     @relation(fields: [incidentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@index([incidentId, occurredAt])
+  @@index([organizationId, occurredAt])
+}
+
+// A human-authored note on the incident. Always attributed to a person;
+// `occurredAt` is an optional manual instant for recording a past
+// observation ("saw the vessel at the dock around 14:00") — when absent
+// the note speaks for `createdAt`, the moment it was entered.
+//
+// `body` is the CURRENT text. Corrections never overwrite history: each
+// amendment appends an IncidentNoteCorrection with the before/after
+// text, so the original wording is always recoverable.
+//
+// authorAuthIdentityId is a scalar reference (no FK) — notes must
+// survive auth identity deletion.
+model IncidentNote {
+  id                   String           @id @default(cuid())
+  organizationId       String
+  incidentId           String
+  authorAuthIdentityId String
+  kind                 IncidentNoteKind @default(GENERAL)
+  body                 String
+  occurredAt           DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  incident     Incident                 @relation(fields: [incidentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  corrections  IncidentNoteCorrection[]
+
+  // Composite-FK target so IncidentNoteCorrection enforces same-org rows.
+  @@unique([id, organizationId])
+  @@index([incidentId, createdAt])
+  @@index([organizationId, createdAt])
+}
+
+// Append-only correction history for one IncidentNote — the note's
+// before/after body plus who corrected it and why. The original text is
+// the first correction's beforeBody; intermediate wording is fully
+// reconstructable from the chain.
+model IncidentNoteCorrection {
+  id                  String   @id @default(cuid())
+  organizationId      String
+  noteId              String
+  incidentId          String // denormalized for org-scoped incident history queries
+  beforeBody          String
+  afterBody           String
+  reason              String?
+  actorAuthIdentityId String
+  createdAt           DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  note         IncidentNote @relation(fields: [noteId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@index([noteId, createdAt])
+  @@index([incidentId, createdAt])
+  @@index([organizationId, createdAt])
+}
+
+// Append-only audit of material field corrections on an Incident — same
+// contract as MaintenanceRecordChange: a complete before/after snapshot
+// of the tracked fields written atomically with the update, keyed to
+// the server-side acting identity. Lifecycle transitions and
+// participant/note changes have their own audit surfaces (timeline
+// events and note corrections) and are deliberately not duplicated here.
+//
+// actorAuthIdentityId is a scalar reference (no FK — the scalar actor
+// policy): history must survive auth identity deletion.
+model IncidentChange {
+  id             String  @id @default(cuid())
+  organizationId String
+  incidentId     String
+  // Human-supplied correction reason. Required by the domain when the
+  // incident is CLOSED; optional otherwise.
+  reason         String?
+
+  beforeTitle      String
+  beforeSummary    String?
+  beforeReportedAt DateTime?
+  beforeDepartedAt DateTime?
+  beforeOnSceneAt  DateTime?
+  beforeReturnedAt DateTime?
+  afterTitle       String
+  afterSummary     String?
+  afterReportedAt  DateTime?
+  afterDepartedAt  DateTime?
+  afterOnSceneAt   DateTime?
+  afterReturnedAt  DateTime?
+
+  actorAuthIdentityId String
+  createdAt           DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  incident     Incident     @relation(fields: [incidentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@index([incidentId, createdAt])
+  @@index([organizationId, createdAt])
 }

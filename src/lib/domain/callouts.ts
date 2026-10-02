@@ -865,6 +865,11 @@ export async function getCalloutForAdmin(calloutId: string) {
     include: {
       organization: { select: { id: true, name: true } },
       unit: { select: { id: true, name: true } },
+      // Issue #15 — at most one incident may link to this callout; the
+      // admin page offers "create incident record" only when absent.
+      incident: {
+        select: { id: true, reference: true, title: true, status: true },
+      },
       invitations: {
         orderBy: { member: { displayName: "asc" } },
         include: {
