@@ -241,4 +241,22 @@ describe("parseStorageEnvironment (issue #16)", () => {
       parseStorageEnvironment({ FILE_STORAGE_LOCAL_ROOT: "../outside" }),
     ).toThrow();
   });
+
+  it("requires https for remote S3 endpoints, allowing loopback http", () => {
+    expect(() =>
+      parseStorageEnvironment({
+        FILE_STORAGE_S3_ENDPOINT: "http://objectstore.example.com",
+      }),
+    ).toThrow();
+    expect(
+      parseStorageEnvironment({
+        FILE_STORAGE_S3_ENDPOINT: "https://s3.us-east-1.amazonaws.com",
+      }).FILE_STORAGE_S3_ENDPOINT,
+    ).toBe("https://s3.us-east-1.amazonaws.com");
+    expect(
+      parseStorageEnvironment({
+        FILE_STORAGE_S3_ENDPOINT: "http://localhost:9000",
+      }).FILE_STORAGE_S3_ENDPOINT,
+    ).toBe("http://localhost:9000");
+  });
 });

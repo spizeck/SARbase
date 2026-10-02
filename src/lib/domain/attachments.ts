@@ -814,15 +814,18 @@ export async function deleteAttachment(
     });
     if (!attachment) throw new CrossOrganizationAttachmentError();
     if (attachment.status === "DELETED") {
-      // Already tombstoned — but if a previous DELETED event recorded a
-      // FAILED physical removal, fall through so the storage delete can
-      // be retried. A second DELETED event keeps history append-only.
+      // Already tombstoned — but a previous attempt may have failed the
+      // physical removal (storageDeleted=false) or crashed before the
+      // outcome was recorded at all (no DELETED event). Both mean the
+      // object may still exist: fall through to retry the idempotent
+      // storage delete and append a fresh DELETED event — history stays
+      // append-only.
       const lastDelete = await tx.attachmentEvent.findFirst({
         where: { attachmentId, action: "DELETED" },
         orderBy: { createdAt: "desc" },
         select: { storageDeleted: true },
       });
-      const retryNeeded = lastDelete?.storageDeleted === false;
+      const retryNeeded = lastDelete?.storageDeleted !== true;
       return { attachment, changed: false, retryStorage: retryNeeded };
     }
 

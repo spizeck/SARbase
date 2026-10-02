@@ -374,6 +374,22 @@ export const storageEnvironmentSchema = z.object({
       .string()
       .url("FILE_STORAGE_S3_ENDPOINT must be a valid URL")
       .max(2048)
+      // Cleartext endpoints send bytes and signed credentials over the
+      // network — HTTPS is required except on loopback, where plain
+      // HTTP serves local MinIO/dev stacks.
+      .refine((endpoint) => {
+        const url = new URL(endpoint);
+        if (url.protocol === "https:") return true;
+        if (url.protocol !== "http:") return false;
+        const host = url.hostname;
+        return (
+          host === "localhost" ||
+          host.endsWith(".localhost") ||
+          host.startsWith("127.") ||
+          host === "[::1]" ||
+          host === "::1"
+        );
+      }, "FILE_STORAGE_S3_ENDPOINT must use https:// (http:// is allowed only for loopback/localhost endpoints)")
       .optional(),
   ),
   FILE_STORAGE_S3_REGION: z.preprocess(
