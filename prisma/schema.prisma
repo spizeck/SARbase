@@ -84,6 +84,10 @@ model Organization {
   notificationPreferences MemberNotificationPreference[]
   notifications           Notification[]
   notificationAttempts    NotificationAttempt[]
+
+  callouts               Callout[]
+  calloutInvitations     CalloutInvitation[]
+  calloutResponseChanges CalloutResponseChange[]
 }
 
 // An internal operational/administrative grouping within an organization
@@ -101,6 +105,7 @@ model Unit {
   trainingEvents TrainingEvent[]
   assets         Asset[]
   inventoryItems InventoryItem[]
+  callouts       Callout[]
 
   // Unit names are unique within an organization (not globally).
   @@unique([organizationId, name])
@@ -159,6 +164,10 @@ model Member {
   // Restrict: a member row cannot be hard-deleted out from under
   // recorded send history.
   notifications Notification[]
+
+  // Issue #14 — callout invitations materialized for this member.
+  // Restrict: invited history outlives membership changes.
+  calloutInvitations CalloutInvitation[]
 
   // Optional link to a login identity. Nullable — most members never sign
   // in. SetNull on identity deletion: removing a login must never destroy
@@ -1184,9 +1193,13 @@ model Notification {
   createdAt                 DateTime            @default(now())
   updatedAt                 DateTime            @updatedAt
 
-  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  member       Member?                @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  member       Member?               @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
   attempts     NotificationAttempt[]
+
+  // Issue #14 — the callout invitation this request was dispatched for,
+  // when applicable. Restrict: notification history is preserved.
+  calloutInvitations CalloutInvitation[]
 
   // Application-level idempotency: one logical request per
   // (organization, key). A second request with the same key is either a
@@ -1237,4 +1250,146 @@ model NotificationAttempt {
   @@unique([notificationId, attemptNumber])
   @@index([organizationId, attemptedAt])
   @@index([notificationId])
+}
+
+// ---------------------------------------------------------------------------
+// Issue #14 — Callouts and volunteer response tracking.
+//
+// A Callout is a durable record that an organization invited members to
+// respond to a request for help. SARbase records WHO was invited and HOW
+// they responded — it never concludes that a crew is sufficient,
+// qualified, ready, or dispatchable. There is deliberately no
+// operational severity/readiness data here.
+// ---------------------------------------------------------------------------
+
+enum CalloutStatus {
+  ACTIVE
+  CLOSED
+}
+
+enum CalloutAudience {
+  ORGANIZATION
+  UNIT
+  MEMBERS
+}
+
+// Factual response states only. Absence of a response is represented by
+// a NULL `response` on the invitation ("no response" is derived for
+// display — it is not stored as a state).
+enum CalloutResponse {
+  COMING
+  UNAVAILABLE
+}
+
+enum CalloutResponseSource {
+  TOKEN_LINK
+  ACCOUNT
+  ADMIN
+}
+
+// One activation = one Callout. `activationKey` +
+// (organizationId) uniqueness gives durable idempotent creation: a
+// double-click or resubmit with the same key replays, and a conflicting
+// reuse is rejected by comparing `intentHash` — the same contract as
+// Notification.
+//
+// createdByAuthIdentityId / closedByAuthIdentityId are plain scalar
+// references (no FK): history must survive auth identity deletion.
+model Callout {
+  id                      String          @id @default(cuid())
+  organizationId          String
+  createdByAuthIdentityId String
+  audience                CalloutAudience
+  // For UNIT audiences: the unit used for selection, snapshotted. Unit
+  // membership at activation time is materialized into invitations —
+  // later membership changes never rewrite history.
+  unitId                  String?
+  title                   String
+  message                 String?
+  activationKey           String
+  intentHash              String
+  status                  CalloutStatus   @default(ACTIVE)
+  activatedAt             DateTime        @default(now())
+  closedAt                DateTime?
+  closedByAuthIdentityId  String?
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  unit         Unit?               @relation(fields: [unitId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  invitations  CalloutInvitation[]
+
+  @@unique([organizationId, activationKey])
+  // Composite-FK target so CalloutInvitation enforces same-org rows.
+  @@unique([id, organizationId])
+  @@index([organizationId, activatedAt])
+}
+
+// A materialized invitation: this member was invited to this callout at
+// activation time. The row is the historical record — it is never
+// derived from current unit membership, so later roster changes cannot
+// rewrite who was actually invited.
+//
+// `responseTokenHash` is SHA-256 of the bearer token carried in the
+// emailed response link. The token is DERIVED — HMAC of
+// (calloutId, memberId) under a server-held secret — and never
+// persisted anywhere: the Notification row's stored body carries a
+// `{callout-response-url}` placeholder that dispatch substitutes with
+// the recomputed link at provider-send time.
+model CalloutInvitation {
+  id                String           @id @default(cuid())
+  organizationId    String
+  calloutId         String
+  memberId          String
+  // Nullable while the notification request has not yet been recorded
+  // (e.g. dispatch failed at activation); the deterministic
+  // notification idempotency key lets a replay link it later.
+  notificationId    String?
+  responseTokenHash String           @unique
+  invitedAt         DateTime         @default(now())
+  // Current response state for fast display; the full timeline lives in
+  // CalloutResponseChange. NULL = no response.
+  response          CalloutResponse?
+  respondedAt       DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  organization Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  callout      Callout                 @relation(fields: [calloutId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  member       Member                  @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  notification Notification?           @relation(fields: [notificationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  changes      CalloutResponseChange[]
+
+  @@unique([calloutId, memberId])
+  // Composite-FK target so CalloutResponseChange enforces same-org rows.
+  @@unique([id, organizationId])
+  @@index([organizationId, invitedAt])
+  @@index([calloutId, response])
+}
+
+// Append-only history of response changes on an invitation. The current
+// state lives on CalloutInvitation for fast reads; this table preserves
+// every meaningful change (first response and later corrections) with
+// its factual source — TOKEN_LINK, ACCOUNT, or ADMIN.
+//
+// actorAuthIdentityId is a plain scalar reference (no FK): for
+// TOKEN_LINK responses there is no auth identity (the invitation token
+// itself establishes who responded), and history must survive identity
+// deletion for the other sources.
+model CalloutResponseChange {
+  id                  String                @id @default(cuid())
+  organizationId      String
+  invitationId        String
+  previousResponse    CalloutResponse?
+  response            CalloutResponse
+  source              CalloutResponseSource
+  actorAuthIdentityId String?
+  note                String?
+  createdAt           DateTime              @default(now())
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  invitation   CalloutInvitation @relation(fields: [invitationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@index([organizationId, createdAt])
+  @@index([invitationId, createdAt])
 }

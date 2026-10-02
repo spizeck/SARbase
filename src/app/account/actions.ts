@@ -12,6 +12,7 @@ import {
   AuthorizationError,
   type AuthContext,
 } from "@/lib/auth/context";
+import { prisma } from "@/lib/prisma";
 import {
   recordMemberAvailability,
   setMemberContactPreference,
@@ -19,7 +20,13 @@ import {
   ContactPreferenceDestinationError,
 } from "@/lib/domain/availability";
 import {
+  recordInvitationResponse,
+  CalloutClosedError,
+  CalloutTokenInvalidError,
+} from "@/lib/domain/callouts";
+import {
   availabilityUpdateSchema,
+  calloutResponseSchema,
   contactPreferenceSchema,
 } from "@/lib/domain/schemas";
 
@@ -61,6 +68,10 @@ function mapError(error: unknown): ActionState {
     error instanceof ContactPreferenceDestinationError
   ) {
     return { message: error.message };
+  }
+  if (error instanceof CalloutTokenInvalidError) {
+    // The invitation vanished between lookup and write — opaque.
+    return { message: "Not found." };
   }
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     if (error.code === "P2025") {
@@ -139,6 +150,62 @@ export async function updateMyContactPreferencesAction(
   try {
     await setMemberContactPreference(member.id, parsed.data);
   } catch (error) {
+    return mapError(error);
+  }
+  revalidatePath("/account");
+  return {};
+}
+
+/* ------------------------------------------------------------------ */
+/* Callout responses (issue #14)                                       */
+/*                                                                     */
+/* The invitationId arriving from the form is an UNTRUSTED SELECTOR —  */
+/* it only selects which invitation to look at. The response is        */
+/* recorded only when the invitation's memberId is one of the caller's */
+/* own linked member records in an organization they currently hold   */
+/* OrganizationAccess for. Anything else is the same opaque "Not       */
+/* found."                                                             */
+/* ------------------------------------------------------------------ */
+
+export async function respondToMyInvitationAction(
+  invitationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  let ctx: AuthContext;
+  try {
+    ctx = await getAuthContextOrThrow();
+  } catch (error) {
+    return mapError(error);
+  }
+
+  const invitation = await prisma.calloutInvitation.findUnique({
+    where: { id: invitationId },
+    select: { memberId: true },
+  });
+  const ownsInvitation =
+    invitation != null &&
+    linkedMembersWithAccess(ctx).some((m) => m.id === invitation.memberId);
+  if (!ownsInvitation) {
+    return mapError(new AuthorizationError());
+  }
+
+  const parsed = calloutResponseSchema.safeParse(formData.get("response"));
+  if (!parsed.success) {
+    return { message: "Choose a response." };
+  }
+
+  try {
+    await recordInvitationResponse(
+      invitationId,
+      parsed.data,
+      "ACCOUNT",
+      ctx.identity.id,
+    );
+  } catch (error) {
+    if (error instanceof CalloutClosedError) {
+      return { message: error.message };
+    }
     return mapError(error);
   }
   revalidatePath("/account");

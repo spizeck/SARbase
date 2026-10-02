@@ -256,6 +256,55 @@ Admin visibility is a compact org-scoped history page
 (`/admin/organizations/{orgId}/notifications`) with a labeled
 administrative test-send — explicitly not a callout interface.
 
+## Callouts and volunteer responses
+
+Issue #14 adds the callout record: who was invited, through which
+notification, and how each member factually responded. Full architecture
+— token security, dispatch ordering, concurrency semantics — lives in
+[`docs/callouts.md`](callouts.md).
+
+> SARbase records who was invited and how they responded. It does not
+> determine whether the resulting crew is sufficient, qualified, ready,
+> or appropriate for an operation.
+
+### `Callout` — the activation
+
+One row per activation: `audience` (`ORGANIZATION`/`UNIT`/`MEMBERS`),
+`unitId` snapshot for unit audiences, `title`, bounded `message`,
+`status` (`ACTIVE`/`CLOSED`), `activatedAt`, `closedAt`,
+`closedByAuthIdentityId`, and scalar `createdByAuthIdentityId`.
+`@@unique([organizationId, activationKey])` + `intentHash` give durable
+idempotent activation — same contract as `Notification`.
+
+### `CalloutInvitation` — materialized audience
+
+The invited set is resolved and written as rows at activation; later
+roster changes never rewrite it. `@@unique([calloutId, memberId])`
+dedupes. Each row carries `responseTokenHash` (SHA-256 of the emailed
+link's bearer token — the hash, not the raw token, authenticates
+responses; the token is derived per send under a server-held secret and
+the stored notification body carries only a placeholder, so no database
+row ever holds a usable credential), `invitedAt`,
+current `response` (`COMING`/`UNAVAILABLE`/NULL — "no response" is
+derived, not stored) and `respondedAt`, plus a nullable `notificationId`
+link to the notification request — invitation and notification status
+are deliberately separate facts.
+
+### `CalloutResponseChange` — append-only response history
+
+Every first response and every later change appends a row with
+`previousResponse`, `response`, `source` (`TOKEN_LINK`/`ACCOUNT`/
+`ADMIN`), scalar `actorAuthIdentityId` (null for token responses), and
+optional admin `note`. Writes serialize on the callout row lock; an
+identical response is an idempotent no-op, and a closed callout refuses
+new responses while remaining fully readable.
+
+Admin surface: `/admin/organizations/{orgId}/callouts` (list + one-action
+activate) and `…/callouts/{id}` (per-invitee response, notification
+outcome, response history, admin-recorded response, close). Members
+respond via the emailed token link or `/account`. There is no readiness
+or sufficiency display — response counts are descriptive facts only.
+
 ## Qualifications and certifications
 
 Issue #8 adds the first member-record domain: administrative

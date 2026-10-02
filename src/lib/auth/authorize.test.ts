@@ -4,12 +4,16 @@ const {
   getAuthContextMock,
   memberFindUniqueMock,
   unitFindUniqueMock,
+  calloutFindUniqueMock,
+  calloutInvitationFindUniqueMock,
   redirectMock,
   notFoundMock,
 } = vi.hoisted(() => ({
   getAuthContextMock: vi.fn(),
   memberFindUniqueMock: vi.fn(),
   unitFindUniqueMock: vi.fn(),
+  calloutFindUniqueMock: vi.fn(),
+  calloutInvitationFindUniqueMock: vi.fn(),
   redirectMock: vi.fn(),
   notFoundMock: vi.fn(),
 }));
@@ -23,6 +27,8 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     member: { findUnique: memberFindUniqueMock },
     unit: { findUnique: unitFindUniqueMock },
+    callout: { findUnique: calloutFindUniqueMock },
+    calloutInvitation: { findUnique: calloutInvitationFindUniqueMock },
   },
 }));
 
@@ -41,6 +47,8 @@ import {
   requireOrgAdmin,
   requireOrgAdminForMember,
   requireOrgAdminForUnit,
+  requireOrgAdminForCallout,
+  requireOrgAdminForCalloutInvitation,
   requireOrgAdminOrNotFound,
 } from "./authorize";
 import {
@@ -193,5 +201,77 @@ describe("requireOrgAdminForUnit", () => {
     await expect(
       requireOrgAdminForUnit(ctx("ADMIN", ORG_A), "u-a"),
     ).resolves.toMatchObject({ id: "u-a" });
+  });
+});
+
+describe("requireOrgAdminForCallout — scope derived from the record", () => {
+  it("denies a callout in another org, whatever the caller asked", async () => {
+    calloutFindUniqueMock.mockResolvedValue({
+      id: "co-b",
+      organizationId: ORG_B,
+    });
+    await expect(
+      requireOrgAdminForCallout(ctx("ADMIN", ORG_A), "co-b"),
+    ).rejects.toBeInstanceOf(AuthorizationError);
+    expect(calloutFindUniqueMock).toHaveBeenCalledWith({
+      where: { id: "co-b" },
+    });
+  });
+
+  it("throws the same error for a nonexistent callout (no existence leak)", async () => {
+    calloutFindUniqueMock.mockResolvedValue(null);
+    await expect(
+      requireOrgAdminForCallout(ctx("ADMIN", ORG_A), "missing"),
+    ).rejects.toThrow("Not found or not permitted.");
+  });
+
+  it("returns the callout when the caller administers its real org", async () => {
+    const callout = { id: "co-a", organizationId: ORG_A };
+    calloutFindUniqueMock.mockResolvedValue(callout);
+    await expect(
+      requireOrgAdminForCallout(ctx("ADMIN", ORG_A), "co-a"),
+    ).resolves.toBe(callout);
+  });
+
+  it("denies an ordinary MEMBER even for their own org", async () => {
+    calloutFindUniqueMock.mockResolvedValue({
+      id: "co-a",
+      organizationId: ORG_A,
+    });
+    await expect(
+      requireOrgAdminForCallout(ctx("MEMBER", ORG_A), "co-a"),
+    ).rejects.toBeInstanceOf(AuthorizationError);
+  });
+});
+
+describe("requireOrgAdminForCalloutInvitation", () => {
+  it("derives the org from the invitation record, not the caller", async () => {
+    calloutInvitationFindUniqueMock.mockResolvedValue({
+      id: "inv-b",
+      organizationId: ORG_B,
+    });
+    await expect(
+      requireOrgAdminForCalloutInvitation(ctx("ADMIN", ORG_A), "inv-b"),
+    ).rejects.toBeInstanceOf(AuthorizationError);
+
+    calloutInvitationFindUniqueMock.mockResolvedValue({
+      id: "inv-a",
+      organizationId: ORG_A,
+    });
+    await expect(
+      requireOrgAdminForCalloutInvitation(ctx("ADMIN", ORG_A), "inv-a"),
+    ).resolves.toMatchObject({ id: "inv-a" });
+  });
+
+  it("denies an admin of a different org opaquely", async () => {
+    // Admin of ORG_B probes an invitation that lives in ORG_A — the
+    // record's own organizationId decides; the grant for B is irrelevant.
+    calloutInvitationFindUniqueMock.mockResolvedValue({
+      id: "inv-a",
+      organizationId: ORG_A,
+    });
+    await expect(
+      requireOrgAdminForCalloutInvitation(ctx("ADMIN", ORG_B), "inv-a"),
+    ).rejects.toBeInstanceOf(AuthorizationError);
   });
 });

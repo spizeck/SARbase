@@ -270,3 +270,58 @@ export function ContactPreferencesForm({
     </form>
   );
 }
+
+/**
+ * Member callout response (issue #14) — same two factual choices as
+ * the token link, recorded with source ACCOUNT against the caller's
+ * own linked member record.
+ */
+export function CalloutResponseForm({
+  action,
+  currentResponse,
+}: {
+  action: BoundAction;
+  currentResponse: "COMING" | "UNAVAILABLE" | null;
+}) {
+  const [state, formAction, pending] = useActionState(action, {});
+  return (
+    <form
+      action={formAction}
+      className="mt-2 flex flex-wrap items-center gap-2"
+    >
+      <button
+        type="submit"
+        name="response"
+        value="COMING"
+        disabled={pending}
+        aria-pressed={currentResponse === "COMING"}
+        className={`rounded-md px-4 py-2 text-sm font-medium disabled:opacity-60 ${
+          currentResponse === "COMING"
+            ? "bg-green-800 text-white"
+            : "bg-green-700 text-white hover:bg-green-800"
+        }`}
+      >
+        {currentResponse === "COMING" ? "Coming ✓" : "I'm coming"}
+      </button>
+      <button
+        type="submit"
+        name="response"
+        value="UNAVAILABLE"
+        disabled={pending}
+        aria-pressed={currentResponse === "UNAVAILABLE"}
+        className={`rounded-md border px-4 py-2 text-sm font-medium disabled:opacity-60 ${
+          currentResponse === "UNAVAILABLE"
+            ? "border-amber-400 bg-amber-100 text-amber-900"
+            : "border-neutral-300 text-neutral-800 hover:bg-neutral-50"
+        }`}
+      >
+        {currentResponse === "UNAVAILABLE" ? "Unavailable ✓" : "Unavailable"}
+      </button>
+      {state.message && (
+        <p className="w-full text-xs text-red-700" role="alert">
+          {state.message}
+        </p>
+      )}
+    </form>
+  );
+}

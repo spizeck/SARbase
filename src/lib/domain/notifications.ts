@@ -10,6 +10,12 @@ import {
   logOperational,
   summarizeError,
 } from "@/lib/logging";
+import {
+  CALLOUT_INVITATION_TEMPLATE,
+  CALLOUT_RESPONSE_URL_PLACEHOLDER,
+  deriveInvitationResponseToken,
+} from "@/lib/domain/calloutTokens";
+import { resolveSiteUrl } from "@/lib/site";
 import type {
   NotificationChannelName,
   NotificationProvider,
@@ -297,6 +303,65 @@ function dispatchEligibilityError(
 }
 
 /**
+ * The exact text this attempt sends to the provider.
+ *
+ * `bodyText` is the durable send-record — what was requested, verbatim —
+ * and it must never persist a live credential. A callout invitation's
+ * body therefore carries `{callout-response-url}` where the member's
+ * link belongs; the link is a deterministic HMAC derivation
+ * (calloutTokens.ts) recomputed identically on every send, so honest
+ * retries deliver the same working URL without the raw token ever
+ * reaching the database. Substitution needs only fields already on the
+ * row: `metadata.calloutId` plus the `memberId` column.
+ *
+ * A body whose placeholder cannot be resolved (wrong template, missing
+ * callout/member context) is a programming or data bug — throwing here
+ * records no attempt and emails nobody a dead link.
+ */
+async function resolveDispatchBodyText(
+  notification: Notification,
+): Promise<string | null> {
+  const text = notification.bodyText;
+  if (text == null || !text.includes(CALLOUT_RESPONSE_URL_PLACEHOLDER)) {
+    return text;
+  }
+  const metadata = (notification.metadata ?? null) as {
+    calloutId?: string;
+    invitationId?: string;
+  } | null;
+  if (
+    notification.template === CALLOUT_INVITATION_TEMPLATE &&
+    metadata?.calloutId &&
+    metadata?.invitationId &&
+    notification.memberId
+  ) {
+    const token = deriveInvitationResponseToken(
+      metadata.calloutId,
+      notification.memberId,
+    );
+    // Keep the invitation's lookup hash aligned with the credential this
+    // send actually carries — a send after secret rotation delivers a
+    // working link (and the superseded token stops resolving).
+    await prisma.calloutInvitation.updateMany({
+      where: {
+        id: metadata.invitationId,
+        organizationId: notification.organizationId,
+      },
+      data: {
+        responseTokenHash: createHash("sha256").update(token).digest("hex"),
+      },
+    });
+    return text.replaceAll(
+      CALLOUT_RESPONSE_URL_PLACEHOLDER,
+      `${resolveSiteUrl()}/respond?t=${encodeURIComponent(token)}`,
+    );
+  }
+  throw new Error(
+    `Notification ${notification.id} carries an unresolvable response-link placeholder.`,
+  );
+}
+
+/**
  * Record one provider invocation attempt for an existing notification.
  *
  * Serialization: the notification row is locked FOR UPDATE inside the
@@ -317,6 +382,14 @@ async function dispatchAttempt(
   provider: NotificationProvider,
   mode: "initial" | "retry",
 ): Promise<Notification> {
+  // Resolve the text this attempt sends BEFORE any attempt row exists:
+  // the stored body is the durable request record and must never hold a
+  // live credential, so a callout invitation's response link is carried
+  // as a placeholder and recomputed here for each send — initial and
+  // retry alike. A placeholder that cannot be resolved fails loudly
+  // rather than emailing a member a dead link.
+  const dispatchText = await resolveDispatchBodyText(notification);
+
   let attempt;
   try {
     attempt = await prisma.$transaction(async (tx) => {
@@ -374,7 +447,7 @@ async function dispatchAttempt(
       channel: notification.channel as NotificationChannelName,
       to: notification.destination ?? "",
       subject: notification.subject,
-      text: notification.bodyText,
+      text: dispatchText,
       // Provider-level idempotency (Resend Idempotency-Key header): a
       // re-invoked SAME attempt dedupes at the provider; a deliberate
       // retry is a new attempt number and a new provider operation.
@@ -453,11 +526,54 @@ async function dispatchAttempt(
 }
 
 /**
+ * Settle an already-recorded request for a replayed idempotency key:
+ * identical intent returns the existing row; conflicting intent fails
+ * loudly. Pure lookup semantics — no provider contact, so a replay is
+ * answered from the durable record even when provider configuration
+ * has since become invalid.
+ */
+function replayResult(
+  existing: Notification,
+  intentHash: string,
+  input: NotificationRequestInput,
+): NotificationRequestResult {
+  if (existing.intentHash !== intentHash) {
+    logExpected({
+      event: "notification.idempotency_conflict",
+      subsystem: "notifications",
+      entityType: "Notification",
+      entityId: existing.id,
+      organizationId: input.organizationId,
+      channel: input.channel,
+    });
+    throw new NotificationIdempotencyConflictError();
+  }
+  log({
+    event: "notification.replayed",
+    subsystem: "notifications",
+    entityType: "Notification",
+    entityId: existing.id,
+    organizationId: input.organizationId,
+    channel: input.channel,
+  });
+  return { notification: existing, deduplicated: true };
+}
+
+/**
  * Create and dispatch a notification request — the application-facing
  * entry point. Idempotent on (organizationId, idempotencyKey): a replay
  * with identical intent returns the existing row (deduplicated: true);
  * a replay with conflicting intent throws
  * NotificationIdempotencyConflictError.
+ *
+ * Ordering is deliberate: the idempotency-key lookup runs BEFORE any
+ * provider resolution. A replay of a completed request must be answered
+ * from the durable record alone — re-checking provider configuration on
+ * replay could fail a request that already succeeded. Provider
+ * resolution happens only for a genuinely new, non-suppressed request,
+ * still BEFORE the row is created so a configuration error leaves no
+ * orphaned PENDING record. The unique constraint remains underneath as
+ * the concurrent-create race protection.
  *
  * Authorization is the CALLER's job — this function trusts that the
  * caller already established ADMIN access to `organizationId`. The
@@ -479,6 +595,20 @@ export async function requestNotification(
     bodyText: input.bodyText ?? null,
     metadata: input.metadata ?? null,
   });
+
+  // Replay check first: an identical-keyed request that was already
+  // recorded is returned as-is — the provider is never resolved for it.
+  const existing = await prisma.notification.findUnique({
+    where: {
+      organizationId_idempotencyKey: {
+        organizationId: input.organizationId,
+        idempotencyKey: input.idempotencyKey,
+      },
+    },
+  });
+  if (existing) {
+    return replayResult(existing, intentHash, input);
+  }
 
   // Resolve the provider BEFORE writing the row: a configuration error
   // must leave no orphaned PENDING request (and no row that a later
@@ -513,9 +643,9 @@ export async function requestNotification(
     if (!isUniqueViolation(error)) {
       throw error;
     }
-    // Idempotent replay: the key exists in this organization — return it
-    // when the intent matches, fail loudly when it does not.
-    const existing = await prisma.notification.findUniqueOrThrow({
+    // A concurrent request won the create race — settle it with the same
+    // replay/conflict semantics as the early lookup above.
+    const raced = await prisma.notification.findUniqueOrThrow({
       where: {
         organizationId_idempotencyKey: {
           organizationId: input.organizationId,
@@ -523,26 +653,7 @@ export async function requestNotification(
         },
       },
     });
-    if (existing.intentHash !== intentHash) {
-      logExpected({
-        event: "notification.idempotency_conflict",
-        subsystem: "notifications",
-        entityType: "Notification",
-        entityId: existing.id,
-        organizationId: input.organizationId,
-        channel: input.channel,
-      });
-      throw new NotificationIdempotencyConflictError();
-    }
-    log({
-      event: "notification.replayed",
-      subsystem: "notifications",
-      entityType: "Notification",
-      entityId: existing.id,
-      organizationId: input.organizationId,
-      channel: input.channel,
-    });
-    return { notification: existing, deduplicated: true };
+    return replayResult(raced, intentHash, input);
   }
 
   if (notification.status === "SUPPRESSED") {
