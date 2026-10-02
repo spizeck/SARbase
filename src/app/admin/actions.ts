@@ -2223,6 +2223,11 @@ export async function transitionIncidentStatusAction(
   let incident;
   try {
     incident = await requireOrgAdminForIncident(ctx, incidentId);
+    const limited = await checkIncidentRateLimit(
+      incident.organizationId,
+      ctx.identity.id,
+    );
+    if (limited) return limited;
     const parsed = incidentTransitionSchema.safeParse(target);
     if (!parsed.success) return { message: "Invalid transition." };
     await transitionIncidentStatus(incident.id, parsed.data, ctx.identity.id);
@@ -2253,6 +2258,11 @@ export async function updateIncidentAction(
   } catch (error) {
     return mapDomainError(error);
   }
+  const limited = await checkIncidentRateLimit(
+    incident.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
   const parsed = incidentUpdateSchema.safeParse({
     ...incidentFieldsFrom(formData),
     reason: formData.get("reason"),
@@ -2283,6 +2293,11 @@ export async function linkIncidentCalloutAction(
   } catch (error) {
     return mapDomainError(error);
   }
+  const limited = await checkIncidentRateLimit(
+    incident.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
   const parsed = incidentCalloutLinkSchema.safeParse({
     calloutId: formData.get("calloutId"),
   });
@@ -2316,6 +2331,11 @@ export async function addIncidentMemberAction(
   } catch (error) {
     return mapDomainError(error);
   }
+  const limited = await checkIncidentRateLimit(
+    incident.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
   const parsed = incidentMemberSchema.safeParse({
     memberId: formData.get("memberId"),
     roleNote: formData.get("roleNote"),
@@ -2340,6 +2360,11 @@ export async function removeIncidentMemberAction(
   let row;
   try {
     row = await requireOrgAdminForIncidentMember(ctx, participationId);
+    const limited = await checkIncidentRateLimit(
+      row.organizationId,
+      ctx.identity.id,
+    );
+    if (limited) return limited;
     await removeIncidentMember(row.id, ctx.identity.id);
   } catch (error) {
     return mapDomainError(error);
@@ -2363,6 +2388,11 @@ export async function addIncidentAssetAction(
   } catch (error) {
     return mapDomainError(error);
   }
+  const limited = await checkIncidentRateLimit(
+    incident.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
   const parsed = incidentAssetSchema.safeParse({
     assetId: formData.get("assetId"),
     note: formData.get("note"),
@@ -2387,6 +2417,11 @@ export async function removeIncidentAssetAction(
   let row;
   try {
     row = await requireOrgAdminForIncidentAsset(ctx, participationId);
+    const limited = await checkIncidentRateLimit(
+      row.organizationId,
+      ctx.identity.id,
+    );
+    if (limited) return limited;
     await removeIncidentAsset(row.id, ctx.identity.id);
   } catch (error) {
     return mapDomainError(error);
@@ -2410,6 +2445,11 @@ export async function addIncidentNoteAction(
   } catch (error) {
     return mapDomainError(error);
   }
+  const limited = await checkIncidentRateLimit(
+    incident.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
   const parsed = incidentNoteSchema.safeParse({
     kind: formData.get("kind"),
     body: formData.get("body"),
@@ -2441,6 +2481,11 @@ export async function correctIncidentNoteAction(
   } catch (error) {
     return mapDomainError(error);
   }
+  const limited = await checkIncidentRateLimit(
+    note.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
   const parsed = incidentNoteCorrectionSchema.safeParse({
     body: formData.get("body"),
     reason: formData.get("reason"),
