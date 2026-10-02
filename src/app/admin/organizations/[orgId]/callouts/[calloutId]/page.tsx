@@ -17,11 +17,14 @@ import { relativeTimeLabel } from "@/lib/dates";
 import {
   closeCalloutAction,
   recordCalloutResponseAction,
+  createIncidentFromCalloutAction,
 } from "../../../../actions";
 import {
   AdminResponseForm,
   CloseCalloutButton,
 } from "../../../../callout-forms";
+import { IncidentFieldsForm } from "../../../../incident-forms";
+import { INCIDENT_STATUS_LABELS } from "@/lib/domain/incidents";
 
 export const metadata = { title: "Callout" };
 
@@ -305,6 +308,49 @@ export default async function CalloutDetailPage({
             );
           })}
         </ul>
+      </section>
+
+      <section
+        aria-labelledby="incident-record-heading"
+        className="mt-8 rounded-md border border-neutral-200 p-4"
+      >
+        <h2
+          id="incident-record-heading"
+          className="text-sm font-medium text-neutral-800"
+        >
+          Incident record
+        </h2>
+        {callout.incident ? (
+          <p className="mt-2 text-sm text-neutral-700">
+            <Link
+              href={`/admin/organizations/${orgId}/incidents/${callout.incident.id}`}
+              className="font-medium text-neutral-900 hover:underline"
+            >
+              {callout.incident.reference} — {callout.incident.title}
+            </Link>
+            <span className="text-neutral-500">
+              {" "}
+              ·{" "}
+              {INCIDENT_STATUS_LABELS[callout.incident.status] ??
+                callout.incident.status}
+            </span>
+          </p>
+        ) : (
+          <>
+            <p className="mt-1 text-xs text-neutral-500">
+              Create the durable administrative record linked to this callout.
+              Participants and assets are recorded on the incident separately —
+              a callout response is never treated as proof of participation.
+            </p>
+            <div className="mt-3">
+              <IncidentFieldsForm
+                action={createIncidentFromCalloutAction.bind(null, callout.id)}
+                defaults={{ title: callout.title, summary: callout.message }}
+                submitLabel="Create incident record"
+              />
+            </div>
+          </>
+        )}
       </section>
     </main>
   );

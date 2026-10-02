@@ -47,6 +47,14 @@ import {
   adminNotificationSendSchema,
   calloutActivationSchema,
   adminCalloutResponseSchema,
+  incidentCreateSchema,
+  incidentUpdateSchema,
+  incidentTransitionSchema,
+  incidentCalloutLinkSchema,
+  incidentMemberSchema,
+  incidentAssetSchema,
+  incidentNoteSchema,
+  incidentNoteCorrectionSchema,
 } from "@/lib/domain/schemas";
 import {
   requireAuth,
@@ -68,6 +76,10 @@ import {
   requireOrgAdminForNotification,
   requireOrgAdminForCallout,
   requireOrgAdminForCalloutInvitation,
+  requireOrgAdminForIncident,
+  requireOrgAdminForIncidentMember,
+  requireOrgAdminForIncidentAsset,
+  requireOrgAdminForIncidentNote,
 } from "@/lib/auth/authorize";
 import {
   createTrainingEvent,
@@ -146,6 +158,24 @@ import {
   CalloutTokenInvalidError,
   CrossOrganizationCalloutError,
 } from "@/lib/domain/callouts";
+import {
+  createIncident,
+  linkIncidentCallout,
+  transitionIncidentStatus,
+  updateIncident,
+  addIncidentMember,
+  removeIncidentMember,
+  addIncidentAsset,
+  removeIncidentAsset,
+  addIncidentNote,
+  correctIncidentNote,
+  CrossOrganizationIncidentError,
+  IncidentTransitionError,
+  IncidentLinkedError,
+  IncidentCorrectionReasonError,
+  IncidentDuplicateParticipantError,
+  IncidentInputError,
+} from "@/lib/domain/incidents";
 import { checkRateLimit } from "@/lib/rate-limit/rate-limit";
 import { rateLimitKey } from "@/lib/rate-limit/keys";
 import { InMemoryRateLimitStore } from "@/lib/rate-limit/memory-store";
@@ -295,6 +325,20 @@ function mapDomainError(error: unknown): ActionState {
     // Admin surface: an invitation id that no longer resolves is "not
     // found" — the token-specific wording belongs to the public route.
     return { message: "Not found." };
+  }
+  if (error instanceof CrossOrganizationIncidentError) {
+    // Opaque — foreign-org callout/member/asset ids must not leak.
+    return { message: "Not found." };
+  }
+  if (
+    error instanceof IncidentTransitionError ||
+    error instanceof IncidentLinkedError ||
+    error instanceof IncidentCorrectionReasonError ||
+    error instanceof IncidentDuplicateParticipantError ||
+    error instanceof IncidentInputError
+  ) {
+    // Facts about the caller's own organization — safe to surface.
+    return { message: error.message };
   }
   throw error;
 }
@@ -2040,6 +2084,421 @@ export async function recordCalloutResponseAction(
   }
   revalidatePath(
     `/admin/organizations/${invitation.organizationId}/callouts/${invitation.calloutId}`,
+  );
+  return {};
+}
+
+/* ------------------------------------------------------------------ */
+/* Incidents (issue #15)                                               */
+/*                                                                     */
+/* ADMIN-only administration of the durable incident record. Incidents */
+/* can carry sensitive casualty/personal information, so every path    */
+/* resolves the target record's real organization and requires ADMIN — */
+/* there is no member-facing incident surface and the public /respond  */
+/* route never touches incident data. Every mutation is audited:       */
+/* timeline events for lifecycle/participant facts, typed before/after */
+/* rows for material corrections, note-correction rows for note text.  */
+/* Nothing here is an operational decision or judgment.                */
+/* ------------------------------------------------------------------ */
+
+const incidentRateLimitStore = new InMemoryRateLimitStore();
+const INCIDENT_RATE_LIMIT = { limit: 20, windowMs: 60_000 };
+
+async function checkIncidentRateLimit(
+  organizationId: string,
+  actorId: string,
+): Promise<ActionState | null> {
+  const result = await checkRateLimit(
+    incidentRateLimitStore,
+    rateLimitKey("incident.write", organizationId, actorId),
+    INCIDENT_RATE_LIMIT,
+  );
+  if (result.allowed) return null;
+  logExpected({
+    event: "incident.rate_limited",
+    subsystem: "incidents",
+    actorId,
+    organizationId,
+    rateLimitScope: "incident.write",
+  });
+  return {
+    message: "Too many incident changes. Please wait a moment and try again.",
+  };
+}
+
+const incidentFieldsFrom = (formData: FormData) => ({
+  title: formData.get("title"),
+  summary: formData.get("summary"),
+  reportedAt: formData.get("reportedAt"),
+  departedAt: formData.get("departedAt"),
+  onSceneAt: formData.get("onSceneAt"),
+  returnedAt: formData.get("returnedAt"),
+});
+
+/** Create an incident manually (calloutId may arrive as a hidden field). */
+export async function createIncidentAction(
+  organizationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkIncidentRateLimit(organizationId, ctx.identity.id);
+  if (limited) return limited;
+
+  const parsed = incidentCreateSchema.safeParse({
+    ...incidentFieldsFrom(formData),
+    calloutId: formData.get("calloutId"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  let incident;
+  try {
+    incident = await createIncident(
+      organizationId,
+      parsed.data,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  redirect(`/admin/organizations/${organizationId}/incidents/${incident.id}`);
+}
+
+/**
+ * Create the incident record for a callout — the calloutId is a bound
+ * selector resolved to its real organization; the created incident
+ * carries the link. The callout's invitations/responses are never
+ * copied — participation is recorded separately and explicitly.
+ */
+export async function createIncidentFromCalloutAction(
+  calloutId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let callout;
+  try {
+    callout = await requireOrgAdminForCallout(ctx, calloutId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkIncidentRateLimit(
+    callout.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+
+  const parsed = incidentCreateSchema.safeParse({
+    ...incidentFieldsFrom(formData),
+    calloutId,
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  let incident;
+  try {
+    incident = await createIncident(
+      callout.organizationId,
+      parsed.data,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  redirect(
+    `/admin/organizations/${callout.organizationId}/incidents/${incident.id}`,
+  );
+}
+
+/** Open / close / reopen — validated transitions, audited via timeline. */
+export async function transitionIncidentStatusAction(
+  incidentId: string,
+  target: "OPEN" | "CLOSED",
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let incident;
+  try {
+    incident = await requireOrgAdminForIncident(ctx, incidentId);
+    const limited = await checkIncidentRateLimit(
+      incident.organizationId,
+      ctx.identity.id,
+    );
+    if (limited) return limited;
+    const parsed = incidentTransitionSchema.safeParse(target);
+    if (!parsed.success) return { message: "Invalid transition." };
+    await transitionIncidentStatus(incident.id, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${incident.organizationId}/incidents/${incident.id}`,
+  );
+  revalidatePath(`/admin/organizations/${incident.organizationId}/incidents`);
+  return {};
+}
+
+/**
+ * Edit material incident fields. On a CLOSED incident this is the
+ * audited correction path — the domain requires a reason and writes a
+ * typed before/after IncidentChange; the status stays CLOSED.
+ */
+export async function updateIncidentAction(
+  incidentId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let incident;
+  try {
+    incident = await requireOrgAdminForIncident(ctx, incidentId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkIncidentRateLimit(
+    incident.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+  const parsed = incidentUpdateSchema.safeParse({
+    ...incidentFieldsFrom(formData),
+    reason: formData.get("reason"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await updateIncident(incident.id, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${incident.organizationId}/incidents/${incident.id}`,
+  );
+  return {};
+}
+
+/** Link an unlinked incident to a same-org callout. One-way by design. */
+export async function linkIncidentCalloutAction(
+  incidentId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let incident;
+  try {
+    incident = await requireOrgAdminForIncident(ctx, incidentId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkIncidentRateLimit(
+    incident.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+  const parsed = incidentCalloutLinkSchema.safeParse({
+    calloutId: formData.get("calloutId"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await linkIncidentCallout(
+      incident.id,
+      parsed.data.calloutId,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${incident.organizationId}/incidents/${incident.id}`,
+  );
+  return {};
+}
+
+/** Record a member as participating — explicit fact, never RSVP-derived. */
+export async function addIncidentMemberAction(
+  incidentId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let incident;
+  try {
+    incident = await requireOrgAdminForIncident(ctx, incidentId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkIncidentRateLimit(
+    incident.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+  const parsed = incidentMemberSchema.safeParse({
+    memberId: formData.get("memberId"),
+    roleNote: formData.get("roleNote"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await addIncidentMember(incident.id, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${incident.organizationId}/incidents/${incident.id}`,
+  );
+  return {};
+}
+
+export async function removeIncidentMemberAction(
+  participationId: string,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let row;
+  try {
+    row = await requireOrgAdminForIncidentMember(ctx, participationId);
+    const limited = await checkIncidentRateLimit(
+      row.organizationId,
+      ctx.identity.id,
+    );
+    if (limited) return limited;
+    await removeIncidentMember(row.id, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${row.organizationId}/incidents/${row.incidentId}`,
+  );
+  return {};
+}
+
+/** Record an asset as used on the incident — a fact, not a readiness claim. */
+export async function addIncidentAssetAction(
+  incidentId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let incident;
+  try {
+    incident = await requireOrgAdminForIncident(ctx, incidentId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkIncidentRateLimit(
+    incident.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+  const parsed = incidentAssetSchema.safeParse({
+    assetId: formData.get("assetId"),
+    note: formData.get("note"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await addIncidentAsset(incident.id, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${incident.organizationId}/incidents/${incident.id}`,
+  );
+  return {};
+}
+
+export async function removeIncidentAssetAction(
+  participationId: string,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let row;
+  try {
+    row = await requireOrgAdminForIncidentAsset(ctx, participationId);
+    const limited = await checkIncidentRateLimit(
+      row.organizationId,
+      ctx.identity.id,
+    );
+    if (limited) return limited;
+    await removeIncidentAsset(row.id, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${row.organizationId}/incidents/${row.incidentId}`,
+  );
+  return {};
+}
+
+/** Add a human-authored note (general / after-action / closing). */
+export async function addIncidentNoteAction(
+  incidentId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let incident;
+  try {
+    incident = await requireOrgAdminForIncident(ctx, incidentId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkIncidentRateLimit(
+    incident.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+  const parsed = incidentNoteSchema.safeParse({
+    kind: formData.get("kind"),
+    body: formData.get("body"),
+    occurredAt: formData.get("occurredAt"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await addIncidentNote(incident.id, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${incident.organizationId}/incidents/${incident.id}`,
+  );
+  return {};
+}
+
+/** Correct a note — appends a before/after correction row, never overwrites. */
+export async function correctIncidentNoteAction(
+  noteId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let note;
+  try {
+    note = await requireOrgAdminForIncidentNote(ctx, noteId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkIncidentRateLimit(
+    note.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+  const parsed = incidentNoteCorrectionSchema.safeParse({
+    body: formData.get("body"),
+    reason: formData.get("reason"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await correctIncidentNote(note.id, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${note.organizationId}/incidents/${note.incidentId}`,
   );
   return {};
 }

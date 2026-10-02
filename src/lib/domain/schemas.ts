@@ -815,3 +815,145 @@ export const adminCalloutResponseSchema = z.object({
 export type AdminCalloutResponseInput = z.infer<
   typeof adminCalloutResponseSchema
 >;
+
+/* ------------------------------------------------------------------ */
+/* Incident records (issue #15)                                        */
+/*                                                                     */
+/* An incident is the durable administrative record: factual fields an */
+/* operator entered, nothing derived or recommended. The manual        */
+/* timestamp fields are `datetime-local` wall times — strings are      */
+/* validated for shape/reality here and converted to instants in the  */
+/* organization's timezone by the domain layer.                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * `datetime-local` wall-time input ("YYYY-MM-DDTHH:mm"). Shape and
+ * calendar reality are checked here (Date.UTC normalization is caught
+ * by component round-trip); timezone interpretation is the domain's
+ * job — the value is deliberately a string, not an instant.
+ */
+export const localDateTimeSchema = z.preprocess(
+  emptyToUndefined,
+  z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/, "Use YYYY-MM-DDTHH:mm.")
+    .refine((value) => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(
+        value,
+      );
+      if (!m) return false;
+      const d = new Date(
+        Date.UTC(
+          Number(m[1]),
+          Number(m[2]) - 1,
+          Number(m[3]),
+          Number(m[4]),
+          Number(m[5]),
+          Number(m[6] ?? 0),
+        ),
+      );
+      return (
+        d.getUTCFullYear() === Number(m[1]) &&
+        d.getUTCMonth() === Number(m[2]) - 1 &&
+        d.getUTCDate() === Number(m[3]) &&
+        d.getUTCHours() === Number(m[4]) &&
+        d.getUTCMinutes() === Number(m[5]) &&
+        d.getUTCSeconds() === Number(m[6] ?? 0)
+      );
+    }, "Enter a real date and time.")
+    .optional(),
+);
+export type LocalDateTimeInput = z.infer<typeof localDateTimeSchema>;
+
+/** Shared material-field shape for create and correction. */
+const incidentMaterialFields = {
+  title: z
+    .string()
+    .trim()
+    .min(1, "Title is required.")
+    .max(120, "Keep the title under 120 characters."),
+  // The initial report narrative — what was reported, verbatim.
+  summary: optionalText(4000),
+  reportedAt: localDateTimeSchema,
+  departedAt: localDateTimeSchema,
+  onSceneAt: localDateTimeSchema,
+  returnedAt: localDateTimeSchema,
+};
+
+/**
+ * Manual incident creation. `calloutId` is optional — the domain
+ * verifies the callout belongs to the same organization.
+ */
+export const incidentCreateSchema = z.object({
+  ...incidentMaterialFields,
+  calloutId: optionalId,
+});
+export type IncidentCreateInput = z.infer<typeof incidentCreateSchema>;
+
+/**
+ * Material-field edit/correction. `reason` is optional input here; the
+ * domain requires it when the incident is CLOSED.
+ */
+export const incidentUpdateSchema = z.object({
+  ...incidentMaterialFields,
+  reason: optionalText(500),
+});
+export type IncidentUpdateInput = z.infer<typeof incidentUpdateSchema>;
+
+/** Lifecycle transition target — the domain validates the source. */
+export const incidentTransitionSchema = z.enum(["OPEN", "CLOSED"]);
+export type IncidentTransitionInput = z.infer<typeof incidentTransitionSchema>;
+
+/** Link an unlinked incident to a callout. Same-org enforced server-side. */
+export const incidentCalloutLinkSchema = z.object({
+  calloutId: z.string().min(1, "Choose a callout."),
+});
+export type IncidentCalloutLinkInput = z.infer<
+  typeof incidentCalloutLinkSchema
+>;
+
+/** Explicit factual participation — never inferred from callout RSVP. */
+export const incidentMemberSchema = z.object({
+  memberId: z.string().min(1, "Choose a member."),
+  roleNote: optionalText(200),
+});
+export type IncidentMemberInput = z.infer<typeof incidentMemberSchema>;
+
+export const incidentAssetSchema = z.object({
+  assetId: z.string().min(1, "Choose an asset."),
+  note: optionalText(200),
+});
+export type IncidentAssetInput = z.infer<typeof incidentAssetSchema>;
+
+export const incidentNoteKindSchema = z.enum([
+  "GENERAL",
+  "AFTER_ACTION",
+  "CLOSING",
+]);
+export type IncidentNoteKindInput = z.infer<typeof incidentNoteKindSchema>;
+
+/** A human-authored note — `occurredAt` records a past observation time. */
+export const incidentNoteSchema = z.object({
+  kind: incidentNoteKindSchema.default("GENERAL"),
+  body: z
+    .string()
+    .trim()
+    .min(1, "Note text is required.")
+    .max(4000, "Keep the note under 4000 characters."),
+  occurredAt: localDateTimeSchema,
+});
+export type IncidentNoteInput = z.infer<typeof incidentNoteSchema>;
+
+/** Correct a note's text — appends a before/after correction row. */
+export const incidentNoteCorrectionSchema = z.object({
+  body: z
+    .string()
+    .trim()
+    .min(1, "Note text is required.")
+    .max(4000, "Keep the note under 4000 characters."),
+  reason: optionalText(500),
+});
+export type IncidentNoteCorrectionInput = z.infer<
+  typeof incidentNoteCorrectionSchema
+>;

@@ -408,3 +408,71 @@ export async function requireOrgAdminForCalloutInvitation(
   }
   return invitation;
 }
+
+/**
+ * Issue #15 incident lookups — same rule: the caller-supplied id is an
+ * untrusted selector; the record's own organizationId decides which
+ * grant must exist. Incidents may carry sensitive data, so every
+ * incident surface is ADMIN-only — there is deliberately no member-role
+ * variant. Participant/note rows resolve through their denormalized
+ * organizationId (composite-FK guaranteed).
+ */
+export async function requireOrgAdminForIncident(
+  ctx: AuthContext,
+  incidentId: string,
+) {
+  const incident = await prisma.incident.findUnique({
+    where: { id: incidentId },
+  });
+  if (!incident || !isOrgAdmin(ctx, incident.organizationId)) {
+    logDenial("authz.incident_scope_denied", ctx, { entityId: incidentId });
+    throw new AuthorizationError();
+  }
+  return incident;
+}
+
+export async function requireOrgAdminForIncidentMember(
+  ctx: AuthContext,
+  participationId: string,
+) {
+  const row = await prisma.incidentMember.findUnique({
+    where: { id: participationId },
+  });
+  if (!row || !isOrgAdmin(ctx, row.organizationId)) {
+    logDenial("authz.incident_member_scope_denied", ctx, {
+      entityId: participationId,
+    });
+    throw new AuthorizationError();
+  }
+  return row;
+}
+
+export async function requireOrgAdminForIncidentAsset(
+  ctx: AuthContext,
+  participationId: string,
+) {
+  const row = await prisma.incidentAsset.findUnique({
+    where: { id: participationId },
+  });
+  if (!row || !isOrgAdmin(ctx, row.organizationId)) {
+    logDenial("authz.incident_asset_scope_denied", ctx, {
+      entityId: participationId,
+    });
+    throw new AuthorizationError();
+  }
+  return row;
+}
+
+export async function requireOrgAdminForIncidentNote(
+  ctx: AuthContext,
+  noteId: string,
+) {
+  const note = await prisma.incidentNote.findUnique({
+    where: { id: noteId },
+  });
+  if (!note || !isOrgAdmin(ctx, note.organizationId)) {
+    logDenial("authz.incident_note_scope_denied", ctx, { entityId: noteId });
+    throw new AuthorizationError();
+  }
+  return note;
+}
