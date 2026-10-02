@@ -130,6 +130,13 @@ optional `reason`, actor, and `createdAt` — the original wording is
 always recoverable, and the UI shows correction history. A same-body
 submission writes nothing.
 
+A correction also carries a denormalized `incidentId` for org-scoped
+incident-history queries; the composite foreign key
+`(noteId, incidentId, organizationId) → IncidentNote(id, incidentId,
+organizationId)` makes the database itself reject a correction whose
+incident differs from its note's — the denormalized column cannot
+drift.
+
 ## Material corrections — `IncidentChange`
 
 Editing material fields (`title`, `summary`, the four factual

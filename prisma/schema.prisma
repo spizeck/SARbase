@@ -1646,8 +1646,10 @@ model IncidentNote {
   incident     Incident                 @relation(fields: [incidentId, organizationId], references: [id, organizationId], onDelete: Restrict)
   corrections  IncidentNoteCorrection[]
 
-  // Composite-FK target so IncidentNoteCorrection enforces same-org rows.
-  @@unique([id, organizationId])
+  // Composite-FK target so IncidentNoteCorrection enforces same-org rows
+  // AND that a correction's denormalized incidentId matches its note's
+  // incident — one constraint covers org, incident, and note together.
+  @@unique([id, incidentId, organizationId])
   @@index([incidentId, createdAt])
   @@index([organizationId, createdAt])
 }
@@ -1668,7 +1670,7 @@ model IncidentNoteCorrection {
   createdAt           DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  note         IncidentNote @relation(fields: [noteId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  note         IncidentNote @relation(fields: [noteId, incidentId, organizationId], references: [id, incidentId, organizationId], onDelete: Restrict)
 
   @@index([noteId, createdAt])
   @@index([incidentId, createdAt])

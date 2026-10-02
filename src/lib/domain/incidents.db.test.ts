@@ -443,6 +443,34 @@ describe.skipIf(!hasDb)("incidents (issue #15)", () => {
     expect(corrections[0]!.actorAuthIdentityId).toBe(actorA.id);
   });
 
+  it("binds a correction's denormalized incidentId to its note's incident", async () => {
+    // The (noteId, incidentId, organizationId) composite FK means the
+    // database itself rejects a correction naming a different incident —
+    // the denormalized column cannot drift from its note's.
+    const incident = await makeDraft();
+    const other = await makeDraft();
+    const note = await addIncidentNote(
+      incident.id,
+      { body: "Bound to this incident.", kind: "GENERAL" },
+      actorA.id,
+    );
+    await expect(
+      prisma.incidentNoteCorrection.create({
+        data: {
+          organizationId: orgA.id,
+          noteId: note.id,
+          incidentId: other.id, // not the note's incident
+          beforeBody: "a",
+          afterBody: "b",
+          actorAuthIdentityId: actorA.id,
+        },
+      }),
+    ).rejects.toThrow();
+    expect(
+      await prisma.incidentNoteCorrection.count({ where: { noteId: note.id } }),
+    ).toBe(0);
+  });
+
   it("treats an identical note body as a no-op", async () => {
     const incident = await makeDraft();
     const note = await addIncidentNote(
