@@ -799,11 +799,11 @@ describe.skipIf(!hasDb)("vendors and expenses (issue #17)", () => {
       let waiters = 0;
       try {
         for (let i = 0; i < 120 && waiters < 2; i++) {
-          const [{ n }] = await prisma.$queryRaw<{ n: bigint }[]>`
+          const rows = await prisma.$queryRaw<{ n: bigint }[]>`
             SELECT count(*) AS n FROM pg_stat_activity
             WHERE wait_event_type = 'Lock'
               AND pid <> pg_backend_pid()`;
-          waiters = Number(n);
+          waiters = Number(rows[0]?.n ?? 0);
           if (waiters < 2) await new Promise((r) => setTimeout(r, 25));
         }
       } finally {
