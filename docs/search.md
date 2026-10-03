@@ -207,5 +207,8 @@ catch accidental quadratic regressions rather than micro-benchmark.
 Each domain is a pair of bounded queries (exact + contains; more where
 a domain spans two tables, plus attachment parent resolution) — on the
 order of two dozen small parallel queries per search, no N+1. At
-SARbase scale no additional indexes are warranted; `organizationId`
-scoping keeps every scan small.
+SARbase scale no additional indexes are warranted. The benchmark
+covers one organization with ~1,350 rows — `organizationId` narrows
+each scan to one org's rows and `scanLimit` caps what is returned, but
+organizations far larger than the fixture should re-validate with an
+EXPLAIN pass before assuming the same headroom.
