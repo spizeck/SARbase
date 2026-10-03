@@ -10,14 +10,14 @@
  * Every registry entry is `adminOnly` today because every record
  * surface in SARbase is ADMIN-only (see docs/search.md — the MEMBER
  * role exposes only the member's own account data). The flag is the
- * seam for future member-visible domains and for issue #17's
- * Vendor/Expense records, which register here without touching the
- * orchestration in ./search.ts.
+ * seam for future member-visible domains; new record domains register
+ * here without touching the orchestration in ./search.ts.
  */
 
 import type { Prisma } from "@prisma/client";
 
 import { formatDateOnly } from "@/lib/dates";
+import { formatMoney } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 
 import {
@@ -1093,6 +1093,160 @@ const searchCallouts: DomainSearcher = async ({
   );
 };
 
+const searchVendors: DomainSearcher = async ({
+  organizationId,
+  query,
+  scanLimit,
+}) => {
+  // Vendor contact fields are business data the organization recorded
+  // for itself — unlike member personal details, searching them is the
+  // point ("whose account number is this").
+  const fields = (v: string, exact: boolean): Prisma.VendorWhereInput[] => [
+    { name: text(v, exact) },
+    { contactName: text(v, exact) },
+    { email: text(v, exact) },
+    { phone: text(v, exact) },
+    { website: text(v, exact) },
+    { accountReference: text(v, exact) },
+    { notes: text(v, exact) },
+  ];
+  const select = {
+    id: true,
+    name: true,
+    contactName: true,
+    email: true,
+    phone: true,
+    website: true,
+    accountReference: true,
+    notes: true,
+    status: true,
+  } satisfies Prisma.VendorSelect;
+  const rows = await runDomain(
+    () =>
+      prisma.vendor.findMany({
+        where: { organizationId, ...exactWhere(query, fields) },
+        take: scanLimit,
+        select,
+      }),
+    () =>
+      prisma.vendor.findMany({
+        where: {
+          organizationId,
+          ...tokenizedWhere(query, (t) => fields(t, false)),
+        },
+        orderBy: { name: "asc" },
+        take: scanLimit,
+        select,
+      }),
+  );
+  return hits(
+    rows,
+    (v) => ({
+      type: "vendor",
+      id: v.id,
+      title: v.name,
+      subtitle: joinParts([
+        v.status === "INACTIVE" ? "Inactive" : null,
+        v.contactName,
+      ]),
+      href: `/admin/organizations/${organizationId}/vendors`,
+      searchable: [
+        v.name,
+        v.contactName,
+        v.email,
+        v.phone,
+        v.website,
+        v.accountReference,
+        v.notes,
+      ],
+    }),
+    query,
+  );
+};
+
+const searchExpenses: DomainSearcher = async ({
+  organizationId,
+  query,
+  scanLimit,
+}) => {
+  const fields = (v: string, exact: boolean): Prisma.ExpenseWhereInput[] => [
+    { reference: text(v, exact) },
+    { category: text(v, exact) },
+    { currency: text(v, exact) },
+    { description: text(v, exact) },
+    { reviewNote: text(v, exact) },
+    { reimbursementNote: text(v, exact) },
+    { vendor: { name: text(v, exact) } },
+    { submittedByMember: { displayName: text(v, exact) } },
+    { paidByMember: { displayName: text(v, exact) } },
+  ];
+  const select = {
+    id: true,
+    reference: true,
+    expenseDate: true,
+    amountMinor: true,
+    currency: true,
+    category: true,
+    description: true,
+    reviewNote: true,
+    reimbursementNote: true,
+    status: true,
+    reimbursementStatus: true,
+    vendor: { select: { name: true } },
+    submittedByMember: { select: { displayName: true } },
+    paidByMember: { select: { displayName: true } },
+  } satisfies Prisma.ExpenseSelect;
+  const rows = await runDomain(
+    () =>
+      prisma.expense.findMany({
+        where: { organizationId, ...exactWhere(query, fields) },
+        take: scanLimit,
+        select,
+      }),
+    () =>
+      prisma.expense.findMany({
+        where: {
+          organizationId,
+          ...tokenizedWhere(query, (t) => fields(t, false)),
+        },
+        orderBy: { expenseDate: "desc" },
+        take: scanLimit,
+        select,
+      }),
+  );
+  return hits(
+    rows,
+    (e) => ({
+      type: "expense",
+      id: e.id,
+      title: `${e.reference} — ${e.vendor?.name ?? e.category ?? "Expense"}`,
+      subtitle: joinParts([
+        formatDateOnly(e.expenseDate),
+        `${e.currency} ${formatMoney(e.amountMinor, e.currency)}`,
+        e.status.toLowerCase(),
+        e.reimbursementStatus === "REIMBURSED"
+          ? "reimbursed"
+          : e.reimbursementStatus === "PENDING"
+            ? "reimbursement pending"
+            : null,
+      ]),
+      href: `/admin/organizations/${organizationId}/expenses/${e.id}`,
+      searchable: [
+        e.reference,
+        e.category,
+        e.currency,
+        e.description,
+        e.reviewNote,
+        e.reimbursementNote,
+        e.vendor?.name,
+        e.submittedByMember?.displayName,
+        e.paidByMember?.displayName,
+      ],
+    }),
+    query,
+  );
+};
+
 const searchDocuments: DomainSearcher = async ({
   organizationId,
   query,
@@ -1205,6 +1359,7 @@ const searchAttachments: DomainSearcher = async ({
     inspectionLinks,
     maintenanceLinks,
     defectLinks,
+    expenseLinks,
     documentVersions,
   ] = await Promise.all([
     prisma.incidentAttachment.findMany({
@@ -1241,6 +1396,10 @@ const searchAttachments: DomainSearcher = async ({
     prisma.defectAttachment.findMany({
       where: { organizationId, attachmentId: inIds },
       select: { attachmentId: true },
+    }),
+    prisma.expenseAttachment.findMany({
+      where: { organizationId, attachmentId: inIds },
+      select: { attachmentId: true, expenseId: true },
     }),
     prisma.organizationDocumentVersion.findMany({
       where: { organizationId, attachmentId: inIds },
@@ -1293,6 +1452,9 @@ const searchAttachments: DomainSearcher = async ({
   for (const l of defectLinks) {
     put(l.attachmentId, maintenanceHref, "Defect file");
   }
+  for (const l of expenseLinks) {
+    put(l.attachmentId, `${org}/expenses/${l.expenseId}`, "Expense receipt");
+  }
 
   return hits(
     rows,
@@ -1313,8 +1475,8 @@ const searchAttachments: DomainSearcher = async ({
 
 /**
  * The registry is display order AND the extension seam: new domains
- * (vendors, expenses after issue #17 merges) append a SearchDomain here
- * with their own isolated searcher — orchestration never changes.
+ * append a SearchDomain here with their own isolated searcher —
+ * orchestration never changes.
  */
 export const SEARCH_DOMAINS: SearchDomain[] = [
   { type: "member", adminOnly: true, search: searchMembers },
@@ -1329,6 +1491,8 @@ export const SEARCH_DOMAINS: SearchDomain[] = [
   { type: "defect", adminOnly: true, search: searchDefects },
   { type: "incident", adminOnly: true, search: searchIncidents },
   { type: "callout", adminOnly: true, search: searchCallouts },
+  { type: "vendor", adminOnly: true, search: searchVendors },
+  { type: "expense", adminOnly: true, search: searchExpenses },
   { type: "document", adminOnly: true, search: searchDocuments },
   { type: "attachment", adminOnly: true, search: searchAttachments },
 ];

@@ -8,8 +8,8 @@
  * is never read, counted, or snippetted.
  *
  * Result types are user-facing labels, not table names. Adding a domain
- * (e.g. vendors/expenses once issue #17 lands) means adding a registry
- * entry in ./domains.ts — no contract change here.
+ * means adding a registry entry in ./domains.ts plus a type/label here —
+ * no contract change elsewhere.
  */
 
 export const SEARCH_RESULT_TYPES = [
@@ -25,6 +25,8 @@ export const SEARCH_RESULT_TYPES = [
   "defect",
   "incident",
   "callout",
+  "vendor",
+  "expense",
   "document",
   "attachment",
 ] as const;
@@ -44,6 +46,8 @@ export const SEARCH_RESULT_TYPE_LABELS: Record<SearchResultType, string> = {
   defect: "Defects",
   incident: "Incidents",
   callout: "Callouts",
+  vendor: "Vendors",
+  expense: "Expenses",
   document: "Documents",
   attachment: "Attachments",
 };

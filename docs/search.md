@@ -156,25 +156,24 @@ never shown in result subtitles.
 
 ## Domains and fields searched
 
-| type          | fields                                                                           |
-| ------------- | -------------------------------------------------------------------------------- |
-| member        | displayName, email                                                               |
-| unit          | name                                                                             |
-| qualification | definition name/description; record issuer, reference, notes, member, definition |
-| training      | title, location, instructor, notes, follow-up, unit, lead member, topic labels   |
-| asset         | name, category, manufacturer, model, serial number, asset tag, vendor, notes     |
-| inventory     | name, category, vendor, unit of measure, notes, storage location                 |
-| location      | name, description, parent location, containing asset                             |
-| inspection    | definition name/description; record inspector, notes, asset, definition          |
-| maintenance   | plan name/description; record title, work performed, provider, notes, asset      |
-| defect        | title, description, reporter, resolution notes, asset, reporting member          |
-| incident      | reference, title, summary, note bodies                                           |
-| callout       | title, message, unit                                                             |
-| document      | title, category, notes                                                           |
-| attachment    | display filename, description — metadata only, ACTIVE rows only                  |
-
-Vendors and expenses register here after issue #17 merges; the registry
-seam above is designed for exactly that addition.
+| type          | fields                                                                                            |
+| ------------- | ------------------------------------------------------------------------------------------------- |
+| member        | displayName, email                                                                                |
+| unit          | name                                                                                              |
+| qualification | definition name/description; record issuer, reference, notes, member, definition                  |
+| training      | title, location, instructor, notes, follow-up, unit, lead member, topic labels                    |
+| asset         | name, category, manufacturer, model, serial number, asset tag, vendor, notes                      |
+| inventory     | name, category, vendor, unit of measure, notes, storage location                                  |
+| location      | name, description, parent location, containing asset                                              |
+| inspection    | definition name/description; record inspector, notes, asset, definition                           |
+| maintenance   | plan name/description; record title, work performed, provider, notes, asset                       |
+| defect        | title, description, reporter, resolution notes, asset, reporting member                           |
+| incident      | reference, title, summary, note bodies                                                            |
+| callout       | title, message, unit                                                                              |
+| vendor        | name, contact name, email, phone, website, account reference, notes                               |
+| expense       | reference, category, description, review/reimbursement notes, vendor, submitted-by/paid-by member |
+| document      | title, category, notes                                                                            |
+| attachment    | display filename, description — metadata only, ACTIVE rows only                                   |
 
 ## Boundaries
 

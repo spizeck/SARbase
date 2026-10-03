@@ -72,6 +72,9 @@ describe.skipIf(!hasDb)("global organization search", () => {
     callout: "",
     document: "",
     attachment: "",
+    vendor: "",
+    expense: "",
+    receipt: "",
     foreignMember: "",
   };
 
@@ -303,6 +306,65 @@ describe.skipIf(!hasDb)("global organization search", () => {
         createdByAuthIdentityId: ACTOR,
       },
     });
+
+    const vendor = await prisma.vendor.create({
+      data: {
+        organizationId: orgA,
+        name: `${PREFIX}Harbor Chandlery`,
+        contactName: `${PREFIX}Sam Whitaker`,
+        email: `${PREFIX}chandlery@example.test`,
+        phone: `${PREFIX}555-0182`,
+        accountReference: `${PREFIX}acct-7712`,
+      },
+    });
+    ids.vendor = vendor.id;
+    // Same-name vendor in the other org — cross-org probe.
+    await prisma.vendor.create({
+      data: { organizationId: orgB, name: `${PREFIX}Harbor Chandlery` },
+    });
+
+    const expense = await prisma.expense.create({
+      data: {
+        organizationId: orgA,
+        sequence: 1,
+        reference: `${PREFIX}EXP-42`,
+        expenseDate: new Date("2026-09-05T00:00:00.000Z"),
+        amountMinor: 4215,
+        currency: "USD",
+        vendorId: vendor.id,
+        category: `${PREFIX}Fuel`,
+        description: `${PREFIX}outboard fuel for the patrol boat`,
+        status: "APPROVED",
+        reimbursementStatus: "REIMBURSED",
+        paidByMemberId: member.id,
+        reimbursedAt: new Date("2026-09-08T00:00:00.000Z"),
+        reimbursedByAuthIdentityId: ACTOR,
+        createdByAuthIdentityId: ACTOR,
+      },
+    });
+    ids.expense = expense.id;
+
+    const receipt = await prisma.attachment.create({
+      data: {
+        organizationId: orgA,
+        displayFilename: `${PREFIX}fuel-receipt.pdf`,
+        mediaType: "application/pdf",
+        sizeBytes: 456,
+        storageProvider: "fake",
+        storageKey: `${PREFIX}receipt-key`,
+        checksumSha256: `${PREFIX}receipt-checksum`,
+        uploadedByAuthIdentityId: ACTOR,
+      },
+    });
+    ids.receipt = receipt.id;
+    await prisma.expenseAttachment.create({
+      data: {
+        organizationId: orgA,
+        expenseId: expense.id,
+        attachmentId: receipt.id,
+        createdByAuthIdentityId: ACTOR,
+      },
+    });
   });
 
   afterAll(async () => {
@@ -318,6 +380,7 @@ describe.skipIf(!hasDb)("global organization search", () => {
     await prisma.inspectionRecordAttachment.deleteMany({ where: orgFilter });
     await prisma.maintenanceRecordAttachment.deleteMany({ where: orgFilter });
     await prisma.defectAttachment.deleteMany({ where: orgFilter });
+    await prisma.expenseAttachment.deleteMany({ where: orgFilter });
     await prisma.organizationDocumentVersion.deleteMany({ where: orgFilter });
     await prisma.incidentNoteCorrection.deleteMany({ where: orgFilter });
     await prisma.incidentNote.deleteMany({ where: orgFilter });
@@ -332,6 +395,18 @@ describe.skipIf(!hasDb)("global organization search", () => {
     await prisma.attachmentEvent.deleteMany({ where: orgFilter });
     await prisma.attachment.deleteMany({ where: orgFilter });
     await prisma.organizationDocument.deleteMany({ where: orgFilter });
+    // Expense children before the expense (context links, events,
+    // changes), then the expense itself before its vendor/member.
+    await prisma.expenseIncident.deleteMany({ where: orgFilter });
+    await prisma.expenseTrainingEvent.deleteMany({ where: orgFilter });
+    await prisma.expenseAsset.deleteMany({ where: orgFilter });
+    await prisma.expenseMaintenanceRecord.deleteMany({ where: orgFilter });
+    await prisma.expenseInventoryItem.deleteMany({ where: orgFilter });
+    await prisma.expenseEvent.deleteMany({ where: orgFilter });
+    await prisma.expenseChange.deleteMany({ where: orgFilter });
+    await prisma.expense.deleteMany({ where: orgFilter });
+    await prisma.expenseSequence.deleteMany({ where: orgFilter });
+    await prisma.vendor.deleteMany({ where: orgFilter });
     await prisma.inspectionRecordChange.deleteMany({ where: orgFilter });
     await prisma.inspectionRecord.deleteMany({ where: orgFilter });
     await prisma.maintenanceRecordChange.deleteMany({ where: orgFilter });
@@ -524,6 +599,75 @@ describe.skipIf(!hasDb)("global organization search", () => {
       expect(attachments[0]?.href).toBe(`/admin/assets/${ids.asset}`);
     });
 
+    it("finds a vendor by name, contact, and account reference", async () => {
+      const admin = ctxFor(orgA, "ADMIN");
+
+      const byName = await searchOrganizationRecords(
+        admin,
+        orgA,
+        `${PREFIX}Harbor Chandlery`,
+      );
+      expect(resultsOf(byName, "vendor").map((v) => v.id)).toContain(
+        ids.vendor,
+      );
+
+      const byAccount = await searchOrganizationRecords(
+        admin,
+        orgA,
+        `${PREFIX}acct-7712`,
+      );
+      expect(resultsOf(byAccount, "vendor").map((v) => v.id)).toContain(
+        ids.vendor,
+      );
+    });
+
+    it("finds an expense by reference, vendor name, and description", async () => {
+      const admin = ctxFor(orgA, "ADMIN");
+
+      const byRef = await searchOrganizationRecords(
+        admin,
+        orgA,
+        `${PREFIX}EXP-42`,
+      );
+      const expenses = resultsOf(byRef, "expense");
+      expect(expenses.map((e) => e.id)).toContain(ids.expense);
+      expect(expenses[0]?.title).toContain("EXP-42");
+
+      const byDescription = await searchOrganizationRecords(
+        admin,
+        orgA,
+        "outboard fuel",
+      );
+      expect(resultsOf(byDescription, "expense").map((e) => e.id)).toContain(
+        ids.expense,
+      );
+
+      // The vendor's name also surfaces the expense.
+      const byVendor = await searchOrganizationRecords(
+        admin,
+        orgA,
+        `${PREFIX}Harbor Chandlery`,
+      );
+      expect(resultsOf(byVendor, "expense").map((e) => e.id)).toContain(
+        ids.expense,
+      );
+    });
+
+    it("resolves a receipt filename hit to the expense page", async () => {
+      const outcome = await searchOrganizationRecords(
+        ctxFor(orgA, "ADMIN"),
+        orgA,
+        "fuel-receipt",
+      );
+      const hit = resultsOf(outcome, "attachment").find(
+        (a) => a.id === ids.receipt,
+      );
+      expect(hit).toBeTruthy();
+      expect(hit?.href).toBe(
+        `/admin/organizations/${orgA}/expenses/${ids.expense}`,
+      );
+    });
+
     it("returns nothing for a non-matching query", async () => {
       const outcome = await searchOrganizationRecords(
         ctxFor(orgA, "ADMIN"),
@@ -555,6 +699,8 @@ describe.skipIf(!hasDb)("global organization search", () => {
         "defect",
         "incident",
         "callout",
+        "vendor",
+        "expense",
         "document",
         "attachment",
       ] as const) {
