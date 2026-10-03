@@ -349,6 +349,35 @@ describe.skipIf(!hasDb)("training domain", () => {
     expect((await getMemberTrainingSummary(member.id)).attendedCount).toBe(1);
   });
 
+  it("a member who led an event cannot be hard-deleted; deactivation is unaffected", async () => {
+    const org = await createTestOrg("lead-restrict");
+    const lead = await createMember(org.id, {
+      displayName: uniqueName("lead"),
+    });
+    const event = await createTrainingEvent(org.id, {
+      title: "Led drill",
+      date: D("2027-03-01"),
+      leadMemberId: lead.id,
+      topics: [],
+    });
+
+    // Issue #29 — Restrict, like every other member reference: the lead
+    // pointer is recorded history, so the member row cannot be
+    // hard-deleted underneath it. (The previous SetNull could never
+    // have applied cleanly anyway — the composite FK includes the
+    // required organizationId.)
+    await expect(
+      prisma.member.delete({ where: { id: lead.id } }),
+    ).rejects.toThrow();
+
+    // Deactivation — the supported member lifecycle — is unaffected,
+    // and the event keeps its lead pointer.
+    const { setMemberStatus } = await import("@/lib/domain/member");
+    await setMemberStatus(lead.id, "INACTIVE");
+    const full = await getTrainingEvent(event.id);
+    expect(full?.leadMember?.id).toBe(lead.id);
+  });
+
   it("filters to organization-wide events with the null unit filter", async () => {
     const org = await createTestOrg("orgwide");
     const unit = await createUnit(org.id, { name: uniqueName("unit") });

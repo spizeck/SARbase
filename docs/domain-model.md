@@ -450,7 +450,9 @@ One factual training activity: `organizationId`, optional `unitId`,
 same org-timezone semantics as qualification dates), optional
 `durationMinutes`, `location`, `instructorName` (free text — external
 instructors need no entity), optional `leadMemberId` (internal lead,
-same-org enforced), `notes`, `followUp` (free text — deliberately not
+same-org enforced, `Restrict` like every other member reference —
+recorded history always keeps its lead pointer), `notes`, `followUp`
+(free text — deliberately not
 a task-management system), `status`, timestamps.
 
 - **Lifecycle:** `COMPLETED` (the training happened) or `CANCELLED`
@@ -513,6 +515,18 @@ without history. There is no update or delete path for these rows.
   a stable forensic reference; while the identity row exists the UI
   resolves it to the linked member's display name or sign-in email,
   and afterwards renders a safe fallback identifier.
+- **This is the uniform policy for every audit/history actor column**
+  (`TrainingAttendanceChange`, `MemberAvailabilityUpdate`,
+  `InspectionRecordChange`, `MaintenanceRecordChange`, `DefectChange`,
+  callout/incident history, notification requests, attachment audit):
+  actor IDs are retained as scalar identifiers rather than foreign
+  keys so historical records survive deletion of the authentication
+  identity. Display attribution resolves current identity/member
+  information best-effort (`resolveActorLabels` in
+  `src/lib/domain/actors.ts` — linked member name in the record's
+  organization, then sign-in email) and falls back to the stored
+  actor ID. No history table may `JOIN` an actor through an
+  `AuthIdentity` relation — there is deliberately no such relation.
 - **Same-organization integrity is DB-enforced** via the issue #5
   mechanism — denormalized `organizationId` plus composite FKs to
   `TrainingEvent(id, organizationId)` and `Member(id, organizationId)`,
@@ -710,8 +724,9 @@ edits material fields in place but appends an immutable
 `InspectionRecordChange` row in the same transaction: a complete
 before/after snapshot of the material fields (`performedOn`,
 `inspectorMemberId`, `inspectorName`, `conditionObserved`, `nextDueOn`,
-`notes`), the optional human `note`, the acting `AuthIdentity`
-(server-side, never client-supplied), and `createdAt`. The record row
+`notes`), the optional human `note`, the acting identity as a scalar
+`actorAuthIdentityId` (server-side, never client-supplied — no FK, so
+history survives identity deletion), and `createdAt`. The record row
 locks `FOR UPDATE` inside the transaction so concurrent corrections
 chain correctly — each change's `before` equals the previously
 committed state. A submission that changes no material field writes no
@@ -741,9 +756,9 @@ record automatically recompute the derived due fact.
 Material corrections get the same treatment as inspections:
 `updateMaintenanceRecord` writes a `MaintenanceRecordChange`
 before/after snapshot (`performedOn`, `title`, `workPerformed`,
-`providerName`, `performedByMemberId`, `nextDueOn`, `notes`) + actor +
-timestamp atomically with the update. `planId`, asset, and the
-captured meter reading are immutable provenance.
+`providerName`, `performedByMemberId`, `nextDueOn`, `notes`) + scalar
+actor id + timestamp atomically with the update. `planId`, asset, and
+the captured meter reading are immutable provenance.
 
 SARbase interprets the foundation's immutable-records rule
 (`amendsRecordId` append-only amendment) as stable-record-identity +
@@ -758,9 +773,10 @@ attachment linkage.
 A human-reported factual issue: `reportedOn`, optional reporter
 (member and/or free text), `title`, `description`, `OPEN`/`RESOLVED`
 status, `resolvedOn`, `resolutionNotes`. Every lifecycle event —
-REPORTED, RESOLVED, REOPENED — appends a `DefectChange` row naming the
-acting `AuthIdentity` (same narrow-history pattern as
-`TrainingAttendanceChange`; no generic audit framework). Reopening
+REPORTED, RESOLVED, REOPENED — appends a `DefectChange` row recording
+the acting admin's scalar `actorAuthIdentityId` (same narrow-history
+pattern and actor policy as `TrainingAttendanceChange`; no generic
+audit framework). Reopening
 keeps `resolvedOn`/`resolutionNotes` as the record of the most recent
 resolution while status returns to OPEN.
 

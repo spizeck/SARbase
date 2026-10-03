@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import { log } from "@/lib/logging";
+import { resolveActorLabels } from "@/lib/domain/actors";
 
 import type { TrainingEventInput, TrainingEventStatusInput } from "./schemas";
 
@@ -383,32 +384,15 @@ export async function listTrainingAttendanceChanges(trainingEventId: string) {
     },
   });
   const organizationId = changes[0]?.organizationId;
-  const actorIds = [...new Set(changes.map((c) => c.actorAuthIdentityId))];
-  const [identities, actorMembers] = await Promise.all([
-    prisma.authIdentity.findMany({
-      where: { id: { in: actorIds } },
-      select: { id: true, email: true },
-    }),
-    organizationId
-      ? prisma.member.findMany({
-          where: {
-            organizationId,
-            authIdentityId: { in: actorIds },
-          },
-          select: { authIdentityId: true, displayName: true },
-        })
-      : [],
-  ]);
-  const memberNameByIdentity = new Map(
-    actorMembers.map((m) => [m.authIdentityId, m.displayName]),
-  );
-  const emailByIdentity = new Map(identities.map((i) => [i.id, i.email]));
+  const labels = organizationId
+    ? await resolveActorLabels(
+        organizationId,
+        changes.map((c) => c.actorAuthIdentityId),
+      )
+    : new Map<string, string>();
   return changes.map((change) => ({
     ...change,
-    actorDisplayName:
-      memberNameByIdentity.get(change.actorAuthIdentityId) ??
-      emailByIdentity.get(change.actorAuthIdentityId) ??
-      null,
+    actorDisplayName: labels.get(change.actorAuthIdentityId) ?? null,
   }));
 }
 

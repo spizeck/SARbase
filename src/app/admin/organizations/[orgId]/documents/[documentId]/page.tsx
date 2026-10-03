@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { isOrgAdmin, requireAuth } from "@/lib/auth/authorize";
 import { getOrganizationDocument } from "@/lib/domain/attachments";
+import { resolveActorLabels } from "@/lib/domain/actors";
 import { prisma } from "@/lib/prisma";
 import { formatDateOnly, formatInstantInZone } from "@/lib/dates";
 
@@ -52,26 +53,13 @@ export default async function OrganizationDocumentPage({
   });
   const tz = organization.timezone;
 
-  // Audit labels: resolve uploader names for every version + event.
-  const actorIds = [
-    ...new Set(document.versions.flatMap((v) => [v.createdByAuthIdentityId])),
-  ];
-  const [identities, members] = await Promise.all([
-    prisma.authIdentity.findMany({
-      where: { id: { in: actorIds } },
-      select: { id: true, email: true },
-    }),
-    prisma.member.findMany({
-      where: { organizationId: orgId, authIdentityId: { in: actorIds } },
-      select: { authIdentityId: true, displayName: true },
-    }),
-  ]);
-  const nameByIdentity = new Map(
-    members.map((m) => [m.authIdentityId, m.displayName]),
+  // Audit labels: resolve uploader names for every version + event —
+  // member name in this org, identity email, then the raw scalar id.
+  const labels = await resolveActorLabels(
+    orgId,
+    document.versions.map((v) => v.createdByAuthIdentityId),
   );
-  const emailByIdentity = new Map(identities.map((i) => [i.id, i.email]));
-  const actorName = (id: string | null) =>
-    id ? (nameByIdentity.get(id) ?? emailByIdentity.get(id) ?? id) : null;
+  const actorName = (id: string | null) => (id ? (labels.get(id) ?? id) : null);
 
   const updateAction = updateOrganizationDocumentAction.bind(null, document.id);
   const versionAction = addDocumentVersionAction.bind(null, document.id);
