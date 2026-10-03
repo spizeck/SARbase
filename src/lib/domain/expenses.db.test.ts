@@ -747,6 +747,29 @@ describe.skipIf(!hasDb)("vendors and expenses (issue #17)", () => {
     ).rejects.toBeInstanceOf(CrossOrganizationExpenseError);
   });
 
+  it("serializes concurrent link removals into a single UNLINKED event", async () => {
+    const expense = await makeExpense();
+    const linkId = await addExpenseContextLink(
+      expense.id,
+      "ASSET",
+      assetA.id,
+      undefined,
+      actorA.id,
+    );
+    // Two removals race on the same expense row lock. Whichever
+    // interleaving occurs — the loser's find landing before or after
+    // the winner commits — at most one removal wins and exactly one
+    // CONTEXT_UNLINKED is written.
+    const outcomes = await Promise.allSettled([
+      removeExpenseContextLink("ASSET", linkId, actorA.id),
+      removeExpenseContextLink("ASSET", linkId, actorA.id),
+    ]);
+    expect(outcomes.some((o) => o.status === "fulfilled")).toBe(true);
+    expect(
+      (await eventTypes(expense.id)).filter((t) => t === "CONTEXT_UNLINKED"),
+    ).toHaveLength(1);
+  });
+
   /* ---------------- receipt attachments ---------------- */
 
   it("attaches a receipt through the shared attachment pipeline", async () => {

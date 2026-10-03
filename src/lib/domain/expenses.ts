@@ -943,15 +943,15 @@ async function deleteContextLinkRow(
   tx: Prisma.TransactionClient,
   kind: ExpenseContextLinkKindInput,
   linkId: string,
-) {
+): Promise<{ count: number }> {
   const where = { id: linkId };
-  if (kind === "INCIDENT") return tx.expenseIncident.delete({ where });
+  if (kind === "INCIDENT") return tx.expenseIncident.deleteMany({ where });
   if (kind === "TRAINING_EVENT")
-    return tx.expenseTrainingEvent.delete({ where });
-  if (kind === "ASSET") return tx.expenseAsset.delete({ where });
+    return tx.expenseTrainingEvent.deleteMany({ where });
+  if (kind === "ASSET") return tx.expenseAsset.deleteMany({ where });
   if (kind === "MAINTENANCE_RECORD")
-    return tx.expenseMaintenanceRecord.delete({ where });
-  return tx.expenseInventoryItem.delete({ where });
+    return tx.expenseMaintenanceRecord.deleteMany({ where });
+  return tx.expenseInventoryItem.deleteMany({ where });
 }
 
 /**
@@ -975,7 +975,13 @@ export async function removeExpenseContextLink(
       link.targetId,
       expense.organizationId,
     );
-    await deleteContextLinkRow(tx, kind, link.linkId);
+    // The pre-lock find is unprotected: a removal that committed while
+    // this transaction waited on the row lock leaves nothing to
+    // delete. deleteMany + count makes that repeat a quiet no-op
+    // instead of a P2025 or a duplicate CONTEXT_UNLINKED — the same
+    // idempotency unlinkAttachment has.
+    const removed = await deleteContextLinkRow(tx, kind, link.linkId);
+    if (removed.count === 0) return null;
     await expenseEvent(tx, expense, "CONTEXT_UNLINKED", actorAuthIdentityId, {
       kind,
       targetId: link.targetId,
@@ -983,6 +989,7 @@ export async function removeExpenseContextLink(
     });
     return expense;
   });
+  if (!result) return;
   log({
     event: "expenses.context_unlinked",
     subsystem: "expenses",

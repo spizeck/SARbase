@@ -1124,7 +1124,9 @@ Server-side Zod schemas (`src/lib/domain/schemas.ts`):
   parsed by `parseMoneyAmount` (zero/negative/extra-precision
   rejected); `currency` required 3-letter code from the supported ISO
   table; `vendorId`/`submittedByMemberId`/`paidByMemberId` optional
-  same-org references (vendor must be ACTIVE); `category` ≤60,
+  same-org references (new vendor assignments must be ACTIVE; a
+  correction may keep the record's already-attached inactive vendor);
+  `category` ≤60,
   `description` ≤2000; `reimbursementStatus` `NOT_REQUIRED`/`PENDING`
   at create. Corrections take the same fields plus an optional
   `reason` ≤500 — required by the domain once APPROVED/REIMBURSED.
