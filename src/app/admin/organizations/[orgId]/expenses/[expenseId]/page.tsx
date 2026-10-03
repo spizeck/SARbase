@@ -137,6 +137,32 @@ export default async function ExpenseDetailPage({
   for (const v of allVendors) vendorNameById.set(v.id, v.name);
   for (const m of allMembers) memberNameById.set(m.id, m.displayName);
 
+  // The correction form's selects offer ACTIVE vendors/members — but
+  // must also carry the record's CURRENT values even when those have
+  // since gone inactive, or the form would silently clear them on any
+  // unrelated edit. The domain independently allows keeping an
+  // already-attached inactive vendor while still rejecting NEW
+  // assignments of one.
+  const vendorOptions = vendors.map((v) => ({ id: v.id, name: v.name }));
+  if (detail.vendor && !vendorOptions.some((v) => v.id === detail.vendor!.id)) {
+    vendorOptions.push({
+      id: detail.vendor.id,
+      name: `${detail.vendor.name} (inactive)`,
+    });
+  }
+  const memberOptions = members.map((m) => ({
+    id: m.id,
+    displayName: m.displayName,
+  }));
+  for (const current of [detail.submittedByMember, detail.paidByMember]) {
+    if (current && !memberOptions.some((m) => m.id === current.id)) {
+      memberOptions.push({
+        id: current.id,
+        displayName: `${current.displayName} (inactive)`,
+      });
+    }
+  }
+
   // The linked-target selects. Labels carry each record's natural
   // reference so an operator can tell similar rows apart.
   const linkOptions: ExpenseLinkTarget[] = [
@@ -623,8 +649,8 @@ export default async function ExpenseDetailPage({
               submittedByMemberId: detail.submittedByMemberId,
               paidByMemberId: detail.paidByMemberId,
             }}
-            vendors={vendors}
-            members={members}
+            vendors={vendorOptions}
+            members={memberOptions}
             categories={categories}
             requireReason={correctionRequiresReason}
             submitLabel={

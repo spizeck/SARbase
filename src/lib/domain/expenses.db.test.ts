@@ -268,6 +268,44 @@ describe.skipIf(!hasDb)("vendors and expenses (issue #17)", () => {
     await expect(makeExpense({ vendorId: inactive.id })).resolves.toBeDefined();
   });
 
+  it("lets a correction keep an already-attached inactive vendor", async () => {
+    const deactivated = await createVendor(
+      orgA.id,
+      { name: uniq("deactivated") },
+      actorA.id,
+    );
+    const other = await createVendor(
+      orgA.id,
+      { name: uniq("also-inactive") },
+      actorA.id,
+    );
+    const expense = await makeExpense({ vendorId: deactivated.id });
+    await setVendorStatus(deactivated.id, "INACTIVE", actorA.id);
+    await setVendorStatus(other.id, "INACTIVE", actorA.id);
+
+    // Correcting another field while keeping the recorded vendor is
+    // not new spending against it — the correction must succeed.
+    const corrected = await updateExpense(
+      expense.id,
+      expenseInput({
+        vendorId: deactivated.id,
+        description: "corrected description",
+      }),
+      actorA.id,
+    );
+    expect(corrected.vendorId).toBe(deactivated.id);
+    expect(corrected.description).toBe("corrected description");
+
+    // Assigning a DIFFERENT inactive vendor is still new spending.
+    await expect(
+      updateExpense(
+        expense.id,
+        expenseInput({ vendorId: other.id }),
+        actorA.id,
+      ),
+    ).rejects.toBeInstanceOf(ExpenseInputError);
+  });
+
   it("lists vendors with expense counts, filtered by status", async () => {
     const countedVendor = await createVendor(
       orgA.id,

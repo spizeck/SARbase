@@ -238,7 +238,10 @@ function parseAmount(raw: string, currency: string): number {
  * correction. Every id must resolve inside the owning organization —
  * a foreign or fabricated id fails opaquely. The vendor must be ACTIVE:
  * an inactive vendor stays on the historical expenses it already has,
- * but new spending is not recorded against it.
+ * but new spending is not recorded against it. `allowInactiveVendorId`
+ * is the vendor the record already carries — a correction that merely
+ * *keeps* it is not new spending and must not fail; assigning an
+ * inactive vendor the record did not already have is still rejected.
  */
 async function resolveExpenseRelations(
   tx: Prisma.TransactionClient,
@@ -248,6 +251,7 @@ async function resolveExpenseRelations(
     submittedByMemberId?: string;
     paidByMemberId?: string;
   },
+  options: { allowInactiveVendorId?: string | null } = {},
 ) {
   if (input.vendorId) {
     const vendor = await tx.vendor.findFirst({
@@ -255,7 +259,10 @@ async function resolveExpenseRelations(
       select: { status: true },
     });
     if (!vendor) throw new CrossOrganizationExpenseError();
-    if (vendor.status !== "ACTIVE") {
+    if (
+      vendor.status !== "ACTIVE" &&
+      input.vendorId !== options.allowInactiveVendorId
+    ) {
       throw new ExpenseInputError(
         "That vendor is inactive — reactivate it or choose another.",
       );
@@ -632,7 +639,9 @@ export async function updateExpense(
   const amountMinor = parseAmount(input.amount, input.currency);
   const result = await prisma.$transaction(async (tx) => {
     const expense = await lockExpense(tx, expenseId);
-    await resolveExpenseRelations(tx, expense.organizationId, input);
+    await resolveExpenseRelations(tx, expense.organizationId, input, {
+      allowInactiveVendorId: expense.vendorId,
+    });
     const next = {
       expenseDate: input.expenseDate,
       amountMinor,
