@@ -1,8 +1,8 @@
-import { prisma } from "@/lib/prisma";
 import {
   listEntityAttachments,
   type AttachmentEntityType,
 } from "@/lib/domain/attachments";
+import { resolveActorLabels } from "@/lib/domain/actors";
 
 import {
   deleteAttachmentAction,
@@ -49,24 +49,12 @@ export async function AttachmentSection({
   const rows = await listEntityAttachments(entityType, entityId);
 
   // Best-effort uploader display: member display name in this org, then
-  // identity email, then the raw id — same policy as incident history.
-  const uploaderIds = [...new Set(rows.map((r) => r.createdByAuthIdentityId))];
-  const [identities, members] = await Promise.all([
-    prisma.authIdentity.findMany({
-      where: { id: { in: uploaderIds } },
-      select: { id: true, email: true },
-    }),
-    prisma.member.findMany({
-      where: { organizationId, authIdentityId: { in: uploaderIds } },
-      select: { authIdentityId: true, displayName: true },
-    }),
-  ]);
-  const nameByIdentity = new Map(
-    members.map((m) => [m.authIdentityId, m.displayName]),
+  // identity email, then the raw id — the shared audit-actor policy.
+  const labels = await resolveActorLabels(
+    organizationId,
+    rows.map((r) => r.createdByAuthIdentityId),
   );
-  const emailByIdentity = new Map(identities.map((i) => [i.id, i.email]));
-  const actorName = (id: string) =>
-    nameByIdentity.get(id) ?? emailByIdentity.get(id) ?? id;
+  const actorName = (id: string) => labels.get(id) ?? id;
 
   const uploadAction = uploadAttachmentAction.bind(null, entityType, entityId);
   const sectionId = `attachments-${entityType.toLowerCase()}-${entityId}`;

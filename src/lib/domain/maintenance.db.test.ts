@@ -922,19 +922,38 @@ describe.skipIf(!hasDb)("inspections / maintenance / defects", () => {
     it("rolls the record update back when the history write fails", async () => {
       const org = await createTestOrg("chg-org4");
       const asset = await createTestAsset(org.id);
+      const actor = await createTestIdentity("chg-actor4");
       const record = await recordMaintenance(asset.id, {
         title: "Oil change",
         performedOn: D("2026-09-10"),
       });
-      // A nonexistent actor id violates the change row's FK — forcing a
-      // failure between the snapshot and the update. Neither may commit.
-      await expect(
-        updateMaintenanceRecord(
-          record.id,
-          { title: "Tampered", performedOn: D("2026-09-11") },
-          "nonexistent-identity",
-        ),
-      ).rejects.toMatchObject({ code: "P2003" });
+      // Fault injection: a temporary trigger fails the change-row
+      // INSERT inside the transaction — forcing a failure between the
+      // snapshot write and the record update. Neither may commit. (The
+      // actor column is a scalar now, so a bogus identity id can no
+      // longer serve as the failure mechanism.)
+      await prisma.$executeRawUnsafe(
+        `CREATE OR REPLACE FUNCTION mainttest_fail_change() RETURNS trigger
+         LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced change failure'; END; $$`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE TRIGGER mainttest_fail_change BEFORE INSERT ON "MaintenanceRecordChange"
+         FOR EACH ROW EXECUTE FUNCTION mainttest_fail_change()`,
+      );
+      try {
+        await expect(
+          updateMaintenanceRecord(
+            record.id,
+            { title: "Tampered", performedOn: D("2026-09-11") },
+            actor.id,
+          ),
+        ).rejects.toThrow();
+      } finally {
+        await prisma.$executeRawUnsafe(
+          `DROP TRIGGER mainttest_fail_change ON "MaintenanceRecordChange"`,
+        );
+        await prisma.$executeRawUnsafe(`DROP FUNCTION mainttest_fail_change()`);
+      }
       const persisted = await prisma.maintenanceRecord.findUnique({
         where: { id: record.id },
       });
@@ -1311,6 +1330,147 @@ describe.skipIf(!hasDb)("inspections / maintenance / defects", () => {
         0,
       );
       expect(await listOpenDefects(orgB.id)).toHaveLength(0);
+    });
+  });
+
+  describe("actor attribution (scalar identity references, issue #32)", () => {
+    it("resolves a live actor to the linked member name, else the identity email", async () => {
+      const org = await createTestOrg("actor-org");
+      const asset = await createTestAsset(org.id);
+      // Identity linked to a member in this org → member displayName wins.
+      const memberActor = await createTestIdentity("actor-member");
+      const linkedMember = await prisma.member.create({
+        data: {
+          organizationId: org.id,
+          displayName: uniq("linked-member"),
+          authIdentityId: memberActor.id,
+        },
+      });
+      // Identity with an email but no member link → sign-in email.
+      const emailActor = await createTestIdentity("actor-email");
+
+      const defect = await reportDefect(
+        asset.id,
+        { title: "Leak", reportedOn: D("2026-09-15") },
+        memberActor.id,
+      );
+      await transitionDefect(
+        defect.id,
+        { status: "RESOLVED", resolvedOn: D("2026-09-16") },
+        emailActor.id,
+      );
+
+      const changes = await listDefectChanges(defect.id);
+      expect(changes.map((c) => c.actorDisplayName)).toEqual([
+        linkedMember.displayName,
+        emailActor.email,
+      ]);
+      // The scalar ids stay on the rows regardless of display.
+      expect(changes.map((c) => c.actorAuthIdentityId)).toEqual([
+        memberActor.id,
+        emailActor.id,
+      ]);
+    });
+
+    it("does not leak a member name across organizations", async () => {
+      const orgA = await createTestOrg("actor-x-a");
+      const orgB = await createTestOrg("actor-x-b");
+      const assetA = await createTestAsset(orgA.id);
+      const identity = await createTestIdentity("actor-x");
+      // The identity is linked to a member in org B only — org A's
+      // history must not surface that foreign member's name.
+      const foreignMember = await prisma.member.create({
+        data: {
+          organizationId: orgB.id,
+          displayName: uniq("foreign-member"),
+          authIdentityId: identity.id,
+        },
+      });
+      const defect = await reportDefect(
+        assetA.id,
+        { title: "Leak", reportedOn: D("2026-09-15") },
+        identity.id,
+      );
+      const changes = await listDefectChanges(defect.id);
+      expect(changes[0]!.actorDisplayName).toBe(identity.email);
+      expect(changes[0]!.actorDisplayName).not.toBe(foreignMember.displayName);
+    });
+
+    it("inspection, maintenance, and defect history survive deletion of the authoring identity", async () => {
+      const org = await createTestOrg("ghost-org");
+      const asset = await createTestAsset(org.id);
+      const ghost = await createTestIdentity("ghost");
+
+      const def = await createInspectionDefinition(org.id, {
+        name: uniq("check"),
+        recurrenceType: "NONE",
+      });
+      const inspection = await recordInspection(asset.id, {
+        definitionId: def.id,
+        performedOn: D("2026-09-14"),
+      });
+      await updateInspectionRecord(
+        inspection.id,
+        { performedOn: D("2026-09-15") },
+        ghost.id,
+      );
+      const service = await recordMaintenance(asset.id, {
+        title: "Oil change",
+        performedOn: D("2026-09-10"),
+      });
+      await updateMaintenanceRecord(
+        service.id,
+        { title: "Oil change (amended)", performedOn: D("2026-09-10") },
+        ghost.id,
+      );
+      const defect = await reportDefect(
+        asset.id,
+        { title: "Leak", reportedOn: D("2026-09-15") },
+        ghost.id,
+      );
+      await transitionDefect(
+        defect.id,
+        { status: "RESOLVED", resolvedOn: D("2026-09-16") },
+        ghost.id,
+      );
+
+      // The actor columns are plain scalars — deleting the authoring
+      // identity must succeed and leave every change row untouched.
+      await prisma.authIdentity.delete({ where: { id: ghost.id } });
+
+      // Rows persist at the table level — nothing cascades.
+      expect(
+        await prisma.inspectionRecordChange.count({
+          where: { recordId: inspection.id },
+        }),
+      ).toBe(1);
+      expect(
+        await prisma.maintenanceRecordChange.count({
+          where: { recordId: service.id },
+        }),
+      ).toBe(1);
+      expect(
+        await prisma.defectChange.count({ where: { defectId: defect.id } }),
+      ).toBe(2);
+
+      // The history queries still return the entries, scalar ids
+      // unchanged, with display attribution degraded to the raw id.
+      const inspections = await listAssetInspections(asset.id);
+      const inspectionChange = inspections[0]!.changes[0]!;
+      expect(inspectionChange.actorAuthIdentityId).toBe(ghost.id);
+      expect(inspectionChange.actorDisplayName).toBe(ghost.id);
+
+      const services = await listAssetMaintenanceRecords(asset.id);
+      const serviceChange = services[0]!.changes[0]!;
+      expect(serviceChange.actorAuthIdentityId).toBe(ghost.id);
+      expect(serviceChange.actorDisplayName).toBe(ghost.id);
+
+      const defectChanges = await listDefectChanges(defect.id);
+      expect(defectChanges).toHaveLength(2);
+      for (const change of defectChanges) {
+        expect(change.actorAuthIdentityId).toBe(ghost.id);
+        expect(change.actorDisplayName).toBe(ghost.id);
+      }
     });
   });
 });

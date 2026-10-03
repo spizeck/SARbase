@@ -9,6 +9,7 @@ import type {
 import { prisma } from "@/lib/prisma";
 import { log } from "@/lib/logging";
 import { instantInZone } from "@/lib/dates";
+import { resolveActorLabels } from "@/lib/domain/actors";
 
 import type {
   IncidentAssetInput,
@@ -51,8 +52,8 @@ import type {
  * Actor attribution follows the scalar-ID policy: every history row
  * stores a plain `actorAuthIdentityId` (no FK) so history survives
  * identity deletion; display resolves best-effort (member display name
- * in this org → identity email → raw id). Issue #32 tracks migrating
- * the older FK-pinned tables to this same policy.
+ * in this org → identity email → raw id). All audit-history tables
+ * share this policy (issue #32 aligned the older FK-pinned ones).
  *
  * SENSITIVE DATA: incidents may contain casualty and personal details.
  * The entire surface is ADMIN-only — there is no member-facing or
@@ -929,25 +930,8 @@ export async function getIncidentForAdmin(incidentId: string) {
       ].filter((id): id is string => Boolean(id)),
     ),
   ];
-  const [identities, actorMembers] = await Promise.all([
-    prisma.authIdentity.findMany({
-      where: { id: { in: actorIds } },
-      select: { id: true, email: true },
-    }),
-    prisma.member.findMany({
-      where: {
-        organizationId: incident.organizationId,
-        authIdentityId: { in: actorIds },
-      },
-      select: { authIdentityId: true, displayName: true },
-    }),
-  ]);
-  const memberNameByIdentity = new Map(
-    actorMembers.map((m) => [m.authIdentityId, m.displayName]),
-  );
-  const emailByIdentity = new Map(identities.map((i) => [i.id, i.email]));
-  const actorName = (id: string | null) =>
-    id ? (memberNameByIdentity.get(id) ?? emailByIdentity.get(id) ?? id) : null;
+  const labels = await resolveActorLabels(incident.organizationId, actorIds);
+  const actorName = (id: string | null) => (id ? (labels.get(id) ?? id) : null);
 
   const notes = incident.notes.map((note) => ({
     ...note,

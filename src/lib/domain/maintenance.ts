@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { log } from "@/lib/logging";
 import { calendarDateInZone, daysBetween, formatDateOnly } from "@/lib/dates";
+import { resolveActorLabels } from "@/lib/domain/actors";
 
 import type {
   AssetMeterInput,
@@ -508,22 +509,40 @@ export async function setInspectionDefinitionStatus(
 /* Inspection records — factual occurrences                            */
 /* ------------------------------------------------------------------ */
 
-export function listAssetInspections(assetId: string) {
-  return prisma.inspectionRecord.findMany({
+/**
+ * Inspection records for one asset with their correction history.
+ * Change actors are resolved best-effort (`resolveActorLabels`):
+ * linked member name → identity email → the raw scalar id, which is
+ * the fallback once the authoring identity is deleted.
+ */
+export async function listAssetInspections(assetId: string) {
+  const records = await prisma.inspectionRecord.findMany({
     where: { assetId },
     orderBy: [{ performedOn: "desc" }, { createdAt: "desc" }],
     include: {
       definition: { select: { id: true, name: true } },
       inspectorMember: { select: { id: true, displayName: true } },
       meter: { select: { id: true, name: true, unit: true } },
-      changes: {
-        orderBy: { createdAt: "desc" },
-        include: {
-          actorAuthIdentity: { select: { id: true, email: true } },
-        },
-      },
+      changes: { orderBy: { createdAt: "desc" } },
     },
   });
+  if (records.length === 0) {
+    return [];
+  }
+  const labels = await resolveActorLabels(
+    records[0]!.organizationId,
+    records.flatMap((record) =>
+      record.changes.map((change) => change.actorAuthIdentityId),
+    ),
+  );
+  return records.map((record) => ({
+    ...record,
+    changes: record.changes.map((change) => ({
+      ...change,
+      actorDisplayName:
+        labels.get(change.actorAuthIdentityId) ?? change.actorAuthIdentityId,
+    })),
+  }));
 }
 
 /**
@@ -804,22 +823,38 @@ export async function setMaintenancePlanStatus(
 /* Maintenance records — factual service events                        */
 /* ------------------------------------------------------------------ */
 
-export function listAssetMaintenanceRecords(assetId: string) {
-  return prisma.maintenanceRecord.findMany({
+/**
+ * Service records for one asset with their correction history — actor
+ * display follows the same policy as listAssetInspections.
+ */
+export async function listAssetMaintenanceRecords(assetId: string) {
+  const records = await prisma.maintenanceRecord.findMany({
     where: { assetId },
     orderBy: [{ performedOn: "desc" }, { createdAt: "desc" }],
     include: {
       plan: { select: { id: true, name: true } },
       performedByMember: { select: { id: true, displayName: true } },
       meter: { select: { id: true, name: true, unit: true } },
-      changes: {
-        orderBy: { createdAt: "desc" },
-        include: {
-          actorAuthIdentity: { select: { id: true, email: true } },
-        },
-      },
+      changes: { orderBy: { createdAt: "desc" } },
     },
   });
+  if (records.length === 0) {
+    return [];
+  }
+  const labels = await resolveActorLabels(
+    records[0]!.organizationId,
+    records.flatMap((record) =>
+      record.changes.map((change) => change.actorAuthIdentityId),
+    ),
+  );
+  return records.map((record) => ({
+    ...record,
+    changes: record.changes.map((change) => ({
+      ...change,
+      actorDisplayName:
+        labels.get(change.actorAuthIdentityId) ?? change.actorAuthIdentityId,
+    })),
+  }));
 }
 
 /**
@@ -1006,14 +1041,27 @@ export function listOpenDefects(organizationId: string) {
   });
 }
 
-export function listDefectChanges(defectId: string) {
-  return prisma.defectChange.findMany({
+/**
+ * One defect's lifecycle history, oldest first — actor display follows
+ * the same policy as listAssetInspections.
+ */
+export async function listDefectChanges(defectId: string) {
+  const changes = await prisma.defectChange.findMany({
     where: { defectId },
     orderBy: { createdAt: "asc" },
-    include: {
-      actorAuthIdentity: { select: { id: true, email: true } },
-    },
   });
+  const organizationId = changes[0]?.organizationId;
+  const labels = organizationId
+    ? await resolveActorLabels(
+        organizationId,
+        changes.map((change) => change.actorAuthIdentityId),
+      )
+    : new Map<string, string>();
+  return changes.map((change) => ({
+    ...change,
+    actorDisplayName:
+      labels.get(change.actorAuthIdentityId) ?? change.actorAuthIdentityId,
+  }));
 }
 
 /**

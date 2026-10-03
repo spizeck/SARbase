@@ -163,8 +163,10 @@ and the audit chain is consistent (each `before` equals the previous
 Every history row stores a plain `actorAuthIdentityId` with **no foreign
 key** to `AuthIdentity`. History survives identity deletion; display
 resolves best-effort (linked member's display name in the same org →
-identity email → the raw id). Issue #32 tracks migrating the older
-FK-pinned audit tables to this same policy.
+identity email → the raw id). Issue #32 aligned the older FK-pinned
+audit tables (`InspectionRecordChange`, `MaintenanceRecordChange`,
+`DefectChange`) to this same policy — it is now uniform across all
+audit/history actor columns.
 
 ## Authorization — sensitive data
 

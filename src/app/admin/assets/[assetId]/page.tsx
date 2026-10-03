@@ -543,7 +543,7 @@ export default async function AssetPage({
                           >
                             <div>
                               Corrected {formatInstant(change.createdAt)} by{" "}
-                              {change.actorAuthIdentity.email}
+                              {change.actorDisplayName}
                               {change.note ? ` — ${change.note}` : ""}
                             </div>
                             {diffs.length > 0 && (
@@ -831,7 +831,7 @@ export default async function AssetPage({
                           >
                             <div>
                               Corrected {formatInstant(change.createdAt)} by{" "}
-                              {change.actorAuthIdentity.email}
+                              {change.actorDisplayName}
                               {change.note ? ` — ${change.note}` : ""}
                             </div>
                             {diffs.length > 0 && (

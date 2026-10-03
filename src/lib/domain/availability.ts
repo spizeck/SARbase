@@ -6,6 +6,7 @@ import type {
 import { prisma } from "@/lib/prisma";
 import { log } from "@/lib/logging";
 import { calendarDateInZone } from "@/lib/dates";
+import { resolveActorLabels } from "@/lib/domain/actors";
 
 import type {
   AvailabilityUpdateInput,
@@ -189,35 +190,19 @@ export async function listMemberAvailabilityHistory(
     take: limit,
   });
   const organizationId = updates[0]?.organizationId;
-  const actorIds = [...new Set(updates.map((u) => u.actorAuthIdentityId))];
-  const [identities, actorMembers] = await Promise.all([
-    prisma.authIdentity.findMany({
-      where: { id: { in: actorIds } },
-      select: { id: true, email: true },
-    }),
-    organizationId
-      ? prisma.member.findMany({
-          where: {
-            organizationId,
-            authIdentityId: { in: actorIds },
-          },
-          select: { authIdentityId: true, displayName: true },
-        })
-      : [],
-  ]);
-  const memberNameByIdentity = new Map(
-    actorMembers.map((m) => [m.authIdentityId, m.displayName]),
-  );
-  const emailByIdentity = new Map(identities.map((i) => [i.id, i.email]));
+  const labels = organizationId
+    ? await resolveActorLabels(
+        organizationId,
+        updates.map((u) => u.actorAuthIdentityId),
+      )
+    : new Map<string, string>();
   return updates.map((update) => ({
     ...update,
     // Falls back to the raw identity id — actorAuthIdentityId is a
     // scalar (no FK), so a deleted identity still leaves a stable
     // forensic reference rather than an unattributed row.
     actorDisplayName:
-      memberNameByIdentity.get(update.actorAuthIdentityId) ??
-      emailByIdentity.get(update.actorAuthIdentityId) ??
-      update.actorAuthIdentityId,
+      labels.get(update.actorAuthIdentityId) ?? update.actorAuthIdentityId,
   }));
 }
 
