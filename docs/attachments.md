@@ -88,9 +88,10 @@ survives.
 
 ### Explicit link tables
 
-Eight same-org link tables — `IncidentAttachment`, `IncidentNoteAttachment`,
+Nine same-org link tables — `IncidentAttachment`, `IncidentNoteAttachment`,
 `MemberQualificationAttachment`, `TrainingEventAttachment`, `AssetAttachment`,
-`InspectionRecordAttachment`, `MaintenanceRecordAttachment`, `DefectAttachment`
+`InspectionRecordAttachment`, `MaintenanceRecordAttachment`, `DefectAttachment`,
+`ExpenseAttachment` (issue #17 receipts and invoices)
 — each with a composite `(targetId, organizationId)` FK to the target,
 composite `(attachmentId, organizationId)` FK to `Attachment`,
 `@@unique([targetId, attachmentId])` for deduplication, scalar
@@ -188,13 +189,20 @@ auto-merge — two records may intentionally reference identical bytes.
 SARbase provides the mechanics; each organization sets its own retention
 policy. There is no automatic deletion scheduler.
 
-## Closed incidents
+## Protected records — reasoned mutations
 
-Closing an incident does not freeze its evidence set — corrections and
-addenda are a supported posture — but attachment mutations (upload, unlink,
-delete of a linked file) on a `CLOSED` incident require an explicit reason,
-which lands on the resulting `AttachmentEvent`/timeline rows. The change is
-audited; it is not silent.
+Two record states protect their evidence set without freezing it:
+
+- A `CLOSED` incident, and
+- an `APPROVED` or already-`REIMBURSED` expense — financial evidence.
+
+Attachment mutations (upload, unlink, delete of a linked file) on a
+protected record require an explicit reason, which lands on the
+resulting `AttachmentEvent` and mirrored record-history rows
+(`IncidentTimelineEvent` / `ExpenseEvent` `ATTACHMENT_ADDED` /
+`ATTACHMENT_REMOVED`). The rule lives in the domain's entity resolution
+(`requiresReason`), not in the UI. The change is audited; it is not
+silent.
 
 ## Security and privacy
 
@@ -225,8 +233,6 @@ cleanly rather than serving wrong content.
 
 ## Future seams
 
-- **#17 expenses/receipts** — link an `Attachment` the same way; no schema
-  redesign needed.
 - **#18 search** — `displayFilename`, `description`, document `title`/
   `category` are indexable metadata. File-content indexing/OCR is out of
   scope by design.

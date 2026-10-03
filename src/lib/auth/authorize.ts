@@ -515,6 +515,69 @@ export async function requireOrgAdminForOrganizationDocument(
 }
 
 /**
+ * Issue #17 lookups — same rule: the caller-supplied id is an untrusted
+ * selector; the record's own organizationId decides which grant must
+ * exist. Financial records are sensitive — every vendor/expense surface
+ * is ADMIN-only, and a foreign or fabricated id is indistinguishable
+ * from a missing one.
+ */
+export async function requireOrgAdminForVendor(
+  ctx: AuthContext,
+  vendorId: string,
+) {
+  const vendor = await prisma.vendor.findUnique({ where: { id: vendorId } });
+  if (!vendor || !isOrgAdmin(ctx, vendor.organizationId)) {
+    logDenial("authz.vendor_scope_denied", ctx, { entityId: vendorId });
+    throw new AuthorizationError();
+  }
+  return vendor;
+}
+
+export async function requireOrgAdminForExpense(
+  ctx: AuthContext,
+  expenseId: string,
+) {
+  const expense = await prisma.expense.findUnique({
+    where: { id: expenseId },
+  });
+  if (!expense || !isOrgAdmin(ctx, expense.organizationId)) {
+    logDenial("authz.expense_scope_denied", ctx, { entityId: expenseId });
+    throw new AuthorizationError();
+  }
+  return expense;
+}
+
+/**
+ * Context-link rows are removed by their own id — the denormalized
+ * organizationId on the link row decides the grant. `kind` selects
+ * which typed link table holds the row.
+ */
+export async function requireOrgAdminForExpenseContextLink(
+  ctx: AuthContext,
+  kind: string,
+  linkId: string,
+) {
+  const where = { id: linkId };
+  const link =
+    kind === "INCIDENT"
+      ? await prisma.expenseIncident.findUnique({ where })
+      : kind === "TRAINING_EVENT"
+        ? await prisma.expenseTrainingEvent.findUnique({ where })
+        : kind === "ASSET"
+          ? await prisma.expenseAsset.findUnique({ where })
+          : kind === "MAINTENANCE_RECORD"
+            ? await prisma.expenseMaintenanceRecord.findUnique({ where })
+            : kind === "INVENTORY_ITEM"
+              ? await prisma.expenseInventoryItem.findUnique({ where })
+              : null;
+  if (!link || !isOrgAdmin(ctx, link.organizationId)) {
+    logDenial("authz.expense_link_scope_denied", ctx, { entityId: linkId });
+    throw new AuthorizationError();
+  }
+  return link;
+}
+
+/**
  * Upload/unlink target resolution. `entityType` arrives from the client
  * and selects WHICH record helper verifies the grant — the grant is
  * still derived from the record's own organizationId, never from the
@@ -542,6 +605,8 @@ export async function requireOrgAdminForAttachmentTarget(
       return await requireOrgAdminForMaintenanceRecord(ctx, entityId);
     case "DEFECT":
       return await requireOrgAdminForDefect(ctx, entityId);
+    case "EXPENSE":
+      return await requireOrgAdminForExpense(ctx, entityId);
     default:
       logDenial("authz.attachment_target_denied", ctx, { entityId });
       throw new AuthorizationError();
