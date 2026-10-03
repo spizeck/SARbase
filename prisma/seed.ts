@@ -287,6 +287,80 @@ async function main() {
     },
   });
 
+  // Issue #17 fixture — one vendor and one reimbursed volunteer
+  // purchase (a member bought engine oil out of pocket for the oil
+  // change above and has been repaid). Exact minor units, one currency,
+  // no real receipts committed. The sequence row holds the last-used
+  // number (createExpense increments it inside its transaction), so
+  // storing 1 here means the next user-created expense mints EXP-2.
+  const chandlery = await prisma.vendor.upsert({
+    where: { id: "seed-vendor-chandlery" },
+    update: {},
+    create: {
+      id: "seed-vendor-chandlery",
+      organizationId: organization.id,
+      name: "Example Chandlery",
+      phone: "+1 555 0100",
+      accountReference: "ACCT-0142",
+      notes: "asks for PO numbers on invoices",
+    },
+  });
+  await prisma.expenseSequence.upsert({
+    where: { organizationId: organization.id },
+    update: {},
+    create: { organizationId: organization.id, nextNumber: 1 },
+  });
+  const oilExpense = await prisma.expense.upsert({
+    where: { id: "seed-expense-oil" },
+    update: {},
+    create: {
+      id: "seed-expense-oil",
+      organizationId: organization.id,
+      sequence: 1,
+      reference: "EXP-1",
+      expenseDate: new Date("2026-09-01T00:00:00.000Z"),
+      amountMinor: 6450,
+      currency: "USD",
+      vendorId: chandlery.id,
+      category: "Maintenance",
+      description: "Engine oil and filter for the 100-hour service",
+      submittedByMemberId: member.id,
+      paidByMemberId: member.id,
+      status: "APPROVED",
+      reimbursementStatus: "REIMBURSED",
+      submittedAt: new Date("2026-09-02T00:00:00.000Z"),
+      reviewedAt: new Date("2026-09-03T00:00:00.000Z"),
+      reviewedByAuthIdentityId: seedIdentity.id,
+      reimbursedAt: new Date("2026-09-10T00:00:00.000Z"),
+      reimbursedByAuthIdentityId: seedIdentity.id,
+      reimbursementNote: "Repaid via petty cash.",
+      createdByAuthIdentityId: seedIdentity.id,
+    },
+  });
+  await prisma.expenseAsset.upsert({
+    where: { id: "seed-expense-asset-oil" },
+    update: {},
+    create: {
+      id: "seed-expense-asset-oil",
+      organizationId: organization.id,
+      expenseId: oilExpense.id,
+      assetId: boat.id,
+      recordedByAuthIdentityId: seedIdentity.id,
+    },
+  });
+  await prisma.expenseMaintenanceRecord.upsert({
+    where: { id: "seed-expense-maint-oil" },
+    update: {},
+    create: {
+      id: "seed-expense-maint-oil",
+      organizationId: organization.id,
+      expenseId: oilExpense.id,
+      maintenanceRecordId: serviceRecord.id,
+      note: "consumables for this service",
+      recordedByAuthIdentityId: seedIdentity.id,
+    },
+  });
+
   // Issue #12 fixture — one recorded availability statement and a
   // contact-preference row for the seed member. Factual seed data only.
   await prisma.memberAvailabilityUpdate.upsert({
@@ -320,8 +394,8 @@ async function main() {
     `Seeded organization (${organization.id}) with 1 unit, 1 member, ` +
       `2 assets, 3 locations, 2 inventory items, 1 inspection type + ` +
       `record, 1 meter + reading, 1 maintenance plan + record, ` +
-      `1 open defect, and 1 availability statement + contact ` +
-      `preference row.`,
+      `1 open defect, 1 availability statement + contact ` +
+      `preference row, and 1 vendor + reimbursed expense.`,
   );
 }
 

@@ -110,6 +110,18 @@ model Organization {
   defectAttachments              DefectAttachment[]
   organizationDocuments          OrganizationDocument[]
   organizationDocumentVersions   OrganizationDocumentVersion[]
+
+  vendors                   Vendor[]
+  expenses                  Expense[]
+  expenseSequences          ExpenseSequence[]
+  expenseIncidents          ExpenseIncident[]
+  expenseTrainingEvents     ExpenseTrainingEvent[]
+  expenseAssets             ExpenseAsset[]
+  expenseMaintenanceRecords ExpenseMaintenanceRecord[]
+  expenseInventoryItems     ExpenseInventoryItem[]
+  expenseAttachments        ExpenseAttachment[]
+  expenseEvents             ExpenseEvent[]
+  expenseChanges            ExpenseChange[]
 }
 
 // An internal operational/administrative grouping within an organization
@@ -194,6 +206,12 @@ model Member {
   // Issue #15 — explicit incident participation records. Restrict:
   // a member row can't be hard-deleted out from under incident history.
   incidentParticipations IncidentMember[]
+
+  // Issue #17 — "who submitted / who paid" pointers on expenses.
+  // Restrict: a member row can't be hard-deleted out from under
+  // financial history.
+  expensesSubmitted Expense[] @relation("ExpenseSubmittedBy")
+  expensesPaid      Expense[] @relation("ExpensePaidBy")
 
   // Optional link to a login identity. Nullable — most members never sign
   // in. SetNull on identity deletion: removing a login must never destroy
@@ -399,6 +417,8 @@ model TrainingEvent {
   attendanceChanges TrainingAttendanceChange[]
   topics            TrainingTopic[]
   attachments       TrainingEventAttachment[]
+  // Issue #17 — expenses recorded in this event's context.
+  expenseLinks      ExpenseTrainingEvent[]
 
   // Composite-FK target for attendance/topics.
   @@unique([id, organizationId])
@@ -672,6 +692,8 @@ model MaintenanceRecord {
   meterReadings       AssetMeterReading[]           @relation("MeterReadingMaintenanceSource")
   changes             MaintenanceRecordChange[]
   attachments         MaintenanceRecordAttachment[]
+  // Issue #17 — expenses recorded against this service/repair event.
+  expenseLinks        ExpenseMaintenanceRecord[]
   createdAt           DateTime                      @default(now())
   updatedAt           DateTime                      @updatedAt
 
@@ -991,6 +1013,10 @@ model Asset {
   // Issue #16 — documentary files (manuals, registrations, photos).
   attachments AssetAttachment[]
 
+  // Issue #17 — expenses recorded against this asset ("what did it
+  // cost / what was it bought for").
+  expenseLinks ExpenseAsset[]
+
   // Composite-FK targets so locations/children/units enforce
   // same-organization rows at the database level.
   @@unique([id, organizationId])
@@ -1033,6 +1059,9 @@ model InventoryItem {
   organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   unit            Unit?            @relation(fields: [unitId, organizationId], references: [id, organizationId], onDelete: Restrict)
   storageLocation StorageLocation? @relation(fields: [storageLocationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  // Issue #17 — expenses recorded against this stock item's purchase.
+  expenseLinks ExpenseInventoryItem[]
 
   // Composite-FK target for future same-organization children
   // (e.g. inspections in issue #11).
@@ -1545,6 +1574,9 @@ model Incident {
   // Issue #16 — incident-level documentary attachments (Restrict: an
   // incident with linked files keeps its evidence set consistent).
   attachments  IncidentAttachment[]
+  // Issue #17 — expenses recorded in this incident's context. Restrict:
+  // an incident can't be hard-deleted out from under financial history.
+  expenseLinks ExpenseIncident[]
 
   // At most one incident per callout: calloutId is org-unique via the
   // composite FK (a callout belongs to exactly one organization), so
@@ -1854,6 +1886,7 @@ model Attachment {
   maintenanceLinks   MaintenanceRecordAttachment[]
   defectLinks        DefectAttachment[]
   documentVersions   OrganizationDocumentVersion[]
+  expenseLinks       ExpenseAttachment[]
 
   // Composite-FK target so every link/event enforces same-organization
   // rows at the database level.
@@ -2113,4 +2146,321 @@ model DefectAttachment {
   @@unique([id, organizationId])
   @@index([attachmentId])
   @@index([organizationId, defectId])
+}
+
+// ── Issue #17: vendors, expenses, receipts, reimbursements ─────────────
+//
+// Lightweight financial records — where was it bought, how much did it
+// cost, what was it for, who paid, and has reimbursement been recorded.
+// SARbase is not accounting software: no ledger, no invoicing, no payment
+// processing. Money is stored as integer minor units plus an ISO 4217
+// currency code — never floating point.
+
+enum VendorStatus {
+  ACTIVE
+  INACTIVE
+}
+
+// Status of the expense *record* — deliberately separate from whether a
+// volunteer must be reimbursed (ReimbursementStatus).
+enum ExpenseStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum ReimbursementStatus {
+  NOT_REQUIRED
+  PENDING
+  REIMBURSED
+}
+
+enum ExpenseEventType {
+  EXPENSE_CREATED
+  STATUS_CHANGED
+  REIMBURSEMENT_CHANGED
+  CONTEXT_LINKED
+  CONTEXT_UNLINKED
+  ATTACHMENT_ADDED
+  ATTACHMENT_REMOVED
+  CORRECTION_RECORDED
+}
+
+/// Where the organization buys things — a simple, search-friendly
+/// record, not a CRM and not a purchasing workflow. Vendor names are
+/// not unique: two branches of the same supplier can legitimately share
+/// a name; `accountReference` distinguishes them.
+model Vendor {
+  id               String       @id @default(cuid())
+  organizationId   String
+  name             String
+  contactName      String?
+  email            String?
+  phone            String?
+  website          String?
+  accountReference String?
+  notes            String?
+  status           VendorStatus @default(ACTIVE)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expenses     Expense[]
+
+  @@unique([id, organizationId])
+  @@index([organizationId, status])
+  @@index([organizationId, name])
+}
+
+/// Per-organization expense reference allocator — one row per org, the
+/// ONLY row holding nextNumber; row-lock inside the creation transaction
+/// makes concurrent EXP-<n> allocation safe.
+model ExpenseSequence {
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  organizationId String       @id
+  nextNumber     Int          @default(1)
+}
+
+/// A factual record of money spent: date, exact amount, currency, vendor,
+/// purpose, who submitted/paid, review state, reimbursement state.
+/// Every foreign-key pointer is composite `(id, organizationId)` — the
+/// database itself rejects a cross-organization expense.
+model Expense {
+  id             String         @id @default(cuid())
+  organizationId String
+  sequence       Int
+  reference      String // "EXP-<n>", @@unique([organizationId, reference])
+  expenseDate    DateTime       @db.Date // organization-local calendar date
+  amountMinor    Int // exact minor units — see src/lib/money.ts
+  currency       String // ISO 4217, e.g. "USD"; one currency, no FX
+  vendorId       String?
+  category       String? // free text — no imposed accounting taxonomy
+  description    String?
+  submittedByMemberId String?
+  paidByMemberId      String?
+  status              ExpenseStatus       @default(DRAFT)
+  reimbursementStatus ReimbursementStatus @default(NOT_REQUIRED)
+  submittedAt         DateTime?
+  reviewedAt          DateTime?
+  reviewedByAuthIdentityId String?
+  reviewNote               String?
+  reimbursedAt             DateTime?
+  reimbursedByAuthIdentityId String?
+  reimbursementNote          String?
+  createdByAuthIdentityId    String
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  vendor            Vendor?      @relation(fields: [vendorId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  submittedByMember Member?      @relation("ExpenseSubmittedBy", fields: [submittedByMemberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  paidByMember      Member?      @relation("ExpensePaidBy", fields: [paidByMemberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  incidentLinks    ExpenseIncident[]
+  trainingLinks    ExpenseTrainingEvent[]
+  assetLinks       ExpenseAsset[]
+  maintenanceLinks ExpenseMaintenanceRecord[]
+  inventoryLinks   ExpenseInventoryItem[]
+  attachments      ExpenseAttachment[]
+  events           ExpenseEvent[]
+  changes          ExpenseChange[]
+
+  @@unique([organizationId, reference])
+  @@unique([id, organizationId])
+  @@index([organizationId, expenseDate])
+  @@index([organizationId, status])
+  @@index([organizationId, vendorId])
+  @@index([organizationId, category])
+  @@index([organizationId, reimbursementStatus])
+}
+
+// ── Expense context links ──────────────────────────────────────────────
+// Five explicit, strongly typed link tables — an expense may relate to
+// several operational records at once (e.g. oil + filter → the vessel
+// asset AND its 100-hour service record). A generic polymorphic link was
+// rejected for the same reason as in issue #16 attachments: Postgres
+// cannot enforce a polymorphic FK.
+
+model ExpenseIncident {
+  id             String   @id @default(cuid())
+  organizationId String
+  expenseId      String
+  incidentId     String
+  note           String? // optional factual context for the link
+  recordedByAuthIdentityId String
+  recordedAt     DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expense      Expense      @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  incident     Incident     @relation(fields: [incidentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([expenseId, incidentId])
+  @@unique([id, organizationId])
+  @@index([incidentId])
+  @@index([organizationId, incidentId])
+  @@index([organizationId, expenseId])
+}
+
+model ExpenseTrainingEvent {
+  id             String   @id @default(cuid())
+  organizationId String
+  expenseId      String
+  trainingEventId String
+  note           String?
+  recordedByAuthIdentityId String
+  recordedAt     DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expense      Expense      @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  trainingEvent TrainingEvent @relation(fields: [trainingEventId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([expenseId, trainingEventId])
+  @@unique([id, organizationId])
+  @@index([trainingEventId])
+  @@index([organizationId, trainingEventId])
+  @@index([organizationId, expenseId])
+}
+
+model ExpenseAsset {
+  id             String   @id @default(cuid())
+  organizationId String
+  expenseId      String
+  assetId        String
+  note           String?
+  recordedByAuthIdentityId String
+  recordedAt     DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expense      Expense      @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  asset        Asset        @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([expenseId, assetId])
+  @@unique([id, organizationId])
+  @@index([assetId])
+  @@index([organizationId, assetId])
+  @@index([organizationId, expenseId])
+}
+
+model ExpenseMaintenanceRecord {
+  id                  String   @id @default(cuid())
+  organizationId      String
+  expenseId           String
+  maintenanceRecordId String
+  note                String?
+  recordedByAuthIdentityId String
+  recordedAt          DateTime @default(now())
+
+  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expense           Expense           @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  maintenanceRecord MaintenanceRecord @relation(fields: [maintenanceRecordId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([expenseId, maintenanceRecordId])
+  @@unique([id, organizationId])
+  @@index([maintenanceRecordId])
+  @@index([organizationId, maintenanceRecordId])
+  @@index([organizationId, expenseId])
+}
+
+model ExpenseInventoryItem {
+  id             String   @id @default(cuid())
+  organizationId String
+  expenseId      String
+  inventoryItemId String
+  note           String?
+  recordedByAuthIdentityId String
+  recordedAt     DateTime @default(now())
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expense       Expense       @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  inventoryItem InventoryItem @relation(fields: [inventoryItemId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([expenseId, inventoryItemId])
+  @@unique([id, organizationId])
+  @@index([inventoryItemId])
+  @@index([organizationId, inventoryItemId])
+  @@index([organizationId, expenseId])
+}
+
+/// Receipts, invoices, credit memos, supporting photos — an
+/// Attachment (issue #16) bound to an Expense. Upload, validation,
+/// storage, and tombstone semantics all live in the shared attachment
+/// domain; this table is only the same-organization join.
+model ExpenseAttachment {
+  id             String   @id @default(cuid())
+  organizationId String
+  expenseId      String
+  attachmentId   String
+  createdByAuthIdentityId String
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expense      Expense      @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  attachment   Attachment   @relation(fields: [attachmentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([expenseId, attachmentId])
+  @@unique([id, organizationId])
+  @@index([attachmentId])
+  @@index([organizationId, expenseId])
+}
+
+/// Append-only operational history of an expense: creation, lifecycle
+/// transitions, reimbursement changes, context links, attachment
+/// mutations, corrections. Same contract as IncidentTimelineEvent —
+/// system-generated facts only, scalar actor, never updated or deleted.
+/// `metadata` carries narrow JSON such as {from, to}, {kind, targetId,
+/// targetLabel}, or {reason}.
+model ExpenseEvent {
+  id             String           @id @default(cuid())
+  organizationId String
+  expenseId      String
+  type           ExpenseEventType
+  occurredAt     DateTime // when the recorded thing happened
+  actorAuthIdentityId String // scalar — survives identity deletion
+  metadata       Json?
+  createdAt      DateTime         @default(now()) // when SARbase wrote it
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expense      Expense      @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@index([expenseId, occurredAt])
+  @@index([organizationId, occurredAt])
+}
+
+/// Append-only correction record for an Expense's material fields —
+/// complete before/after snapshot written atomically with the update.
+/// Same contract as MaintenanceRecordChange/IncidentChange. A reason is
+/// required once the expense is APPROVED or already REIMBURSED.
+model ExpenseChange {
+  id             String   @id @default(cuid())
+  organizationId String
+  expenseId      String
+  reason         String?
+
+  beforeExpenseDate         DateTime @db.Date
+  beforeAmountMinor         Int
+  beforeCurrency            String
+  beforeVendorId            String?
+  beforeCategory            String?
+  beforeDescription         String?
+  beforeSubmittedByMemberId String?
+  beforePaidByMemberId      String?
+
+  afterExpenseDate         DateTime @db.Date
+  afterAmountMinor         Int
+  afterCurrency            String
+  afterVendorId            String?
+  afterCategory            String?
+  afterDescription         String?
+  afterSubmittedByMemberId String?
+  afterPaidByMemberId      String?
+
+  actorAuthIdentityId String // scalar — survives identity deletion
+  createdAt           DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expense      Expense      @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@index([expenseId, createdAt])
+  @@index([organizationId, createdAt])
 }
