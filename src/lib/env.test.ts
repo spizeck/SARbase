@@ -259,4 +259,31 @@ describe("parseStorageEnvironment (issue #16)", () => {
       }).FILE_STORAGE_S3_ENDPOINT,
     ).toBe("http://localhost:9000");
   });
+
+  it("does not treat DNS names that merely start with '127.' as loopback", () => {
+    // "127.objectstore.example.com" is a remote host — the loopback
+    // exception must be a real IP check, not a string prefix.
+    expect(() =>
+      parseStorageEnvironment({
+        FILE_STORAGE_S3_ENDPOINT: "http://127.objectstore.example.com",
+      }),
+    ).toThrow();
+    // Real loopback IPs still pass — whole 127.0.0.0/8 block and ::1.
+    expect(
+      parseStorageEnvironment({
+        FILE_STORAGE_S3_ENDPOINT: "http://127.0.0.2:9000",
+      }).FILE_STORAGE_S3_ENDPOINT,
+    ).toBe("http://127.0.0.2:9000");
+    expect(
+      parseStorageEnvironment({
+        FILE_STORAGE_S3_ENDPOINT: "http://[::1]:9000",
+      }).FILE_STORAGE_S3_ENDPOINT,
+    ).toBe("http://[::1]:9000");
+    // A remote IPv6 literal is not loopback.
+    expect(() =>
+      parseStorageEnvironment({
+        FILE_STORAGE_S3_ENDPOINT: "http://[2001:db8::1]:9000",
+      }),
+    ).toThrow();
+  });
 });

@@ -1,3 +1,5 @@
+import { isIP } from "node:net";
+
 import { z } from "zod";
 
 /**
@@ -376,19 +378,26 @@ export const storageEnvironmentSchema = z.object({
       .max(2048)
       // Cleartext endpoints send bytes and signed credentials over the
       // network — HTTPS is required except on loopback, where plain
-      // HTTP serves local MinIO/dev stacks.
+      // HTTP serves local MinIO/dev stacks. Loopback is verified as a
+      // real IP (`127.0.0.0/8` or `::1`) via node:net isIP — a textual
+      // prefix check would wrongly trust DNS names like
+      // "127.objectstore.example.com".
       .refine((endpoint) => {
         const url = new URL(endpoint);
         if (url.protocol === "https:") return true;
         if (url.protocol !== "http:") return false;
         const host = url.hostname;
-        return (
-          host === "localhost" ||
-          host.endsWith(".localhost") ||
-          host.startsWith("127.") ||
-          host === "[::1]" ||
-          host === "::1"
-        );
+        if (host === "localhost" || host.endsWith(".localhost")) {
+          return true;
+        }
+        // URL wraps IPv6 literals in brackets; isIP wants the bare
+        // address. Non-IP hostnames return 0 and fail closed.
+        const bare = host.replace(/^\[|\]$/g, "");
+        const family = isIP(bare);
+        if (family === 6) return bare === "::1";
+        if (family !== 4) return false;
+        // IPv4 loopback is the entire 127.0.0.0/8 block.
+        return bare.split(".")[0] === "127";
       }, "FILE_STORAGE_S3_ENDPOINT must use https:// (http:// is allowed only for loopback/localhost endpoints)")
       .optional(),
   ),
