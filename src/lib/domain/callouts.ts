@@ -11,6 +11,7 @@ import type {
 
 import { prisma } from "@/lib/prisma";
 import { log, logExpected, summarizeError } from "@/lib/logging";
+import { resolveActorLabels } from "@/lib/domain/actors";
 import {
   assertCalloutResponseTokenConfigured,
   CALLOUT_INVITATION_TEMPLATE,
@@ -919,25 +920,8 @@ export async function getCalloutForAdmin(calloutId: string) {
       ].filter((id): id is string => Boolean(id)),
     ),
   ];
-  const [identities, actorMembers] = await Promise.all([
-    prisma.authIdentity.findMany({
-      where: { id: { in: actorIds } },
-      select: { id: true, email: true },
-    }),
-    prisma.member.findMany({
-      where: {
-        organizationId: callout.organizationId,
-        authIdentityId: { in: actorIds },
-      },
-      select: { authIdentityId: true, displayName: true },
-    }),
-  ]);
-  const memberNameByIdentity = new Map(
-    actorMembers.map((m) => [m.authIdentityId, m.displayName]),
-  );
-  const emailByIdentity = new Map(identities.map((i) => [i.id, i.email]));
-  const actorName = (id: string | null) =>
-    id ? (memberNameByIdentity.get(id) ?? emailByIdentity.get(id) ?? id) : null;
+  const labels = await resolveActorLabels(callout.organizationId, actorIds);
+  const actorName = (id: string | null) => (id ? (labels.get(id) ?? id) : null);
 
   return {
     ...callout,

@@ -164,8 +164,8 @@ model Member {
   memberQualifications MemberQualification[]
 
   // Training participation history + optional "led by" pointer on
-  // events. Restrict on attendance and its change history: history is
-  // preserved.
+  // events. Restrict on attendance, its change history, and the lead
+  // pointer: history is preserved.
   trainingAttendances       TrainingAttendance[]
   trainingAttendanceChanges TrainingAttendanceChange[]
   ledTrainingEvents         TrainingEvent[]            @relation("TrainingLead")
@@ -233,13 +233,13 @@ model AuthIdentity {
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 
-  members                  Member[]
-  organizationAccesses     OrganizationAccess[]
-  defectChanges            DefectChange[]
-  inspectionRecordChanges  InspectionRecordChange[]
-  maintenanceRecordChanges MaintenanceRecordChange[]
-  // MemberAvailabilityUpdate.actorAuthIdentityId is a plain scalar
-  // reference (no back-relation) — history outlives the identity.
+  members              Member[]
+  organizationAccesses OrganizationAccess[]
+
+  // Audit/history tables reference this model's id as a PLAIN scalar
+  // (actorAuthIdentityId and friends — no relations, no back-relations):
+  // an identity that authored history must remain deletable, and the
+  // stored id stays a stable forensic reference afterwards.
 
   @@unique([provider, providerUid])
   @@index([email])
@@ -365,7 +365,9 @@ enum TrainingEventStatus {
 //
 // Optional unitId/leadMemberId carry organizationId in composite FKs:
 // Postgres MATCH SIMPLE skips the check when the component is NULL,
-// and enforces same-organization when present.
+// and enforces same-organization when present. Both are Restrict like
+// every other member/unit reference — members are deactivated, never
+// hard-deleted, so recorded history always keeps its lead pointer.
 //
 // Lifecycle: COMPLETED (the training happened) or CANCELLED (it was
 // planned/recorded but did not occur). CANCELLED keeps the row and any
@@ -394,7 +396,7 @@ model TrainingEvent {
 
   organization      Organization               @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   unit              Unit?                      @relation(fields: [unitId, organizationId], references: [id, organizationId], onDelete: Restrict)
-  leadMember        Member?                    @relation("TrainingLead", fields: [leadMemberId, organizationId], references: [id, organizationId], onDelete: SetNull)
+  leadMember        Member?                    @relation("TrainingLead", fields: [leadMemberId, organizationId], references: [id, organizationId], onDelete: Restrict)
   attendances       TrainingAttendance[]
   attendanceChanges TrainingAttendanceChange[]
   topics            TrainingTopic[]
@@ -586,8 +588,13 @@ model InspectionRecord {
 /// transaction as the record update, so a material correction cannot commit
 /// without its history. Asset/definition/meter provenance are immutable and
 /// not duplicated here. actorAuthIdentityId is the server-side sign-in
-/// identity — never client-supplied; Restrict keeps history intact because
-/// an identity cannot be deleted while it has authored changes. Member-id
+/// identity — never client-supplied — stored as a plain scalar, not a
+/// foreign key (same policy as TrainingAttendanceChange): an FK would
+/// either pin identities forever (Restrict) or erase the actor on
+/// identity removal (SetNull), and audit history that disappears with
+/// the actor is not audit history. The stored id remains a stable
+/// forensic reference after the AuthIdentity is deleted; display
+/// resolves it best-effort and falls back to the raw id. Member-id
 /// snapshots are stored as plain values (what the field contained), not
 /// live references.
 model InspectionRecordChange {
@@ -610,7 +617,6 @@ model InspectionRecordChange {
   afterConditionObserved  ConditionStatus?
   afterNextDueOn          DateTime?        @db.Date
   afterNotes              String?
-  actorAuthIdentity       AuthIdentity     @relation(fields: [actorAuthIdentityId], references: [id], onDelete: Restrict)
   actorAuthIdentityId     String
   createdAt               DateTime         @default(now())
 
@@ -685,6 +691,8 @@ model MaintenanceRecord {
 /// material fields, written atomically with the record update, keyed to the
 /// server-side acting identity. planId and the captured meter reading are
 /// immutable provenance and are not part of the snapshot.
+/// actorAuthIdentityId is a plain scalar (no FK) for the same reason as
+/// InspectionRecordChange — history outlives the identity.
 model MaintenanceRecordChange {
   id             String            @id @default(cuid())
   organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
@@ -693,23 +701,22 @@ model MaintenanceRecordChange {
   recordId       String
   note           String? // optional human reason for the correction
 
-  beforePerformedOn         DateTime     @db.Date
+  beforePerformedOn         DateTime  @db.Date
   beforeTitle               String
   beforeWorkPerformed       String?
   beforeProviderName        String?
   beforePerformedByMemberId String?
-  beforeNextDueOn           DateTime?    @db.Date
+  beforeNextDueOn           DateTime? @db.Date
   beforeNotes               String?
-  afterPerformedOn          DateTime     @db.Date
+  afterPerformedOn          DateTime  @db.Date
   afterTitle                String
   afterWorkPerformed        String?
   afterProviderName         String?
   afterPerformedByMemberId  String?
-  afterNextDueOn            DateTime?    @db.Date
+  afterNextDueOn            DateTime? @db.Date
   afterNotes                String?
-  actorAuthIdentity         AuthIdentity @relation(fields: [actorAuthIdentityId], references: [id], onDelete: Restrict)
   actorAuthIdentityId       String
-  createdAt                 DateTime     @default(now())
+  createdAt                 DateTime  @default(now())
 
   @@index([recordId, createdAt])
   @@index([organizationId])
@@ -748,6 +755,8 @@ model Defect {
 /// Append-only lifecycle audit for a defect — same pattern as
 /// TrainingAttendanceChange. REPORTED, RESOLVED, and REOPENED are recorded
 /// with the acting admin so "resolved then re-observed" is honest history.
+/// actorAuthIdentityId is a plain scalar (no FK) — history outlives the
+/// identity.
 model DefectChange {
   id                  String       @id @default(cuid())
   organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
@@ -756,7 +765,6 @@ model DefectChange {
   defectId            String
   action              DefectAction
   note                String?
-  actorAuthIdentity   AuthIdentity @relation(fields: [actorAuthIdentityId], references: [id], onDelete: Restrict)
   actorAuthIdentityId String
   createdAt           DateTime     @default(now())
 }
@@ -1086,8 +1094,6 @@ enum AvailabilityStatus {
 //   stable forensic reference after the AuthIdentity is disabled or
 //   deleted; while the identity exists the UI resolves it to a friendly
 //   name, and after removal it renders as the raw identifier.
-//   NOTE: the issue #11 correction-history rows still use Restrict —
-//   aligning them is tracked as a separate policy cleanup.
 // - Composite FK to Member(id, organizationId) makes a cross-org
 //   statement physically impossible; Restrict keeps member rows and
 //   their history together.
