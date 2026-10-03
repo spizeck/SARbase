@@ -30,12 +30,13 @@ import { StorageError, type FileStorageProvider } from "@/lib/storage/provider";
  * - `AttachmentEvent` is the append-only audit trail (upload, link,
  *   unlink, delete) with scalar actor ids.
  *
- * CLOSED-INCIDENT RULE: incidents carry sensitive material. Any
- * attachment mutation whose evidence set touches a CLOSED incident —
- * upload, unlink, or delete while still linked — requires a human
- * reason, recorded on the AttachmentEvent and mirrored onto the
- * incident timeline. DRAFT/OPEN incidents accept mutations without a
- * reason; every mutation is still audited.
+ * PROTECTED-RECORD RULE: incidents carry sensitive material and
+ * expenses carry financial facts. Any attachment mutation whose
+ * evidence set touches a CLOSED incident — or an APPROVED or already
+ * REIMBURSED expense (issue #17) — requires a human reason, recorded
+ * on the AttachmentEvent and mirrored onto the record's own event
+ * history. Other records accept mutations without a reason; every
+ * mutation is still audited.
  */
 
 export class AttachmentInputError extends Error {
@@ -53,11 +54,11 @@ export class CrossOrganizationAttachmentError extends Error {
   }
 }
 
-/** A CLOSED incident's evidence set changed without a reason. */
+/** A protected record's evidence set changed without a reason. */
 export class AttachmentReasonRequiredError extends Error {
   constructor() {
     super(
-      "A reason is required to change attachments on a closed incident record.",
+      "A reason is required to change attachments on a closed incident or an approved/reimbursed expense.",
     );
     this.name = "AttachmentReasonRequiredError";
   }
@@ -264,7 +265,8 @@ export type AttachmentEntityType =
   | "ASSET"
   | "INSPECTION_RECORD"
   | "MAINTENANCE_RECORD"
-  | "DEFECT";
+  | "DEFECT"
+  | "EXPENSE";
 
 export const ATTACHMENT_ENTITY_TYPES: readonly AttachmentEntityType[] = [
   "INCIDENT",
@@ -275,6 +277,7 @@ export const ATTACHMENT_ENTITY_TYPES: readonly AttachmentEntityType[] = [
   "INSPECTION_RECORD",
   "MAINTENANCE_RECORD",
   "DEFECT",
+  "EXPENSE",
 ];
 
 export function isAttachmentEntityType(
@@ -288,6 +291,13 @@ interface ResolvedEntity {
   /** Set for INCIDENT and INCIDENT_NOTE targets. */
   incidentId: string | null;
   incidentStatus: "DRAFT" | "OPEN" | "CLOSED" | null;
+  /** Set for EXPENSE targets. */
+  expenseId: string | null;
+  /**
+   * Whether attachment mutations on this record require a human reason:
+   * a CLOSED incident, or an APPROVED / already-REIMBURSED expense.
+   */
+  requiresReason: boolean;
 }
 
 /**
@@ -313,6 +323,8 @@ async function resolveEntity(
         organizationId: incident.organizationId,
         incidentId: entityId,
         incidentStatus: incident.status,
+        expenseId: null,
+        requiresReason: incident.status === "CLOSED",
       };
     }
     case "INCIDENT_NOTE": {
@@ -329,6 +341,8 @@ async function resolveEntity(
         organizationId: note.organizationId,
         incidentId: note.incidentId,
         incidentStatus: note.incident.status,
+        expenseId: null,
+        requiresReason: note.incident.status === "CLOSED",
       };
     }
     case "MEMBER_QUALIFICATION": {
@@ -341,6 +355,8 @@ async function resolveEntity(
         organizationId: record.organizationId,
         incidentId: null,
         incidentStatus: null,
+        expenseId: null,
+        requiresReason: false,
       };
     }
     case "TRAINING_EVENT": {
@@ -353,6 +369,8 @@ async function resolveEntity(
         organizationId: event.organizationId,
         incidentId: null,
         incidentStatus: null,
+        expenseId: null,
+        requiresReason: false,
       };
     }
     case "ASSET": {
@@ -365,6 +383,8 @@ async function resolveEntity(
         organizationId: asset.organizationId,
         incidentId: null,
         incidentStatus: null,
+        expenseId: null,
+        requiresReason: false,
       };
     }
     case "INSPECTION_RECORD": {
@@ -377,6 +397,8 @@ async function resolveEntity(
         organizationId: record.organizationId,
         incidentId: null,
         incidentStatus: null,
+        expenseId: null,
+        requiresReason: false,
       };
     }
     case "MAINTENANCE_RECORD": {
@@ -389,6 +411,8 @@ async function resolveEntity(
         organizationId: record.organizationId,
         incidentId: null,
         incidentStatus: null,
+        expenseId: null,
+        requiresReason: false,
       };
     }
     case "DEFECT": {
@@ -401,6 +425,31 @@ async function resolveEntity(
         organizationId: defect.organizationId,
         incidentId: null,
         incidentStatus: null,
+        expenseId: null,
+        requiresReason: false,
+      };
+    }
+    case "EXPENSE": {
+      // Issue #17 — receipts and invoices. An approved or already-
+      // reimbursed expense is financial evidence whose mutation needs
+      // an explicit reason (the same posture as a closed incident).
+      const expense = await tx.expense.findUnique({
+        where: { id: entityId },
+        select: {
+          organizationId: true,
+          status: true,
+          reimbursementStatus: true,
+        },
+      });
+      if (!expense) throw new CrossOrganizationAttachmentError();
+      return {
+        organizationId: expense.organizationId,
+        incidentId: null,
+        incidentStatus: null,
+        expenseId: entityId,
+        requiresReason:
+          expense.status === "APPROVED" ||
+          expense.reimbursementStatus === "REIMBURSED",
       };
     }
   }
@@ -437,42 +486,56 @@ async function attachmentEvent(
 }
 
 /**
- * Mirror an incident-scoped attachment mutation onto the incident
- * timeline so the record's own history shows evidence-set changes
- * without opening the file's audit trail.
+ * Mirror an attachment mutation onto the owning record's own event
+ * history (incident timeline, expense event feed) so the record shows
+ * evidence-set changes without opening the file's audit trail.
  */
-async function incidentTimelineMirror(
+async function entityEventMirror(
   tx: Prisma.TransactionClient,
-  entity: ResolvedEntity,
+  entity: Pick<ResolvedEntity, "organizationId" | "incidentId" | "expenseId">,
   type: "ATTACHMENT_ADDED" | "ATTACHMENT_REMOVED",
   attachmentId: string,
   actorAuthIdentityId: string,
   reason?: string | null,
 ) {
-  if (!entity.incidentId) return;
   const now = new Date();
-  await tx.incidentTimelineEvent.create({
-    data: {
-      organizationId: entity.organizationId,
-      incidentId: entity.incidentId,
-      type,
-      occurredAt: now,
-      createdAt: now,
-      actorAuthIdentityId,
-      metadata: {
-        attachmentId,
-        ...(reason ? { reason } : {}),
-      } satisfies Prisma.InputJsonValue,
-    },
-  });
+  const metadata = {
+    attachmentId,
+    ...(reason ? { reason } : {}),
+  } satisfies Prisma.InputJsonValue;
+  if (entity.incidentId) {
+    await tx.incidentTimelineEvent.create({
+      data: {
+        organizationId: entity.organizationId,
+        incidentId: entity.incidentId,
+        type,
+        occurredAt: now,
+        createdAt: now,
+        actorAuthIdentityId,
+        metadata,
+      },
+    });
+  } else if (entity.expenseId) {
+    await tx.expenseEvent.create({
+      data: {
+        organizationId: entity.organizationId,
+        expenseId: entity.expenseId,
+        type,
+        occurredAt: now,
+        createdAt: now,
+        actorAuthIdentityId,
+        metadata,
+      },
+    });
+  }
 }
 
-/** Enforce the closed-incident reason rule for one resolved target. */
-function requireReasonForClosed(
+/** Enforce the protected-record reason rule for one resolved target. */
+function requireReasonForProtected(
   entity: ResolvedEntity,
   reason: string | null | undefined,
 ) {
-  if (entity.incidentStatus === "CLOSED" && !reason?.trim()) {
+  if (entity.requiresReason && !reason?.trim()) {
     throw new AttachmentReasonRequiredError();
   }
 }
@@ -532,6 +595,10 @@ async function createLinkRow(
       return tx.defectAttachment.create({
         data: { ...base, defectId: entityId },
       });
+    case "EXPENSE":
+      return tx.expenseAttachment.create({
+        data: { ...base, expenseId: entityId },
+      });
   }
 }
 
@@ -578,6 +645,10 @@ async function deleteLinkRow(
       return tx.defectAttachment.deleteMany({
         where: { defectId: entityId, attachmentId },
       });
+    case "EXPENSE":
+      return tx.expenseAttachment.deleteMany({
+        where: { expenseId: entityId, attachmentId },
+      });
   }
 }
 
@@ -592,7 +663,7 @@ export function newAttachmentStorageKey(organizationId: string): string {
 
 export interface AttachmentUploadOptions {
   description?: string | null;
-  /** Required when the target touches a CLOSED incident. */
+  /** Required when the target is protected (CLOSED incident, APPROVED or REIMBURSED expense). */
   reason?: string | null;
 }
 
@@ -620,7 +691,7 @@ export async function uploadAttachment(
   // Pre-resolve the org for the storage key; the transaction re-resolves
   // and enforces integrity at write time.
   const preview = await resolveEntity(prisma, entity.type, entity.id);
-  requireReasonForClosed(preview, options.reason);
+  requireReasonForProtected(preview, options.reason);
 
   const storageKey = newAttachmentStorageKey(preview.organizationId);
   await storage.put(storageKey, file.bytes, file.mediaType);
@@ -628,7 +699,7 @@ export async function uploadAttachment(
   try {
     const attachment = await prisma.$transaction(async (tx) => {
       const resolved = await resolveEntity(tx, entity.type, entity.id);
-      requireReasonForClosed(resolved, options.reason);
+      requireReasonForProtected(resolved, options.reason);
 
       const attachment = await tx.attachment.create({
         data: {
@@ -660,7 +731,7 @@ export async function uploadAttachment(
         entityId: entity.id,
         reason: options.reason ?? null,
       });
-      await incidentTimelineMirror(
+      await entityEventMirror(
         tx,
         resolved,
         "ATTACHMENT_ADDED",
@@ -726,11 +797,11 @@ export async function unlinkAttachment(
   actorAuthIdentityId: string,
 ): Promise<{ unlinked: boolean }> {
   const preview = await resolveEntity(prisma, entity.type, entity.id);
-  requireReasonForClosed(preview, options.reason);
+  requireReasonForProtected(preview, options.reason);
 
   const result = await prisma.$transaction(async (tx) => {
     const resolved = await resolveEntity(tx, entity.type, entity.id);
-    requireReasonForClosed(resolved, options.reason);
+    requireReasonForProtected(resolved, options.reason);
 
     const attachment = await tx.attachment.findFirst({
       where: { id: attachmentId, organizationId: resolved.organizationId },
@@ -751,7 +822,7 @@ export async function unlinkAttachment(
       entityId: entity.id,
       reason: options.reason ?? null,
     });
-    await incidentTimelineMirror(
+    await entityEventMirror(
       tx,
       resolved,
       "ATTACHMENT_REMOVED",
@@ -791,7 +862,8 @@ export async function unlinkAttachment(
  * failure leaves an honest `storageDeleted: false` event and surfaces
  * the failure to the caller — deletion is never silently claimed.
  *
- * If the attachment is still linked to a CLOSED incident, a reason is
+ * If the attachment is still linked to a protected record — a CLOSED
+ * incident, or an APPROVED / already-REIMBURSED expense — a reason is
  * required: the evidence set is being destroyed, not just edited.
  */
 export async function deleteAttachment(
@@ -808,6 +880,11 @@ export async function deleteAttachment(
         incidentNoteLinks: {
           include: {
             note: { include: { incident: { select: { status: true } } } },
+          },
+        },
+        expenseLinks: {
+          include: {
+            expense: { select: { status: true, reimbursementStatus: true } },
           },
         },
       },
@@ -829,12 +906,17 @@ export async function deleteAttachment(
       return { attachment, changed: false, retryStorage: retryNeeded };
     }
 
-    const touchesClosedIncident =
+    const touchesProtectedRecord =
       attachment.incidentLinks.some((l) => l.incident.status === "CLOSED") ||
       attachment.incidentNoteLinks.some(
         (l) => l.note.incident.status === "CLOSED",
+      ) ||
+      attachment.expenseLinks.some(
+        (l) =>
+          l.expense.status === "APPROVED" ||
+          l.expense.reimbursementStatus === "REIMBURSED",
       );
-    if (touchesClosedIncident && !options.reason?.trim()) {
+    if (touchesProtectedRecord && !options.reason?.trim()) {
       throw new AttachmentReasonRequiredError();
     }
 
@@ -846,6 +928,51 @@ export async function deleteAttachment(
         deletedByAuthIdentityId: actorAuthIdentityId,
       },
     });
+    if (marked.count === 1) {
+      // Mirror the removal onto every record the file is still linked
+      // to — tombstoning keeps the link rows (each record's history
+      // retains the fact a file existed), so each record's own feed
+      // must show the evidence was destroyed, the same way
+      // unlinkAttachment mirrors the detach path. Inside this
+      // transaction the mirror is atomic with the tombstone; the retry
+      // path above skips it because the mirrors already committed.
+      // Dedupe incidents reached through BOTH a direct link and a note
+      // link so their timeline gets one event.
+      const incidentIds = new Set(
+        attachment.incidentLinks.map((l) => l.incidentId),
+      );
+      for (const link of attachment.incidentNoteLinks) {
+        incidentIds.add(link.note.incidentId);
+      }
+      for (const incidentId of incidentIds) {
+        await entityEventMirror(
+          tx,
+          {
+            organizationId: attachment.organizationId,
+            incidentId,
+            expenseId: null,
+          },
+          "ATTACHMENT_REMOVED",
+          attachment.id,
+          actorAuthIdentityId,
+          options.reason,
+        );
+      }
+      for (const link of attachment.expenseLinks) {
+        await entityEventMirror(
+          tx,
+          {
+            organizationId: attachment.organizationId,
+            incidentId: null,
+            expenseId: link.expenseId,
+          },
+          "ATTACHMENT_REMOVED",
+          attachment.id,
+          actorAuthIdentityId,
+          options.reason,
+        );
+      }
+    }
     return { attachment, changed: marked.count === 1, retryStorage: false };
   });
 
@@ -1018,6 +1145,13 @@ export async function listEntityAttachments(
     case "DEFECT":
       rows = await prisma.defectAttachment.findMany({
         where: { defectId: entityId },
+        include,
+        orderBy,
+      });
+      break;
+    case "EXPENSE":
+      rows = await prisma.expenseAttachment.findMany({
+        where: { expenseId: entityId },
         include,
         orderBy,
       });

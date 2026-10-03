@@ -556,6 +556,15 @@ describe.skipIf(!hasDb)("attachments (issue #16)", () => {
       where: { id: attachment.id },
     });
     expect(row.status).toBe("DELETED");
+    // The destruction is mirrored onto the incident timeline, the same
+    // way an unlink is — the record's feed shows the evidence went away.
+    const removed = await prisma.incidentTimelineEvent.findFirst({
+      where: { incidentId: incident.id, type: "ATTACHMENT_REMOVED" },
+    });
+    expect(removed).not.toBeNull();
+    expect((removed!.metadata as { reason?: string }).reason).toBe(
+      "removed erroneous file",
+    );
   });
 
   /* ---------------- organization documents ---------------- */
