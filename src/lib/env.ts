@@ -1,5 +1,3 @@
-import { isIP } from "node:net";
-
 import { z } from "zod";
 
 /**
@@ -379,9 +377,12 @@ export const storageEnvironmentSchema = z.object({
       // Cleartext endpoints send bytes and signed credentials over the
       // network — HTTPS is required except on loopback, where plain
       // HTTP serves local MinIO/dev stacks. Loopback is verified as a
-      // real IP (`127.0.0.0/8` or `::1`) via node:net isIP — a textual
-      // prefix check would wrongly trust DNS names like
-      // "127.objectstore.example.com".
+      // real IP — a textual prefix check would wrongly trust DNS names
+      // like "127.objectstore.example.com". WHATWG URL canonicalizes
+      // numeric IPv4 spellings (0x7f.1, 127.1, octal) to dotted-quad and
+      // IPv6 literals to compressed [::1] form, so exact-shape matching
+      // is sufficient. (node:net's isIP is unusable here — this module
+      // is also bundled into client code.)
       .refine((endpoint) => {
         const url = new URL(endpoint);
         if (url.protocol === "https:") return true;
@@ -390,14 +391,14 @@ export const storageEnvironmentSchema = z.object({
         if (host === "localhost" || host.endsWith(".localhost")) {
           return true;
         }
-        // URL wraps IPv6 literals in brackets; isIP wants the bare
-        // address. Non-IP hostnames return 0 and fail closed.
-        const bare = host.replace(/^\[|\]$/g, "");
-        const family = isIP(bare);
-        if (family === 6) return bare === "::1";
-        if (family !== 4) return false;
-        // IPv4 loopback is the entire 127.0.0.0/8 block.
-        return bare.split(".")[0] === "127";
+        if (host === "[::1]") return true;
+        // IPv4 loopback is the entire 127.0.0.0/8 block; the strict
+        // dotted-quad shape rejects DNS names like
+        // "127.objectstore.example.com".
+        if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) {
+          return false;
+        }
+        return host.split(".")[0] === "127";
       }, "FILE_STORAGE_S3_ENDPOINT must use https:// (http:// is allowed only for loopback/localhost endpoints)")
       .optional(),
   ),
