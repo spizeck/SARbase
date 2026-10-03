@@ -290,8 +290,9 @@ async function main() {
   // Issue #17 fixture — one vendor and one reimbursed volunteer
   // purchase (a member bought engine oil out of pocket for the oil
   // change above and has been repaid). Exact minor units, one currency,
-  // no real receipts committed. The sequence row is advanced so the
-  // next user-created expense mints EXP-2.
+  // no real receipts committed. The sequence row holds the last-used
+  // number (createExpense increments it inside its transaction), so
+  // storing 1 here means the next user-created expense mints EXP-2.
   const chandlery = await prisma.vendor.upsert({
     where: { id: "seed-vendor-chandlery" },
     update: {},
@@ -307,7 +308,7 @@ async function main() {
   await prisma.expenseSequence.upsert({
     where: { organizationId: organization.id },
     update: {},
-    create: { organizationId: organization.id, nextNumber: 2 },
+    create: { organizationId: organization.id, nextNumber: 1 },
   });
   const oilExpense = await prisma.expense.upsert({
     where: { id: "seed-expense-oil" },

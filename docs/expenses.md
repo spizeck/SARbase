@@ -23,8 +23,9 @@ receipts and the audit history of every later change.
 - `Expense.amountMinor` is an **integer count of minor units** — USD
   42.15 is stored as `4215`, JPY 1900 as `1900`, KWD 1.500 as `1500`.
 - `Expense.currency` is an uppercase **ISO 4217** code validated
-  against a small explicit table (`USD`, `EUR`, `GBP`, `CAD`, `AUD`,
-  `NZD`, `JPY`, `CHF`, `KWD` — each with its real minor-unit exponent).
+  against the full active-code table in `src/lib/money.ts`, grouped by
+  each currency's real minor-unit exponent (JPY 0, most 2, KWD 3,
+  CLF/UYW 4; codes with no minor unit such as XDR are not supported).
   Unknown codes are rejected, not guessed.
 - Amounts are entered as display text (`"42.15"`) and parsed to minor
   units by `parseMoneyAmount`. Fractional digits beyond the currency's
@@ -59,8 +60,11 @@ not a purchasing workflow:
   `notes` — institutional memory for later search (issue #18).
 - `status` — `ACTIVE` / `INACTIVE`. Vendors are **never deleted**:
   deactivating stops new spending from being recorded against them
-  (the domain rejects inactive vendors on create and correction) while
-  leaving their history on the expenses they already have.
+  (the domain rejects inactive vendors on create, and rejects
+  corrections that would _assign_ one — a correction that merely keeps
+  the already-attached vendor stays legal, since that vendor was valid
+  when the expense was recorded) while leaving their history on the
+  expenses they already have.
 - Do not store bank details or payment credentials in vendor fields —
   a vendor is a contact record, not an account.
 
