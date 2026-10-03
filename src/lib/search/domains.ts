@@ -1222,7 +1222,7 @@ const searchExpenses: DomainSearcher = async ({
       title: `${e.reference} — ${e.vendor?.name ?? e.category ?? "Expense"}`,
       subtitle: joinParts([
         formatDateOnly(e.expenseDate),
-        `${e.currency} ${formatMoney(e.amountMinor, e.currency)}`,
+        formatMoney(e.amountMinor, e.currency),
         e.status.toLowerCase(),
         e.reimbursementStatus === "REIMBURSED"
           ? "reimbursed"

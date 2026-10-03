@@ -35,10 +35,10 @@ This shape was chosen deliberately:
 
 `SEARCH_DOMAINS` in `src/lib/search/domains.ts` is the extension point.
 A domain entry is `{ type, adminOnly, search }` — an isolated searcher
-plus a role flag. Adding Vendor/Expense search after issue #17 merges
-is: write `searchVendors`/`searchExpenses`, append two registry entries.
-No orchestration, routing, or UI change is required. The `adminOnly`
-flag is also the seam for future member-visible domains.
+plus a role flag. New record types register here: write a searcher,
+append a registry entry. No orchestration, routing, or UI change is
+required. The `adminOnly` flag is also the seam for future
+member-visible domains.
 
 ## PostgreSQL features
 
