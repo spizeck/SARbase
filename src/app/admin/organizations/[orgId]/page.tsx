@@ -182,9 +182,15 @@ export default async function OrganizationPage({
       </section>
 
       <nav
-        aria-label="Assets and inventory"
+        aria-label="Organization records"
         className="mt-6 flex flex-wrap gap-2 text-sm"
       >
+        <Link
+          href={`/admin/organizations/${orgId}/search`}
+          className="rounded-md border border-neutral-300 px-3 py-1.5 font-medium text-neutral-800 hover:bg-neutral-50"
+        >
+          Search
+        </Link>
         <Link
           href={`/admin/organizations/${orgId}/assets`}
           className="rounded-md border border-neutral-300 px-3 py-1.5 font-medium text-neutral-800 hover:bg-neutral-50"
