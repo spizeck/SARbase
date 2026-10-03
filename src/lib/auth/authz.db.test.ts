@@ -102,8 +102,19 @@ import {
   removeIncidentMemberAction,
   addIncidentNoteAction,
   correctIncidentNoteAction,
+  createVendorAction,
+  updateVendorAction,
+  setVendorStatusAction,
+  createExpenseAction,
+  updateExpenseAction,
+  transitionExpenseAction,
+  rejectExpenseAction,
+  setExpenseReimbursementAction,
+  addExpenseLinkAction,
+  removeExpenseLinkAction,
 } from "@/app/admin/actions";
 import { createIncident } from "@/lib/domain/incidents";
+import { createVendor, createExpense } from "@/lib/domain/expenses";
 import {
   updateMyAvailabilityAction,
   updateMyContactPreferencesAction,
@@ -167,6 +178,10 @@ let incidentA: { id: string };
 let incidentB: { id: string };
 let incidentMemberB: { id: string };
 let incidentNoteB: { id: string };
+// Issue #17 fixtures — financial records must be opaque across orgs.
+let vendorB: { id: string };
+let expenseB: { id: string };
+let expenseLinkB: { id: string };
 
 describe.skipIf(!hasDb)("organization-scoped authorization", () => {
   beforeAll(async () => {
@@ -318,6 +333,35 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       },
     });
     incidentNoteB = { id: noteB.id };
+    // Issue #17 fixtures — a vendor, an expense, and a context-link row
+    // in org B that an org-A admin must never reach through selectors.
+    const vB = await createVendor(
+      orgB.id,
+      { name: uniq("vendor-b") },
+      adminB!.id,
+    );
+    vendorB = { id: vB.id };
+    const eB = await createExpense(
+      orgB.id,
+      {
+        expenseDate: new Date("2026-03-15T00:00:00.000Z"),
+        amount: "10.00",
+        currency: "USD",
+        vendorId: vB.id,
+        reimbursementStatus: "NOT_REQUIRED",
+      },
+      adminB!.id,
+    );
+    expenseB = { id: eB.id };
+    const linkB = await prisma.expenseAsset.create({
+      data: {
+        organizationId: orgB.id,
+        expenseId: eB.id,
+        assetId: assetB.id,
+        recordedByAuthIdentityId: adminB!.id,
+      },
+    });
+    expenseLinkB = { id: linkB.id };
   });
 
   afterAll(async () => {
@@ -399,6 +443,42 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       where: { member: { organization: { name: { startsWith: PREFIX } } } },
     });
     await prisma.qualificationDefinition.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    // Issue #17 fixtures — link rows/events/changes first (Restrict
+    // edges to expenses, members, assets, incidents), then expenses,
+    // sequences, vendors — all before their parents.
+    await prisma.expenseChange.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.expenseEvent.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.expenseIncident.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.expenseTrainingEvent.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.expenseAsset.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.expenseMaintenanceRecord.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.expenseInventoryItem.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.expenseAttachment.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.expenseSequence.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.expense.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.vendor.deleteMany({
       where: { organization: { name: { startsWith: PREFIX } } },
     });
     // Issue #15 fixtures — append-only children before incidents, and
@@ -2639,6 +2719,145 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       });
       expect(note.authorAuthIdentityId).toBe(adminAIdentityId);
       expect(note.organizationId).toBe(orgA.id);
+    });
+  });
+
+  describe("vendors and expenses (issue #17 — financial data, ADMIN-only)", () => {
+    const expenseForm = (overrides: Record<string, string> = {}) =>
+      form({
+        expenseDate: "2026-03-15",
+        amount: "12.50",
+        currency: "USD",
+        category: "Fuel",
+        ...overrides,
+      });
+
+    it("denies unauthenticated callers before any lookup", async () => {
+      signInAs(null);
+      await expect(
+        createVendorAction(orgA.id, {}, form({ name: "x" })),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
+      await expect(
+        createExpenseAction(orgA.id, {}, expenseForm()),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
+      await expect(
+        transitionExpenseAction(expenseB.id, "SUBMITTED"),
+      ).rejects.toThrow("NEXT_REDIRECT /login");
+    });
+
+    it("denies an ordinary MEMBER of the same organization", async () => {
+      signInAs(memberRoleUid);
+      expect(
+        await createVendorAction(orgA.id, {}, form({ name: "snoop" })),
+      ).toEqual({ message: "Not found." });
+      expect(await createExpenseAction(orgA.id, {}, expenseForm())).toEqual({
+        message: "Not found.",
+      });
+      expect(
+        await updateVendorAction(vendorB.id, {}, form({ name: "snoop" })),
+      ).toEqual({ message: "Not found." });
+      expect(await transitionExpenseAction(expenseB.id, "SUBMITTED")).toEqual({
+        message: "Not found.",
+      });
+      expect(
+        await setExpenseReimbursementAction(
+          expenseB.id,
+          {},
+          form({ status: "REIMBURSED" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      // Nothing was written.
+      expect(
+        await prisma.expenseEvent.count({ where: { expenseId: expenseB.id } }),
+      ).toBe(1); // only EXPENSE_CREATED
+    });
+
+    it("denies an org-A admin against every org-B vendor/expense surface", async () => {
+      signInAs(adminAUid);
+      // Create-scoped surfaces: org B in the URL never buys a grant.
+      expect(
+        await createVendorAction(orgB.id, {}, form({ name: "hijack" })),
+      ).toEqual({ message: "Not found." });
+      expect(await createExpenseAction(orgB.id, {}, expenseForm())).toEqual({
+        message: "Not found.",
+      });
+      // Record-scoped surfaces resolve the record's own org.
+      expect(
+        await updateVendorAction(vendorB.id, {}, form({ name: "hijack" })),
+      ).toEqual({ message: "Not found." });
+      expect(await setVendorStatusAction(vendorB.id, "INACTIVE")).toEqual({
+        message: "Not found.",
+      });
+      expect(await updateExpenseAction(expenseB.id, {}, expenseForm())).toEqual(
+        { message: "Not found." },
+      );
+      expect(await transitionExpenseAction(expenseB.id, "SUBMITTED")).toEqual({
+        message: "Not found.",
+      });
+      expect(
+        await rejectExpenseAction(expenseB.id, {}, form({ note: "no" })),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await setExpenseReimbursementAction(
+          expenseB.id,
+          {},
+          form({ status: "PENDING" }),
+        ),
+      ).toEqual({ message: "Not found." });
+      // Context-link surfaces: adding to a foreign expense, or removing
+      // a foreign link row, is equally opaque.
+      expect(
+        await addExpenseLinkAction(
+          expenseB.id,
+          {},
+          form({ kind: "ASSET", targetId: assetA.id }),
+        ),
+      ).toEqual({ message: "Not found." });
+      expect(await removeExpenseLinkAction("ASSET", expenseLinkB.id)).toEqual({
+        message: "Not found.",
+      });
+
+      const unchanged = await prisma.expense.findUniqueOrThrow({
+        where: { id: expenseB.id },
+      });
+      expect(unchanged.status).toBe("DRAFT");
+      const vendorUnchanged = await prisma.vendor.findUniqueOrThrow({
+        where: { id: vendorB.id },
+      });
+      expect(vendorUnchanged.name).toContain("vendor-b");
+      expect(vendorUnchanged.status).toBe("ACTIVE");
+    });
+
+    it("treats a foreign expense id identically to a nonexistent one", async () => {
+      signInAs(adminAUid);
+      const missing = await transitionExpenseAction(
+        "nonexistent-id",
+        "SUBMITTED",
+      );
+      const foreign = await transitionExpenseAction(expenseB.id, "SUBMITTED");
+      expect(missing).toEqual({ message: "Not found." });
+      expect(missing).toEqual(foreign);
+    });
+
+    it("lets the org-A admin manage org-A vendors and expenses", async () => {
+      signInAs(adminAUid);
+      expect(
+        await createVendorAction(orgA.id, {}, form({ name: uniq("v-ok") })),
+      ).toEqual({});
+      // createExpenseAction redirects to the new record on success.
+      await expect(
+        createExpenseAction(orgA.id, {}, expenseForm()),
+      ).rejects.toThrow(/NEXT_REDIRECT .*\/expenses\//);
+      const mine = await prisma.expense.findFirstOrThrow({
+        where: { organizationId: orgA.id },
+        orderBy: { createdAt: "desc" },
+      });
+      expect(mine.createdByAuthIdentityId).toBe(adminAIdentityId);
+      expect(await transitionExpenseAction(mine.id, "SUBMITTED")).toEqual({});
+      const row = await prisma.expense.findUniqueOrThrow({
+        where: { id: mine.id },
+      });
+      expect(row.status).toBe("SUBMITTED");
     });
   });
 });

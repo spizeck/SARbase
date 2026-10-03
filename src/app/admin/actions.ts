@@ -59,6 +59,14 @@ import {
   attachmentMutationSchema,
   organizationDocumentInputSchema,
   documentVersionSchema,
+  vendorInputSchema,
+  vendorStatusSchema,
+  expenseCreateSchema,
+  expenseUpdateSchema,
+  expenseTransitionSchema,
+  expenseReimbursementSchema,
+  expenseContextLinkSchema,
+  expenseContextLinkKindSchema,
 } from "@/lib/domain/schemas";
 import {
   requireAuth,
@@ -87,6 +95,9 @@ import {
   requireOrgAdminForAttachment,
   requireOrgAdminForAttachmentTarget,
   requireOrgAdminForOrganizationDocument,
+  requireOrgAdminForVendor,
+  requireOrgAdminForExpense,
+  requireOrgAdminForExpenseContextLink,
 } from "@/lib/auth/authorize";
 import {
   createTrainingEvent,
@@ -199,6 +210,22 @@ import {
   IncidentDuplicateParticipantError,
   IncidentInputError,
 } from "@/lib/domain/incidents";
+import {
+  createVendor,
+  updateVendor,
+  setVendorStatus,
+  createExpense,
+  updateExpense,
+  transitionExpenseStatus,
+  setExpenseReimbursement,
+  addExpenseContextLink,
+  removeExpenseContextLink,
+  CrossOrganizationExpenseError,
+  ExpenseInputError,
+  ExpenseTransitionError,
+  ExpenseCorrectionReasonError,
+  ExpenseDuplicateLinkError,
+} from "@/lib/domain/expenses";
 import { checkRateLimit } from "@/lib/rate-limit/rate-limit";
 import { rateLimitKey } from "@/lib/rate-limit/keys";
 import { InMemoryRateLimitStore } from "@/lib/rate-limit/memory-store";
@@ -359,6 +386,19 @@ function mapDomainError(error: unknown): ActionState {
     error instanceof IncidentCorrectionReasonError ||
     error instanceof IncidentDuplicateParticipantError ||
     error instanceof IncidentInputError
+  ) {
+    // Facts about the caller's own organization — safe to surface.
+    return { message: error.message };
+  }
+  if (error instanceof CrossOrganizationExpenseError) {
+    // Opaque — foreign-org vendor/member/record ids must not leak.
+    return { message: "Not found." };
+  }
+  if (
+    error instanceof ExpenseInputError ||
+    error instanceof ExpenseTransitionError ||
+    error instanceof ExpenseCorrectionReasonError ||
+    error instanceof ExpenseDuplicateLinkError
   ) {
     // Facts about the caller's own organization — safe to surface.
     return { message: error.message };
@@ -2639,6 +2679,9 @@ function revalidateAttachmentTarget(
     case "DEFECT":
       revalidatePath(`/admin/assets/${String(target.assetId)}`);
       break;
+    case "EXPENSE":
+      revalidatePath(`/admin/organizations/${orgId}/expenses/${entityId}`);
+      break;
   }
 }
 
@@ -2943,6 +2986,378 @@ export async function setOrganizationDocumentStatusAction(
   revalidatePath(`/admin/organizations/${document.organizationId}/documents`);
   revalidatePath(
     `/admin/organizations/${document.organizationId}/documents/${documentId}`,
+  );
+  return {};
+}
+
+/* ------------------------------------------------------------------ */
+/* Issue #17 — vendors, expenses, receipts, reimbursements              */
+/*                                                                     */
+/* Lightweight financial recordkeeping, ADMIN-only end to end. Every   */
+/* mutation resolves the record's own organization before checking the */
+/* grant, so a foreign or fabricated id fails opaquely ("Not found."). */
+/* Receipt files ride the shared attachment actions above — the        */
+/* expense entity is just another authorized target there.             */
+/* ------------------------------------------------------------------ */
+
+const expenseRateLimitStore = new InMemoryRateLimitStore();
+const FINANCIAL_RATE_LIMIT = { limit: 30, windowMs: 60_000 };
+
+/**
+ * Throttle financial mutations (vendor edits, lifecycle transitions,
+ * corrections, link churn). Same in-memory caveat as the other
+ * limiters — best-effort per process on serverless.
+ */
+async function checkExpenseRateLimit(
+  organizationId: string,
+  actorId: string,
+): Promise<ActionState | null> {
+  const result = await checkRateLimit(
+    expenseRateLimitStore,
+    rateLimitKey("financial.write", organizationId, actorId),
+    FINANCIAL_RATE_LIMIT,
+  );
+  if (result.allowed) return null;
+  logExpected({
+    event: "expenses.rate_limited",
+    subsystem: "expenses",
+    actorId,
+    organizationId,
+    rateLimitScope: "financial.write",
+  });
+  return {
+    message: "Too many changes. Please wait a moment and try again.",
+  };
+}
+
+const vendorFieldsFrom = (formData: FormData) => ({
+  name: formData.get("name"),
+  contactName: formData.get("contactName"),
+  email: formData.get("email"),
+  phone: formData.get("phone"),
+  website: formData.get("website"),
+  accountReference: formData.get("accountReference"),
+  notes: formData.get("notes"),
+});
+
+const expenseFieldsFrom = (formData: FormData) => ({
+  expenseDate: formData.get("expenseDate"),
+  amount: formData.get("amount"),
+  currency: formData.get("currency"),
+  vendorId: formData.get("vendorId"),
+  category: formData.get("category"),
+  description: formData.get("description"),
+  submittedByMemberId: formData.get("submittedByMemberId"),
+  paidByMemberId: formData.get("paidByMemberId"),
+});
+
+/* -------- Vendors -------- */
+
+export async function createVendorAction(
+  organizationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkExpenseRateLimit(organizationId, ctx.identity.id);
+  if (limited) return limited;
+
+  const parsed = vendorInputSchema.safeParse(vendorFieldsFrom(formData));
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await createVendor(organizationId, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/organizations/${organizationId}/vendors`);
+  return {};
+}
+
+export async function updateVendorAction(
+  vendorId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let vendor;
+  try {
+    vendor = await requireOrgAdminForVendor(ctx, vendorId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkExpenseRateLimit(
+    vendor.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+
+  const parsed = vendorInputSchema.safeParse(vendorFieldsFrom(formData));
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await updateVendor(vendorId, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/organizations/${vendor.organizationId}/vendors`);
+  return {};
+}
+
+export async function setVendorStatusAction(
+  vendorId: string,
+  status: string,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let vendor;
+  try {
+    vendor = await requireOrgAdminForVendor(ctx, vendorId);
+    const limited = await checkExpenseRateLimit(
+      vendor.organizationId,
+      ctx.identity.id,
+    );
+    if (limited) return limited;
+    const parsed = vendorStatusSchema.safeParse(status);
+    if (!parsed.success) return { message: "Invalid status." };
+    await setVendorStatus(vendorId, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/organizations/${vendor.organizationId}/vendors`);
+  return {};
+}
+
+/* -------- Expenses -------- */
+
+/** Create a draft expense and land on its detail page. */
+export async function createExpenseAction(
+  organizationId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkExpenseRateLimit(organizationId, ctx.identity.id);
+  if (limited) return limited;
+
+  const parsed = expenseCreateSchema.safeParse({
+    ...expenseFieldsFrom(formData),
+    reimbursementStatus: formData.get("reimbursementStatus") ?? "NOT_REQUIRED",
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  let expense;
+  try {
+    expense = await createExpense(organizationId, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  redirect(`/admin/organizations/${organizationId}/expenses/${expense.id}`);
+}
+
+/**
+ * Correct material fields. On an APPROVED or already-REIMBURSED expense
+ * this is the audited correction path — the domain requires a reason
+ * and writes a typed before/after ExpenseChange; the status is never
+ * silently reset.
+ */
+export async function updateExpenseAction(
+  expenseId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let expense;
+  try {
+    expense = await requireOrgAdminForExpense(ctx, expenseId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkExpenseRateLimit(
+    expense.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+
+  const parsed = expenseUpdateSchema.safeParse({
+    ...expenseFieldsFrom(formData),
+    reason: formData.get("reason"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await updateExpense(expense.id, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${expense.organizationId}/expenses/${expense.id}`,
+  );
+  revalidatePath(`/admin/organizations/${expense.organizationId}/expenses`);
+  return {};
+}
+
+/** Submit / approve / reject / return-to-draft — audited transitions. */
+export async function transitionExpenseAction(
+  expenseId: string,
+  target: string,
+  note?: string,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let expense;
+  try {
+    expense = await requireOrgAdminForExpense(ctx, expenseId);
+    const limited = await checkExpenseRateLimit(
+      expense.organizationId,
+      ctx.identity.id,
+    );
+    if (limited) return limited;
+    const parsed = expenseTransitionSchema.safeParse(target);
+    if (!parsed.success) return { message: "Invalid transition." };
+    await transitionExpenseStatus(
+      expense.id,
+      parsed.data,
+      ctx.identity.id,
+      note?.trim() || undefined,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${expense.organizationId}/expenses/${expense.id}`,
+  );
+  revalidatePath(`/admin/organizations/${expense.organizationId}/expenses`);
+  return {};
+}
+
+/**
+ * Reject an expense — a form-data variant of transitionExpenseAction so
+ * the rejection note travels with the submit. The note is required.
+ */
+export async function rejectExpenseAction(
+  expenseId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const note = formData.get("note");
+  return transitionExpenseAction(
+    expenseId,
+    "REJECTED",
+    typeof note === "string" ? note : undefined,
+  );
+}
+
+/** Record the reimbursement state — an administrative fact, not payment. */
+export async function setExpenseReimbursementAction(
+  expenseId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let expense;
+  try {
+    expense = await requireOrgAdminForExpense(ctx, expenseId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkExpenseRateLimit(
+    expense.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+
+  const parsed = expenseReimbursementSchema.safeParse({
+    status: formData.get("status"),
+    note: formData.get("note"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await setExpenseReimbursement(expense.id, parsed.data, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${expense.organizationId}/expenses/${expense.id}`,
+  );
+  revalidatePath(`/admin/organizations/${expense.organizationId}/expenses`);
+  return {};
+}
+
+/** Link the expense to an operational record — what it was for. */
+export async function addExpenseLinkAction(
+  expenseId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let expense;
+  try {
+    expense = await requireOrgAdminForExpense(ctx, expenseId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkExpenseRateLimit(
+    expense.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+
+  const parsed = expenseContextLinkSchema.safeParse({
+    kind: formData.get("kind"),
+    targetId: formData.get("targetId"),
+    note: formData.get("note"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await addExpenseContextLink(
+      expense.id,
+      parsed.data.kind,
+      parsed.data.targetId,
+      parsed.data.note,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${expense.organizationId}/expenses/${expense.id}`,
+  );
+  return {};
+}
+
+/** Remove a context link — the removal lands in the expense's audit. */
+export async function removeExpenseLinkAction(
+  kind: string,
+  linkId: string,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let link;
+  try {
+    const parsed = expenseContextLinkKindSchema.safeParse(kind);
+    if (!parsed.success) return { message: "Not found." };
+    link = await requireOrgAdminForExpenseContextLink(ctx, parsed.data, linkId);
+    const limited = await checkExpenseRateLimit(
+      link.organizationId,
+      ctx.identity.id,
+    );
+    if (limited) return limited;
+    await removeExpenseContextLink(parsed.data, linkId, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(
+    `/admin/organizations/${link.organizationId}/expenses/${link.expenseId}`,
   );
   return {};
 }

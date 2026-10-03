@@ -1013,3 +1013,130 @@ export const documentVersionSchema = z.object({
   note: optionalText(200),
 });
 export type DocumentVersionInput = z.infer<typeof documentVersionSchema>;
+
+/* ------------------------------------------------------------------ */
+/* Issue #17 — vendors, expenses, receipts, reimbursements             */
+/*                                                                     */
+/* Money is entered as display text ("42.15") and parsed to exact      */
+/* integer minor units in the domain layer (src/lib/money.ts) —        */
+/* floating point never touches an amount. Expense review and          */
+/* reimbursement are deliberately separate axes: an approved expense   */
+/* is not automatically a reimbursement.                               */
+/* ------------------------------------------------------------------ */
+
+export const vendorInputSchema = z.object({
+  name: nameSchema,
+  contactName: optionalText(120),
+  email: emailSchema,
+  phone: phoneSchema,
+  website: optionalText(200).refine(
+    (v) => !v || /^https?:\/\/\S+$/.test(v),
+    "Enter a web address starting with http:// or https://.",
+  ),
+  accountReference: optionalText(120),
+  notes: optionalText(2000),
+});
+export type VendorInput = z.infer<typeof vendorInputSchema>;
+
+export const vendorStatusSchema = z.enum(["ACTIVE", "INACTIVE"]);
+export type VendorStatusInput = z.infer<typeof vendorStatusSchema>;
+
+/**
+ * Display-amount input — shape only. Currency-aware decimal places,
+ * zero/negative rejection, and the exact minor-unit conversion all
+ * happen in `parseMoneyAmount` (the schema cannot see the currency).
+ */
+export const moneyAmountInputSchema = z
+  .string({ error: "Amount is required." })
+  .trim()
+  .min(1, "Amount is required.")
+  .max(30, "Amount is too long.")
+  .regex(/^-?[\d,._]+$/, "Enter an amount like 42.15.");
+
+export const currencyCodeSchema = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .regex(/^[A-Z]{3}$/, "Use a 3-letter ISO 4217 code such as USD.");
+
+/** Shared material-field shape for expense create and correction. */
+const expenseMaterialSchema = {
+  expenseDate: requiredDateOnlySchema,
+  amount: moneyAmountInputSchema,
+  currency: currencyCodeSchema,
+  vendorId: optionalId,
+  category: optionalText(60),
+  description: optionalText(2000),
+  submittedByMemberId: optionalId,
+  paidByMemberId: optionalId,
+};
+
+/**
+ * New expense — always created DRAFT. `reimbursementStatus` may be set
+ * straight to PENDING when the volunteer already paid out of pocket;
+ * REIMBURSED is only reachable through the recorded transition.
+ */
+export const expenseCreateSchema = z.object({
+  ...expenseMaterialSchema,
+  reimbursementStatus: z
+    .enum(["NOT_REQUIRED", "PENDING"])
+    .default("NOT_REQUIRED"),
+});
+export type ExpenseCreateInput = z.infer<typeof expenseCreateSchema>;
+
+/**
+ * Material-field correction. `reason` is optional input here; the
+ * domain requires it once the expense is APPROVED or already
+ * REIMBURSED — mirroring the closed-incident correction rule.
+ */
+export const expenseUpdateSchema = z.object({
+  ...expenseMaterialSchema,
+  reason: optionalText(500),
+});
+export type ExpenseUpdateInput = z.infer<typeof expenseUpdateSchema>;
+
+/** Lifecycle transition target — the domain validates the source. */
+export const expenseTransitionSchema = z.enum([
+  "SUBMITTED",
+  "APPROVED",
+  "REJECTED",
+  "DRAFT",
+]);
+export type ExpenseTransitionInput = z.infer<typeof expenseTransitionSchema>;
+
+/** Approve/reject review action — a REJECTED target requires a note. */
+export const expenseReviewSchema = z.object({
+  target: z.enum(["APPROVED", "REJECTED"]),
+  note: optionalText(500),
+});
+export type ExpenseReviewInput = z.infer<typeof expenseReviewSchema>;
+
+/**
+ * Recorded reimbursement state — an administrative fact, never payment
+ * processing. Un-marking a REIMBURSED expense requires a note.
+ */
+export const expenseReimbursementSchema = z.object({
+  status: z.enum(["NOT_REQUIRED", "PENDING", "REIMBURSED"]),
+  note: optionalText(500),
+});
+export type ExpenseReimbursementInput = z.infer<
+  typeof expenseReimbursementSchema
+>;
+
+export const expenseContextLinkKindSchema = z.enum([
+  "INCIDENT",
+  "TRAINING_EVENT",
+  "ASSET",
+  "MAINTENANCE_RECORD",
+  "INVENTORY_ITEM",
+]);
+export type ExpenseContextLinkKindInput = z.infer<
+  typeof expenseContextLinkKindSchema
+>;
+
+export const expenseContextLinkSchema = z.object({
+  kind: expenseContextLinkKindSchema,
+  targetId: z.string().min(1, "Choose a record to link."),
+  note: optionalText(200),
+});
+export type ExpenseContextLinkInput = z.infer<typeof expenseContextLinkSchema>;

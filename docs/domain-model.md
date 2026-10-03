@@ -569,8 +569,8 @@ launch should happen. Humans decide operational meaning.
   boat, engine, VHF radio, AED, toolbox). Optional identity fields:
   `category` (free text — the organization's own vocabulary, no enum
   churn), `manufacturer`, `model`, `serialNumber`, `assetTag`,
-  `purchaseDate` (date-only), `vendor` (free-text purchase memory only;
-  real vendors are #17), `notes`.
+  `purchaseDate` (date-only), `vendor` (free-text purchase memory —
+  expenses link to real `Vendor` records, #17), `notes`.
 - **`InventoryItem`** — a quantity-tracked stock item (rope, flares,
   gloves, batteries, consumables). `quantity` is an exact
   `DECIMAL(14,3)` — "25 m of line" and "1.5 gallons cleaner" are
@@ -673,11 +673,11 @@ assetTag])` — org-scoped when present; NULLs are distinct so untagged
 assets never collide. `serialNumber` is indexed but deliberately not
 unique (manufacturers can reuse them).
 
-**Deferred to later issues:** attachments (#16 — stable
-ids, no URL/blob stand-ins), real Vendor/Expense records (#17 —
-`vendor` free text may migrate onto them), global search (#18 — the
+**Deferred to later issues:** global search (#18 — the
 identifier/category indexes are the preparation), reporting (#19),
-durable location/movement history (generic audit work).
+durable location/movement history (generic audit work). (Attachments
+#16 and vendors/expenses #17 are implemented — `vendor` free text may
+migrate onto `Vendor` records in a later cleanup.)
 
 ## Inspections, maintenance, defects, and due tracking
 
@@ -745,8 +745,9 @@ or policy engine. `INACTIVE` preserves history and blocks new records.
 ### `MaintenanceRecord`
 
 A factual service/repair event: `performedOn`, `title`, optional
-`workPerformed`, free-text `providerName` (real vendor/cost tracking is
-#17), optional `performedByMemberId`, optional meter reading, optional
+`workPerformed`, free-text `providerName` (expenses record real
+vendor/cost linkage via `ExpenseMaintenanceRecord`, #17), optional
+`performedByMemberId`, optional meter reading, optional
 explicit `nextDueOn` (for ad-hoc work), `notes`. `planId` is optional —
 ad-hoc work needs no plan. History appends; a new service is a new
 row, never an overwrite. Plan-linked records get their due follow-up
@@ -835,11 +836,11 @@ composite `(id, organizationId)` targets — a cross-org write is a
 P2003 rejection, not just an app check. Meters additionally must
 belong to the same asset as the record referencing them.
 
-**Deferred to later issues:** notification delivery (#13 — the
-query-derived due lists are the seam), attachments (#16),
-vendors/expenses (#17 — `providerName` free text may migrate),
-global search (#18), reporting (#19), InventoryItem expiry tracking
-(deliberately deferred with the target decision above).
+**Deferred to later issues:** global search (#18), reporting (#19),
+InventoryItem expiry tracking
+(deliberately deferred with the target decision above). (Notification
+delivery #13, attachments #16, and vendors/expenses #17 are
+implemented — `providerName` free text may migrate in a later cleanup.)
 
 ### app-foundations `maintenance-core` evaluation
 
@@ -919,7 +920,8 @@ provider abstraction, upload/download flow, security model — is
   `IncidentNoteAttachment`, `MemberQualificationAttachment`,
   `TrainingEventAttachment`, `AssetAttachment`,
   `InspectionRecordAttachment`, `MaintenanceRecordAttachment`,
-  `DefectAttachment` — instead of a polymorphic `entityType`/`entityId`
+  `DefectAttachment`, `ExpenseAttachment` — instead of a polymorphic
+  `entityType`/`entityId`
   row. Each carries composite same-org FKs on both sides plus
   `@@unique([targetId, attachmentId])`; PostgreSQL rejects
   cross-organization pairings structurally.
@@ -937,15 +939,59 @@ provider abstraction, upload/download flow, security model — is
 - **Deletion is a tombstone**, not a hard delete: status flips, link
   rows are retained (rendered as deleted), physical object deletion is
   attempted and its outcome recorded on the `DELETED` event. Attachment
-  mutations on `CLOSED` incidents require an explicit correction
-  reason, matching the incident record posture.
+  mutations on protected records — `CLOSED` incidents, `APPROVED` or
+  `REIMBURSED` expenses — require an explicit recorded reason.
+
+## Vendors, expenses, and reimbursements
+
+Issue #17 adds lightweight financial recordkeeping — where something
+was bought, what it cost, what it was for, and whether a personally
+paid volunteer has been repaid. The full reference is
+`docs/expenses.md`. **SARbase is not accounting software**: no ledger,
+no payments, no invoicing, no FX. The essentials:
+
+- **`Vendor`** — organization-scoped contact/reference record
+  (`name`, `contactName`, `email`, `phone`, `website`,
+  `accountReference`, `notes`, `ACTIVE`/`INACTIVE`). Names are not
+  unique — `accountReference` disambiguates. Vendors are never
+  deleted: `INACTIVE` blocks new spending but stays on history.
+- **`Expense`** — organization-scoped purchase record with an
+  atomic per-organization `EXP-<n>` reference. `amountMinor` is an
+  integer count of minor units (USD 42.15 → `4215`) and `currency` an
+  ISO 4217 code from an explicit exponent table — exact money, never
+  floating point, one currency per record, no conversion.
+  `expenseDate` is an organization-local `@db.Date` calendar date.
+  Optional `vendorId`, free-text `category`, `description`,
+  `submittedByMemberId`, `paidByMemberId` (who paid out of pocket).
+- **Two independent axes**: `status` (`DRAFT`/`SUBMITTED`/`APPROVED`/
+  `REJECTED` — APPROVED terminal, REJECTED needs a note and returns to
+  DRAFT for rework) and `reimbursementStatus` (`NOT_REQUIRED`/`PENDING`/
+  `REIMBURSED` — requires `paidByMemberId`, un-marking needs a note,
+  records a fact rather than processing a payment).
+- **Typed context links** — `ExpenseIncident`, `ExpenseTrainingEvent`,
+  `ExpenseAsset`, `ExpenseMaintenanceRecord`, `ExpenseInventoryItem`
+  rows with composite same-org FKs on both ends and
+  `@@unique([expenseId, targetId])`. One expense, several contexts.
+- **`ExpenseEvent`** (append-only system feed) + **`ExpenseChange`**
+  (typed before/after columns per material correction) — written in
+  the same transaction as the change they record. Corrections on
+  APPROVED/REIMBURSED expenses require a reason; no-op edits write
+  nothing. Scalar `actorAuthIdentityId` throughout — history survives
+  identity deletion.
+- **Receipts are `Attachment`s** linked through `ExpenseAttachment` —
+  the full issue #16 pipeline (neutral storage, private downloads,
+  tombstones, reason-required mutations on protected records), nothing
+  duplicated.
+- **ADMIN-only** — financial records are sensitive; every surface
+  resolves the record's own `organizationId` before checking the
+  grant, and foreign ids are indistinguishable from missing ones.
 
 ## Lifecycle and history
 
 - Members are **deactivated/reactivated**, never deleted through the
   application. `INACTIVE` preserves identity and all historical
-  references; incident, training, and expense records will later point
-  at members that must still exist.
+  references; incident, training, and expense records point at members
+  that must still exist.
 - Units and organizations have no app-level deletion workflow at all in
   this issue; the `Restrict` FKs make even administrative deletion
   conservative.
@@ -1071,3 +1117,20 @@ Server-side Zod schemas (`src/lib/domain/schemas.ts`):
 - Inspection/maintenance corrections: same fields as creation minus
   the immutable provenance; optional `correctionNote` ≤500 recorded on
   the change row.
+- Vendor: `name` required (1–120, trimmed); `contactName`/
+  `accountReference` ≤120, `email` normalized, `phone` normalized,
+  `website` http(s) ≤200, `notes` ≤2000 — all optional.
+- Expense: `expenseDate` required calendar date; `amount` display text
+  parsed by `parseMoneyAmount` (zero/negative/extra-precision
+  rejected); `currency` required 3-letter code from the supported ISO
+  table; `vendorId`/`submittedByMemberId`/`paidByMemberId` optional
+  same-org references (vendor must be ACTIVE); `category` ≤60,
+  `description` ≤2000; `reimbursementStatus` `NOT_REQUIRED`/`PENDING`
+  at create. Corrections take the same fields plus an optional
+  `reason` ≤500 — required by the domain once APPROVED/REIMBURSED.
+  Rejection `note` required; link `note` ≤200; reimbursement `note`
+  required when un-marking REIMBURSED.
+- Expense list filters (query params): `vendor`, `from`/`to`
+  `YYYY-MM-DD` (invalid ignored), `category`, `status`, `reimbursement`
+  bounded enums, `asset`/`incident` link-target ids — foreign ids
+  simply match nothing.

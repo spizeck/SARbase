@@ -233,6 +233,18 @@ export default async function OrganizationPage({
         >
           Documents
         </Link>
+        <Link
+          href={`/admin/organizations/${orgId}/vendors`}
+          className="rounded-md border border-neutral-300 px-3 py-1.5 font-medium text-neutral-800 hover:bg-neutral-50"
+        >
+          Vendors
+        </Link>
+        <Link
+          href={`/admin/organizations/${orgId}/expenses`}
+          className="rounded-md border border-neutral-300 px-3 py-1.5 font-medium text-neutral-800 hover:bg-neutral-50"
+        >
+          Expenses
+        </Link>
       </nav>
 
       <section aria-labelledby="units-heading" className="mt-10">
