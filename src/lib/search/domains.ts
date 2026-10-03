@@ -30,6 +30,20 @@ import type { SearchResult, SearchResultType } from "./types";
 
 const CI: Prisma.QueryMode = "insensitive";
 
+/**
+ * One text-field predicate: `equals` for the exact-match pass,
+ * `contains` for token matching. The union return type stays
+ * assignable to both StringFilter and StringNullableFilter.
+ */
+function text(
+  value: string,
+  exact: boolean,
+):
+  | { equals: string; mode: Prisma.QueryMode }
+  | { contains: string; mode: Prisma.QueryMode } {
+  return exact ? { equals: value, mode: CI } : { contains: value, mode: CI };
+}
+
 export interface DomainSearchInput {
   organizationId: string;
   query: NormalizedQuery;
@@ -65,6 +79,36 @@ function tokenizedWhere<W>(
   fieldsFor: (token: string) => W[],
 ): { AND: { OR: W[] }[] } {
   return { AND: query.tokens.map((token) => ({ OR: fieldsFor(token) })) };
+}
+
+/**
+ * The companion to tokenizedWhere: OR over the same fields with
+ * `equals`. Exact matches are the highest-value results (incident
+ * references, asset tags, serial numbers, names) — but the contains
+ * scan is capped at scanLimit rows in a fixed order, so an exact hit
+ * could be cut before classification ever sees it. A separate bounded
+ * exact query guarantees those rows reach the ranker.
+ */
+function exactWhere<W>(
+  query: NormalizedQuery,
+  fieldsFor: (value: string, exact: boolean) => W[],
+): { OR: W[] } {
+  return { OR: fieldsFor(query.normalized, true) };
+}
+
+/**
+ * Run the exact and contains passes in parallel and merge them with
+ * exact rows first, deduplicated by id. Classification re-sorts by
+ * match class anyway — this only guarantees exact hits survive the
+ * scan limit.
+ */
+async function runDomain<Row extends { id: string }>(
+  exact: () => Promise<Row[]>,
+  contains: () => Promise<Row[]>,
+): Promise<Row[]> {
+  const [exactRows, rows] = await Promise.all([exact(), contains()]);
+  const seen = new Set(exactRows.map((r) => r.id));
+  return [...exactRows, ...rows.filter((r) => !seen.has(r.id))];
 }
 
 interface HitInput {
@@ -126,27 +170,38 @@ const searchMembers: DomainSearcher = async ({
   query,
   scanLimit,
 }) => {
-  const rows = await prisma.member.findMany({
-    where: {
-      organizationId,
-      ...tokenizedWhere<Prisma.MemberWhereInput>(query, (t) => [
-        { displayName: { contains: t, mode: CI } },
-        // Email is searchable for ADMIN only — the whole member domain
-        // is admin-only, and the admin member page already displays it.
-        // Phone is deliberately not searched and never returned.
-        { email: { contains: t, mode: CI } },
-      ]),
-    },
-    orderBy: { displayName: "asc" },
-    take: scanLimit,
-    select: {
-      id: true,
-      displayName: true,
-      email: true,
-      status: true,
-      memberUnits: { select: { unit: { select: { name: true } } } },
-    },
-  });
+  // Email is searchable for ADMIN only — the whole member domain is
+  // admin-only, and the admin member page already displays it. Phone
+  // is deliberately not searched and never returned.
+  const fields = (v: string, exact: boolean): Prisma.MemberWhereInput[] => [
+    { displayName: text(v, exact) },
+    { email: text(v, exact) },
+  ];
+  const select = {
+    id: true,
+    displayName: true,
+    email: true,
+    status: true,
+    memberUnits: { select: { unit: { select: { name: true } } } },
+  } satisfies Prisma.MemberSelect;
+  const rows = await runDomain(
+    () =>
+      prisma.member.findMany({
+        where: { organizationId, ...exactWhere(query, fields) },
+        take: scanLimit,
+        select,
+      }),
+    () =>
+      prisma.member.findMany({
+        where: {
+          organizationId,
+          ...tokenizedWhere(query, (t) => fields(t, false)),
+        },
+        orderBy: { displayName: "asc" },
+        take: scanLimit,
+        select,
+      }),
+  );
   return hits(
     rows,
     (m) => ({
@@ -169,17 +224,28 @@ const searchUnits: DomainSearcher = async ({
   query,
   scanLimit,
 }) => {
-  const rows = await prisma.unit.findMany({
-    where: {
-      organizationId,
-      ...tokenizedWhere<Prisma.UnitWhereInput>(query, (t) => [
-        { name: { contains: t, mode: CI } },
-      ]),
-    },
-    orderBy: { name: "asc" },
-    take: scanLimit,
-    select: { id: true, name: true },
-  });
+  const fields = (v: string, exact: boolean): Prisma.UnitWhereInput[] => [
+    { name: text(v, exact) },
+  ];
+  const select = { id: true, name: true } satisfies Prisma.UnitSelect;
+  const rows = await runDomain(
+    () =>
+      prisma.unit.findMany({
+        where: { organizationId, ...exactWhere(query, fields) },
+        take: scanLimit,
+        select,
+      }),
+    () =>
+      prisma.unit.findMany({
+        where: {
+          organizationId,
+          ...tokenizedWhere(query, (t) => fields(t, false)),
+        },
+        orderBy: { name: "asc" },
+        take: scanLimit,
+        select,
+      }),
+  );
   return hits(
     rows,
     (u) => ({
@@ -198,45 +264,76 @@ const searchQualifications: DomainSearcher = async ({
   query,
   scanLimit,
 }) => {
+  const defFields = (
+    v: string,
+    exact: boolean,
+  ): Prisma.QualificationDefinitionWhereInput[] => [
+    { name: text(v, exact) },
+    { description: text(v, exact) },
+  ];
+  const defSelect = {
+    id: true,
+    name: true,
+    description: true,
+    status: true,
+  } satisfies Prisma.QualificationDefinitionSelect;
+  const recFields = (
+    v: string,
+    exact: boolean,
+  ): Prisma.MemberQualificationWhereInput[] => [
+    { issuer: text(v, exact) },
+    { reference: text(v, exact) },
+    { notes: text(v, exact) },
+    { member: { displayName: text(v, exact) } },
+    { definition: { name: text(v, exact) } },
+  ];
+  const recSelect = {
+    id: true,
+    issuer: true,
+    reference: true,
+    notes: true,
+    expiresOn: true,
+    member: { select: { id: true, displayName: true } },
+    definition: { select: { name: true } },
+  } satisfies Prisma.MemberQualificationSelect;
+
   const [definitions, records] = await Promise.all([
-    prisma.qualificationDefinition.findMany({
-      where: {
-        organizationId,
-        ...tokenizedWhere<Prisma.QualificationDefinitionWhereInput>(
-          query,
-          (t) => [
-            { name: { contains: t, mode: CI } },
-            { description: { contains: t, mode: CI } },
-          ],
-        ),
-      },
-      orderBy: { name: "asc" },
-      take: scanLimit,
-      select: { id: true, name: true, description: true, status: true },
-    }),
-    prisma.memberQualification.findMany({
-      where: {
-        organizationId,
-        ...tokenizedWhere<Prisma.MemberQualificationWhereInput>(query, (t) => [
-          { issuer: { contains: t, mode: CI } },
-          { reference: { contains: t, mode: CI } },
-          { notes: { contains: t, mode: CI } },
-          { member: { displayName: { contains: t, mode: CI } } },
-          { definition: { name: { contains: t, mode: CI } } },
-        ]),
-      },
-      orderBy: { issuedOn: "desc" },
-      take: scanLimit,
-      select: {
-        id: true,
-        issuer: true,
-        reference: true,
-        notes: true,
-        expiresOn: true,
-        member: { select: { id: true, displayName: true } },
-        definition: { select: { name: true } },
-      },
-    }),
+    runDomain(
+      () =>
+        prisma.qualificationDefinition.findMany({
+          where: { organizationId, ...exactWhere(query, defFields) },
+          take: scanLimit,
+          select: defSelect,
+        }),
+      () =>
+        prisma.qualificationDefinition.findMany({
+          where: {
+            organizationId,
+            ...tokenizedWhere(query, (t) => defFields(t, false)),
+          },
+          orderBy: { name: "asc" },
+          take: scanLimit,
+          select: defSelect,
+        }),
+    ),
+    runDomain(
+      () =>
+        prisma.memberQualification.findMany({
+          where: { organizationId, ...exactWhere(query, recFields) },
+          take: scanLimit,
+          select: recSelect,
+        }),
+      () =>
+        prisma.memberQualification.findMany({
+          where: {
+            organizationId,
+            ...tokenizedWhere(query, (t) => recFields(t, false)),
+          },
+          orderBy: { issuedOn: "desc" },
+          take: scanLimit,
+          select: recSelect,
+        }),
+    ),
   ]);
 
   return [
@@ -284,46 +381,60 @@ const searchTraining: DomainSearcher = async ({
   query,
   scanLimit,
 }) => {
-  const rows = await prisma.trainingEvent.findMany({
-    where: {
-      organizationId,
-      ...tokenizedWhere<Prisma.TrainingEventWhereInput>(query, (t) => [
-        { title: { contains: t, mode: CI } },
-        { location: { contains: t, mode: CI } },
-        { instructorName: { contains: t, mode: CI } },
-        { notes: { contains: t, mode: CI } },
-        { followUp: { contains: t, mode: CI } },
-        { unit: { name: { contains: t, mode: CI } } },
-        { leadMember: { displayName: { contains: t, mode: CI } } },
-        { topics: { some: { label: { contains: t, mode: CI } } } },
-      ]),
-    },
-    orderBy: { date: "desc" },
-    take: scanLimit,
-    select: {
-      id: true,
-      title: true,
-      date: true,
-      location: true,
-      instructorName: true,
-      notes: true,
-      followUp: true,
-      status: true,
-      unit: { select: { name: true } },
-      leadMember: { select: { displayName: true } },
-      // Only topics containing a query token are needed for
-      // classification and snippets — bounded, not the whole topic list.
-      topics: {
-        where: {
-          OR: query.tokens.map((t) => ({
-            label: { contains: t, mode: CI },
-          })),
-        },
-        select: { label: true },
-        take: 5,
+  const fields = (
+    v: string,
+    exact: boolean,
+  ): Prisma.TrainingEventWhereInput[] => [
+    { title: text(v, exact) },
+    { location: text(v, exact) },
+    { instructorName: text(v, exact) },
+    { notes: text(v, exact) },
+    { followUp: text(v, exact) },
+    { unit: { name: text(v, exact) } },
+    { leadMember: { displayName: text(v, exact) } },
+    { topics: { some: { label: text(v, exact) } } },
+  ];
+  const select = {
+    id: true,
+    title: true,
+    date: true,
+    location: true,
+    instructorName: true,
+    notes: true,
+    followUp: true,
+    status: true,
+    unit: { select: { name: true } },
+    leadMember: { select: { displayName: true } },
+    // Only topics containing a query token are needed for
+    // classification and snippets — bounded, not the whole topic list.
+    topics: {
+      where: {
+        OR: query.tokens.map((t) => ({
+          label: { contains: t, mode: CI },
+        })),
       },
+      select: { label: true },
+      take: 5,
     },
-  });
+  } satisfies Prisma.TrainingEventSelect;
+  const rows = await runDomain(
+    () =>
+      prisma.trainingEvent.findMany({
+        where: { organizationId, ...exactWhere(query, fields) },
+        take: scanLimit,
+        select,
+      }),
+    () =>
+      prisma.trainingEvent.findMany({
+        where: {
+          organizationId,
+          ...tokenizedWhere(query, (t) => fields(t, false)),
+        },
+        orderBy: { date: "desc" },
+        take: scanLimit,
+        select,
+      }),
+  );
   return hits(
     rows,
     (e) => ({
@@ -357,36 +468,47 @@ const searchAssets: DomainSearcher = async ({
   query,
   scanLimit,
 }) => {
-  const rows = await prisma.asset.findMany({
-    where: {
-      organizationId,
-      ...tokenizedWhere<Prisma.AssetWhereInput>(query, (t) => [
-        { name: { contains: t, mode: CI } },
-        { category: { contains: t, mode: CI } },
-        { manufacturer: { contains: t, mode: CI } },
-        { model: { contains: t, mode: CI } },
-        { serialNumber: { contains: t, mode: CI } },
-        { assetTag: { contains: t, mode: CI } },
-        { vendor: { contains: t, mode: CI } },
-        { notes: { contains: t, mode: CI } },
-      ]),
-    },
-    orderBy: { name: "asc" },
-    take: scanLimit,
-    select: {
-      id: true,
-      name: true,
-      category: true,
-      manufacturer: true,
-      model: true,
-      serialNumber: true,
-      assetTag: true,
-      vendor: true,
-      notes: true,
-      status: true,
-      storageLocation: { select: { name: true } },
-    },
-  });
+  const fields = (v: string, exact: boolean): Prisma.AssetWhereInput[] => [
+    { name: text(v, exact) },
+    { category: text(v, exact) },
+    { manufacturer: text(v, exact) },
+    { model: text(v, exact) },
+    { serialNumber: text(v, exact) },
+    { assetTag: text(v, exact) },
+    { vendor: text(v, exact) },
+    { notes: text(v, exact) },
+  ];
+  const select = {
+    id: true,
+    name: true,
+    category: true,
+    manufacturer: true,
+    model: true,
+    serialNumber: true,
+    assetTag: true,
+    vendor: true,
+    notes: true,
+    status: true,
+    storageLocation: { select: { name: true } },
+  } satisfies Prisma.AssetSelect;
+  const rows = await runDomain(
+    () =>
+      prisma.asset.findMany({
+        where: { organizationId, ...exactWhere(query, fields) },
+        take: scanLimit,
+        select,
+      }),
+    () =>
+      prisma.asset.findMany({
+        where: {
+          organizationId,
+          ...tokenizedWhere(query, (t) => fields(t, false)),
+        },
+        orderBy: { name: "asc" },
+        take: scanLimit,
+        select,
+      }),
+  );
   return hits(
     rows,
     (a) => ({
@@ -396,7 +518,9 @@ const searchAssets: DomainSearcher = async ({
       subtitle: joinParts([
         a.assetTag ? `Tag ${a.assetTag}` : null,
         a.category,
-        a.status !== "ACTIVE" ? a.status.toLowerCase().replace("_", " ") : null,
+        a.status !== "ACTIVE"
+          ? a.status.toLowerCase().replace(/_/g, " ")
+          : null,
         a.storageLocation ? `at ${a.storageLocation.name}` : null,
       ]),
       href: `/admin/assets/${a.id}`,
@@ -420,32 +544,46 @@ const searchInventory: DomainSearcher = async ({
   query,
   scanLimit,
 }) => {
-  const rows = await prisma.inventoryItem.findMany({
-    where: {
-      organizationId,
-      ...tokenizedWhere<Prisma.InventoryItemWhereInput>(query, (t) => [
-        { name: { contains: t, mode: CI } },
-        { category: { contains: t, mode: CI } },
-        { vendor: { contains: t, mode: CI } },
-        { unitOfMeasure: { contains: t, mode: CI } },
-        { notes: { contains: t, mode: CI } },
-        { storageLocation: { name: { contains: t, mode: CI } } },
-      ]),
-    },
-    orderBy: { name: "asc" },
-    take: scanLimit,
-    select: {
-      id: true,
-      name: true,
-      category: true,
-      vendor: true,
-      unitOfMeasure: true,
-      notes: true,
-      status: true,
-      quantity: true,
-      storageLocation: { select: { name: true } },
-    },
-  });
+  const fields = (
+    v: string,
+    exact: boolean,
+  ): Prisma.InventoryItemWhereInput[] => [
+    { name: text(v, exact) },
+    { category: text(v, exact) },
+    { vendor: text(v, exact) },
+    { unitOfMeasure: text(v, exact) },
+    { notes: text(v, exact) },
+    { storageLocation: { name: text(v, exact) } },
+  ];
+  const select = {
+    id: true,
+    name: true,
+    category: true,
+    vendor: true,
+    unitOfMeasure: true,
+    notes: true,
+    status: true,
+    quantity: true,
+    storageLocation: { select: { name: true } },
+  } satisfies Prisma.InventoryItemSelect;
+  const rows = await runDomain(
+    () =>
+      prisma.inventoryItem.findMany({
+        where: { organizationId, ...exactWhere(query, fields) },
+        take: scanLimit,
+        select,
+      }),
+    () =>
+      prisma.inventoryItem.findMany({
+        where: {
+          organizationId,
+          ...tokenizedWhere(query, (t) => fields(t, false)),
+        },
+        orderBy: { name: "asc" },
+        take: scanLimit,
+        select,
+      }),
+  );
   return hits(
     rows,
     (i) => ({
@@ -477,27 +615,41 @@ const searchLocations: DomainSearcher = async ({
   query,
   scanLimit,
 }) => {
-  const rows = await prisma.storageLocation.findMany({
-    where: {
-      organizationId,
-      ...tokenizedWhere<Prisma.StorageLocationWhereInput>(query, (t) => [
-        { name: { contains: t, mode: CI } },
-        { description: { contains: t, mode: CI } },
-        { parentLocation: { name: { contains: t, mode: CI } } },
-        { containingAsset: { name: { contains: t, mode: CI } } },
-      ]),
-    },
-    orderBy: { name: "asc" },
-    take: scanLimit,
-    select: {
-      id: true,
-      name: true,
-      description: true,
-      status: true,
-      parentLocation: { select: { name: true } },
-      containingAsset: { select: { name: true } },
-    },
-  });
+  const fields = (
+    v: string,
+    exact: boolean,
+  ): Prisma.StorageLocationWhereInput[] => [
+    { name: text(v, exact) },
+    { description: text(v, exact) },
+    { parentLocation: { name: text(v, exact) } },
+    { containingAsset: { name: text(v, exact) } },
+  ];
+  const select = {
+    id: true,
+    name: true,
+    description: true,
+    status: true,
+    parentLocation: { select: { name: true } },
+    containingAsset: { select: { name: true } },
+  } satisfies Prisma.StorageLocationSelect;
+  const rows = await runDomain(
+    () =>
+      prisma.storageLocation.findMany({
+        where: { organizationId, ...exactWhere(query, fields) },
+        take: scanLimit,
+        select,
+      }),
+    () =>
+      prisma.storageLocation.findMany({
+        where: {
+          organizationId,
+          ...tokenizedWhere(query, (t) => fields(t, false)),
+        },
+        orderBy: { name: "asc" },
+        take: scanLimit,
+        select,
+      }),
+  );
   return hits(
     rows,
     (l) => ({
@@ -526,40 +678,74 @@ const searchInspections: DomainSearcher = async ({
   query,
   scanLimit,
 }) => {
+  const defFields = (
+    v: string,
+    exact: boolean,
+  ): Prisma.InspectionDefinitionWhereInput[] => [
+    { name: text(v, exact) },
+    { description: text(v, exact) },
+  ];
+  const defSelect = {
+    id: true,
+    name: true,
+    description: true,
+    status: true,
+  } satisfies Prisma.InspectionDefinitionSelect;
+  const recFields = (
+    v: string,
+    exact: boolean,
+  ): Prisma.InspectionRecordWhereInput[] => [
+    { inspectorName: text(v, exact) },
+    { notes: text(v, exact) },
+    { asset: { name: text(v, exact) } },
+    { definition: { name: text(v, exact) } },
+  ];
+  const recSelect = {
+    id: true,
+    performedOn: true,
+    inspectorName: true,
+    notes: true,
+    asset: { select: { name: true } },
+    definition: { select: { name: true } },
+  } satisfies Prisma.InspectionRecordSelect;
+
   const [definitions, records] = await Promise.all([
-    prisma.inspectionDefinition.findMany({
-      where: {
-        organizationId,
-        ...tokenizedWhere<Prisma.InspectionDefinitionWhereInput>(query, (t) => [
-          { name: { contains: t, mode: CI } },
-          { description: { contains: t, mode: CI } },
-        ]),
-      },
-      orderBy: { name: "asc" },
-      take: scanLimit,
-      select: { id: true, name: true, description: true, status: true },
-    }),
-    prisma.inspectionRecord.findMany({
-      where: {
-        organizationId,
-        ...tokenizedWhere<Prisma.InspectionRecordWhereInput>(query, (t) => [
-          { inspectorName: { contains: t, mode: CI } },
-          { notes: { contains: t, mode: CI } },
-          { asset: { name: { contains: t, mode: CI } } },
-          { definition: { name: { contains: t, mode: CI } } },
-        ]),
-      },
-      orderBy: { performedOn: "desc" },
-      take: scanLimit,
-      select: {
-        id: true,
-        performedOn: true,
-        inspectorName: true,
-        notes: true,
-        asset: { select: { name: true } },
-        definition: { select: { name: true } },
-      },
-    }),
+    runDomain(
+      () =>
+        prisma.inspectionDefinition.findMany({
+          where: { organizationId, ...exactWhere(query, defFields) },
+          take: scanLimit,
+          select: defSelect,
+        }),
+      () =>
+        prisma.inspectionDefinition.findMany({
+          where: {
+            organizationId,
+            ...tokenizedWhere(query, (t) => defFields(t, false)),
+          },
+          orderBy: { name: "asc" },
+          take: scanLimit,
+          select: defSelect,
+        }),
+    ),
+    runDomain(
+      () =>
+        prisma.inspectionRecord.findMany({
+          where: { organizationId, ...exactWhere(query, recFields) },
+          take: scanLimit,
+          select: recSelect,
+        }),
+      () =>
+        prisma.inspectionRecord.findMany({
+          where: {
+            organizationId,
+            ...tokenizedWhere(query, (t) => recFields(t, false)),
+          },
+          orderBy: { performedOn: "desc" },
+          take: scanLimit,
+          select: recSelect,
+        }),
+    ),
   ]);
   const href = `/admin/organizations/${organizationId}/maintenance`;
   return [
@@ -598,51 +784,80 @@ const searchMaintenance: DomainSearcher = async ({
   query,
   scanLimit,
 }) => {
+  const planFields = (
+    v: string,
+    exact: boolean,
+  ): Prisma.MaintenancePlanWhereInput[] => [
+    { name: text(v, exact) },
+    { description: text(v, exact) },
+    { asset: { name: text(v, exact) } },
+  ];
+  const planSelect = {
+    id: true,
+    name: true,
+    description: true,
+    status: true,
+    asset: { select: { name: true } },
+  } satisfies Prisma.MaintenancePlanSelect;
+  const recFields = (
+    v: string,
+    exact: boolean,
+  ): Prisma.MaintenanceRecordWhereInput[] => [
+    { title: text(v, exact) },
+    { workPerformed: text(v, exact) },
+    { providerName: text(v, exact) },
+    { notes: text(v, exact) },
+    { asset: { name: text(v, exact) } },
+    { plan: { name: text(v, exact) } },
+  ];
+  const recSelect = {
+    id: true,
+    title: true,
+    performedOn: true,
+    workPerformed: true,
+    providerName: true,
+    notes: true,
+    asset: { select: { name: true } },
+    plan: { select: { name: true } },
+  } satisfies Prisma.MaintenanceRecordSelect;
+
   const [plans, records] = await Promise.all([
-    prisma.maintenancePlan.findMany({
-      where: {
-        organizationId,
-        ...tokenizedWhere<Prisma.MaintenancePlanWhereInput>(query, (t) => [
-          { name: { contains: t, mode: CI } },
-          { description: { contains: t, mode: CI } },
-          { asset: { name: { contains: t, mode: CI } } },
-        ]),
-      },
-      orderBy: { name: "asc" },
-      take: scanLimit,
-      select: {
-        id: true,
-        name: true,
-        description: true,
-        status: true,
-        asset: { select: { name: true } },
-      },
-    }),
-    prisma.maintenanceRecord.findMany({
-      where: {
-        organizationId,
-        ...tokenizedWhere<Prisma.MaintenanceRecordWhereInput>(query, (t) => [
-          { title: { contains: t, mode: CI } },
-          { workPerformed: { contains: t, mode: CI } },
-          { providerName: { contains: t, mode: CI } },
-          { notes: { contains: t, mode: CI } },
-          { asset: { name: { contains: t, mode: CI } } },
-          { plan: { name: { contains: t, mode: CI } } },
-        ]),
-      },
-      orderBy: { performedOn: "desc" },
-      take: scanLimit,
-      select: {
-        id: true,
-        title: true,
-        performedOn: true,
-        workPerformed: true,
-        providerName: true,
-        notes: true,
-        asset: { select: { name: true } },
-        plan: { select: { name: true } },
-      },
-    }),
+    runDomain(
+      () =>
+        prisma.maintenancePlan.findMany({
+          where: { organizationId, ...exactWhere(query, planFields) },
+          take: scanLimit,
+          select: planSelect,
+        }),
+      () =>
+        prisma.maintenancePlan.findMany({
+          where: {
+            organizationId,
+            ...tokenizedWhere(query, (t) => planFields(t, false)),
+          },
+          orderBy: { name: "asc" },
+          take: scanLimit,
+          select: planSelect,
+        }),
+    ),
+    runDomain(
+      () =>
+        prisma.maintenanceRecord.findMany({
+          where: { organizationId, ...exactWhere(query, recFields) },
+          take: scanLimit,
+          select: recSelect,
+        }),
+      () =>
+        prisma.maintenanceRecord.findMany({
+          where: {
+            organizationId,
+            ...tokenizedWhere(query, (t) => recFields(t, false)),
+          },
+          orderBy: { performedOn: "desc" },
+          take: scanLimit,
+          select: recSelect,
+        }),
+    ),
   ]);
   const href = `/admin/organizations/${organizationId}/maintenance`;
   return [
@@ -692,32 +907,43 @@ const searchDefects: DomainSearcher = async ({
   query,
   scanLimit,
 }) => {
-  const rows = await prisma.defect.findMany({
-    where: {
-      organizationId,
-      ...tokenizedWhere<Prisma.DefectWhereInput>(query, (t) => [
-        { title: { contains: t, mode: CI } },
-        { description: { contains: t, mode: CI } },
-        { reporterName: { contains: t, mode: CI } },
-        { resolutionNotes: { contains: t, mode: CI } },
-        { asset: { name: { contains: t, mode: CI } } },
-        { reportedByMember: { displayName: { contains: t, mode: CI } } },
-      ]),
-    },
-    orderBy: { reportedOn: "desc" },
-    take: scanLimit,
-    select: {
-      id: true,
-      title: true,
-      description: true,
-      reporterName: true,
-      resolutionNotes: true,
-      status: true,
-      reportedOn: true,
-      asset: { select: { name: true } },
-      reportedByMember: { select: { displayName: true } },
-    },
-  });
+  const fields = (v: string, exact: boolean): Prisma.DefectWhereInput[] => [
+    { title: text(v, exact) },
+    { description: text(v, exact) },
+    { reporterName: text(v, exact) },
+    { resolutionNotes: text(v, exact) },
+    { asset: { name: text(v, exact) } },
+    { reportedByMember: { displayName: text(v, exact) } },
+  ];
+  const select = {
+    id: true,
+    title: true,
+    description: true,
+    reporterName: true,
+    resolutionNotes: true,
+    status: true,
+    reportedOn: true,
+    asset: { select: { name: true } },
+    reportedByMember: { select: { displayName: true } },
+  } satisfies Prisma.DefectSelect;
+  const rows = await runDomain(
+    () =>
+      prisma.defect.findMany({
+        where: { organizationId, ...exactWhere(query, fields) },
+        take: scanLimit,
+        select,
+      }),
+    () =>
+      prisma.defect.findMany({
+        where: {
+          organizationId,
+          ...tokenizedWhere(query, (t) => fields(t, false)),
+        },
+        orderBy: { reportedOn: "desc" },
+        take: scanLimit,
+        select,
+      }),
+  );
   return hits(
     rows,
     (d) => ({
@@ -748,38 +974,49 @@ const searchIncidents: DomainSearcher = async ({
   query,
   scanLimit,
 }) => {
-  const rows = await prisma.incident.findMany({
-    where: {
-      organizationId,
-      ...tokenizedWhere<Prisma.IncidentWhereInput>(query, (t) => [
-        { reference: { contains: t, mode: CI } },
-        { title: { contains: t, mode: CI } },
-        { summary: { contains: t, mode: CI } },
-        { notes: { some: { body: { contains: t, mode: CI } } } },
-      ]),
-    },
-    orderBy: { createdAt: "desc" },
-    take: scanLimit,
-    select: {
-      id: true,
-      reference: true,
-      title: true,
-      summary: true,
-      status: true,
-      createdAt: true,
-      // Only note bodies containing a query token — candidate snippet
-      // sources; classification still requires all tokens in one field.
-      notes: {
-        where: {
-          OR: query.tokens.map((t) => ({
-            body: { contains: t, mode: CI },
-          })),
-        },
-        select: { body: true },
-        take: 5,
+  const fields = (v: string, exact: boolean): Prisma.IncidentWhereInput[] => [
+    { reference: text(v, exact) },
+    { title: text(v, exact) },
+    { summary: text(v, exact) },
+    { notes: { some: { body: text(v, exact) } } },
+  ];
+  const select = {
+    id: true,
+    reference: true,
+    title: true,
+    summary: true,
+    status: true,
+    createdAt: true,
+    // Only note bodies containing a query token — candidate snippet
+    // sources; classification still requires all tokens in one field.
+    notes: {
+      where: {
+        OR: query.tokens.map((t) => ({
+          body: { contains: t, mode: CI },
+        })),
       },
+      select: { body: true },
+      take: 5,
     },
-  });
+  } satisfies Prisma.IncidentSelect;
+  const rows = await runDomain(
+    () =>
+      prisma.incident.findMany({
+        where: { organizationId, ...exactWhere(query, fields) },
+        take: scanLimit,
+        select,
+      }),
+    () =>
+      prisma.incident.findMany({
+        where: {
+          organizationId,
+          ...tokenizedWhere(query, (t) => fields(t, false)),
+        },
+        orderBy: { createdAt: "desc" },
+        take: scanLimit,
+        select,
+      }),
+  );
   return hits(
     rows,
     (i) => ({
@@ -807,26 +1044,37 @@ const searchCallouts: DomainSearcher = async ({
   query,
   scanLimit,
 }) => {
-  const rows = await prisma.callout.findMany({
-    where: {
-      organizationId,
-      ...tokenizedWhere<Prisma.CalloutWhereInput>(query, (t) => [
-        { title: { contains: t, mode: CI } },
-        { message: { contains: t, mode: CI } },
-        { unit: { name: { contains: t, mode: CI } } },
-      ]),
-    },
-    orderBy: { activatedAt: "desc" },
-    take: scanLimit,
-    select: {
-      id: true,
-      title: true,
-      message: true,
-      status: true,
-      activatedAt: true,
-      unit: { select: { name: true } },
-    },
-  });
+  const fields = (v: string, exact: boolean): Prisma.CalloutWhereInput[] => [
+    { title: text(v, exact) },
+    { message: text(v, exact) },
+    { unit: { name: text(v, exact) } },
+  ];
+  const select = {
+    id: true,
+    title: true,
+    message: true,
+    status: true,
+    activatedAt: true,
+    unit: { select: { name: true } },
+  } satisfies Prisma.CalloutSelect;
+  const rows = await runDomain(
+    () =>
+      prisma.callout.findMany({
+        where: { organizationId, ...exactWhere(query, fields) },
+        take: scanLimit,
+        select,
+      }),
+    () =>
+      prisma.callout.findMany({
+        where: {
+          organizationId,
+          ...tokenizedWhere(query, (t) => fields(t, false)),
+        },
+        orderBy: { activatedAt: "desc" },
+        take: scanLimit,
+        select,
+      }),
+  );
   return hits(
     rows,
     (c) => ({
@@ -850,25 +1098,39 @@ const searchDocuments: DomainSearcher = async ({
   query,
   scanLimit,
 }) => {
-  const rows = await prisma.organizationDocument.findMany({
-    where: {
-      organizationId,
-      ...tokenizedWhere<Prisma.OrganizationDocumentWhereInput>(query, (t) => [
-        { title: { contains: t, mode: CI } },
-        { category: { contains: t, mode: CI } },
-        { notes: { contains: t, mode: CI } },
-      ]),
-    },
-    orderBy: { title: "asc" },
-    take: scanLimit,
-    select: {
-      id: true,
-      title: true,
-      category: true,
-      notes: true,
-      status: true,
-    },
-  });
+  const fields = (
+    v: string,
+    exact: boolean,
+  ): Prisma.OrganizationDocumentWhereInput[] => [
+    { title: text(v, exact) },
+    { category: text(v, exact) },
+    { notes: text(v, exact) },
+  ];
+  const select = {
+    id: true,
+    title: true,
+    category: true,
+    notes: true,
+    status: true,
+  } satisfies Prisma.OrganizationDocumentSelect;
+  const rows = await runDomain(
+    () =>
+      prisma.organizationDocument.findMany({
+        where: { organizationId, ...exactWhere(query, fields) },
+        take: scanLimit,
+        select,
+      }),
+    () =>
+      prisma.organizationDocument.findMany({
+        where: {
+          organizationId,
+          ...tokenizedWhere(query, (t) => fields(t, false)),
+        },
+        orderBy: { title: "asc" },
+        take: scanLimit,
+        select,
+      }),
+  );
   return hits(
     rows,
     (d) => ({
@@ -898,19 +1160,38 @@ const searchAttachments: DomainSearcher = async ({
   query,
   scanLimit,
 }) => {
-  const rows = await prisma.attachment.findMany({
-    where: {
-      organizationId,
-      status: "ACTIVE",
-      ...tokenizedWhere<Prisma.AttachmentWhereInput>(query, (t) => [
-        { displayFilename: { contains: t, mode: CI } },
-        { description: { contains: t, mode: CI } },
-      ]),
-    },
-    orderBy: { displayFilename: "asc" },
-    take: scanLimit,
-    select: { id: true, displayFilename: true, description: true },
-  });
+  const fields = (v: string, exact: boolean): Prisma.AttachmentWhereInput[] => [
+    { displayFilename: text(v, exact) },
+    { description: text(v, exact) },
+  ];
+  const select = {
+    id: true,
+    displayFilename: true,
+    description: true,
+  } satisfies Prisma.AttachmentSelect;
+  const rows = await runDomain(
+    () =>
+      prisma.attachment.findMany({
+        where: {
+          organizationId,
+          status: "ACTIVE",
+          ...exactWhere(query, fields),
+        },
+        take: scanLimit,
+        select,
+      }),
+    () =>
+      prisma.attachment.findMany({
+        where: {
+          organizationId,
+          status: "ACTIVE",
+          ...tokenizedWhere(query, (t) => fields(t, false)),
+        },
+        orderBy: { displayFilename: "asc" },
+        take: scanLimit,
+        select,
+      }),
+  );
   if (rows.length === 0) return [];
 
   const ids = rows.map((r) => r.id);

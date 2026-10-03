@@ -49,6 +49,11 @@ v1 uses **case-insensitive `ILIKE` token matching only** (`contains` +
   record (AND across tokens, OR across fields). This makes "3/8 line"
   match "3/8 double-braid line", "oil marine" match a title + provider
   pair, and multi-word names match in any order.
+- Each domain runs **two bounded passes** merged by id: an `equals`
+  pass over the same fields, then the contains token scan. The exact
+  pass exists so a buried identifier can't be starved by the 50-row
+  scan cap — `INC-7` still surfaces when `INC-70`–`INC-79`, `INC-170`…
+  fill the contains window.
 - No `pg_trgm`, no `tsvector`, no generated columns, no new indexes,
   and no new extension. The migration surface for this feature is
   **zero** — nothing to enable on Neon, nothing to drift, nothing a new
@@ -199,7 +204,8 @@ training events), a full multi-domain search completes well under one
 second in the db test environment; the test asserts a generous bound to
 catch accidental quadratic regressions rather than micro-benchmark.
 
-Each domain is one bounded query (two for qualifications, inspections,
-maintenance, and attachment parent resolution) — roughly a dozen
-parallel queries per search, no N+1. At SARbase scale no additional
-indexes are warranted; `organizationId` scoping keeps every scan small.
+Each domain is a pair of bounded queries (exact + contains; more where
+a domain spans two tables, plus attachment parent resolution) — on the
+order of two dozen small parallel queries per search, no N+1. At
+SARbase scale no additional indexes are warranted; `organizationId`
+scoping keeps every scan small.
