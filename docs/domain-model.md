@@ -1055,3 +1055,18 @@ Server-side Zod schemas (`src/lib/domain/schemas.ts`):
 - Inspection/maintenance corrections: same fields as creation minus
   the immutable provenance; optional `correctionNote` ≤500 recorded on
   the change row.
+
+## Global search (issue #18)
+
+Search is a read-only projection over the records above — it introduces
+no new data model. `searchOrganizationRecords` (`src/lib/search/`)
+federates one bounded, org-scoped `ILIKE` token query per domain and
+merges the results into labeled groups. There is deliberately no
+denormalized search table and no external service: authorization lives
+in each domain query's WHERE clause, so a record outside the caller's
+grants is never selected — and therefore can never appear as a result,
+snippet, or count. Every searchable domain is ADMIN-only today,
+matching the surfaces those records already have; the registry's
+`adminOnly` flag is the seam for any future member-visible domains and
+for issue #17's Vendor/Expense records. Full contract, ranking rules,
+limits, and privacy posture: `docs/search.md`.
