@@ -745,30 +745,80 @@ describe.skipIf(!hasDb)("vendors and expenses (issue #17)", () => {
     await expect(
       removeExpenseContextLink("INCIDENT", "nonexistent-link", actorA.id),
     ).rejects.toBeInstanceOf(CrossOrganizationExpenseError);
+    // Once removed, the same id is indistinguishable from a
+    // fabricated selector — opaque, not a stale success.
+    await expect(
+      removeExpenseContextLink("INCIDENT", linkId, actorA.id),
+    ).rejects.toBeInstanceOf(CrossOrganizationExpenseError);
   });
 
-  it("serializes concurrent link removals into a single UNLINKED event", async () => {
-    const expense = await makeExpense();
-    const linkId = await addExpenseContextLink(
-      expense.id,
-      "ASSET",
-      assetA.id,
-      undefined,
-      actorA.id,
-    );
-    // Two removals race on the same expense row lock. Whichever
-    // interleaving occurs — the loser's find landing before or after
-    // the winner commits — at most one removal wins and exactly one
-    // CONTEXT_UNLINKED is written.
-    const outcomes = await Promise.allSettled([
-      removeExpenseContextLink("ASSET", linkId, actorA.id),
-      removeExpenseContextLink("ASSET", linkId, actorA.id),
-    ]);
-    expect(outcomes.some((o) => o.status === "fulfilled")).toBe(true);
-    expect(
-      (await eventTypes(expense.id)).filter((t) => t === "CONTEXT_UNLINKED"),
-    ).toHaveLength(1);
-  });
+  it(
+    "serializes concurrent link removals into a single UNLINKED event",
+    { timeout: 15000 },
+    async () => {
+      const expense = await makeExpense();
+      const linkId = await addExpenseContextLink(
+        expense.id,
+        "ASSET",
+        assetA.id,
+        undefined,
+        actorA.id,
+      );
+      // Hold the expense row lock on a separate connection so BOTH
+      // removal transactions complete their unlocked link lookup and
+      // then queue on the lock — deterministically the interleaving
+      // this regression covers, not an incidental one. Releasing the
+      // gate lets one win; the loser resumes with the link already
+      // gone (deleteMany count 0) and quietly no-ops instead of
+      // writing a duplicate CONTEXT_UNLINKED.
+      let lockAcquired!: () => void;
+      const acquired = new Promise<void>((r) => (lockAcquired = r));
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const holdLock = prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SELECT id FROM "Expense" WHERE id = ${expense.id} FOR UPDATE`;
+          lockAcquired();
+          await gate;
+        },
+        { timeout: 20000 },
+      );
+      await acquired;
+
+      const removals = Promise.allSettled([
+        removeExpenseContextLink("ASSET", linkId, actorA.id),
+        removeExpenseContextLink("ASSET", linkId, actorA.id),
+      ]);
+      // Poll pg_stat_activity until both removals are queued on the
+      // lock — proof each ran findContextLink before blocking. The
+      // first FOR UPDATE waiter blocks on the holder's transactionid
+      // lock; a second queues on the tuple lock behind it — wait_event
+      // type 'Lock' covers both. All in-flight work settles before the
+      // assertions so a poll miss can never orphan a transaction into
+      // afterAll cleanup.
+      let waiters = 0;
+      try {
+        for (let i = 0; i < 120 && waiters < 2; i++) {
+          const [{ n }] = await prisma.$queryRaw<{ n: bigint }[]>`
+            SELECT count(*) AS n FROM pg_stat_activity
+            WHERE wait_event_type = 'Lock'
+              AND pid <> pg_backend_pid()`;
+          waiters = Number(n);
+          if (waiters < 2) await new Promise((r) => setTimeout(r, 25));
+        }
+      } finally {
+        release();
+      }
+      await holdLock;
+
+      const outcomes = await removals;
+      expect(waiters).toBe(2);
+      expect(outcomes.map((o) => o.status)).toEqual(["fulfilled", "fulfilled"]);
+      expect(
+        (await eventTypes(expense.id)).filter((t) => t === "CONTEXT_UNLINKED"),
+      ).toHaveLength(1);
+    },
+  );
 
   /* ---------------- receipt attachments ---------------- */
 
