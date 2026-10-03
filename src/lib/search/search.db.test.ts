@@ -626,6 +626,46 @@ describe.skipIf(!hasDb)("global organization search", () => {
         second.groups.map((g) => [g.type, g.results.map((r) => r.id)]),
       ).toEqual(first.groups.map((g) => [g.type, g.results.map((r) => r.id)]));
     });
+
+    it("returns an exact match even when the contains scan overflows", async () => {
+      // Regression for the scan-limit starvation bug: the contains
+      // query takes 50 rows in fixed order — an exact match that sorts
+      // past the cut must still reach the ranker via the exact pass.
+      const deep = await prisma.organization.create({
+        data: { name: uniqueName("deep-org") },
+      });
+      const ref = uniqueName("INC-7");
+      const exact = await prisma.incident.create({
+        data: {
+          organizationId: deep.id,
+          sequence: 1,
+          reference: ref,
+          title: "the one that must surface",
+          createdByAuthIdentityId: ACTOR,
+        },
+      });
+      // 60 fillers that all contains-match the reference token and are
+      // newer than the exact row — the fixed createdAt-desc scan would
+      // cut the exact match without the separate exact pass.
+      await prisma.incident.createMany({
+        data: Array.from({ length: 60 }, (_, i) => ({
+          organizationId: deep.id,
+          sequence: i + 2,
+          reference: `${ref}0-${i}`,
+          title: `filler ${i}`,
+          createdByAuthIdentityId: ACTOR,
+        })),
+      });
+
+      const outcome = await searchOrganizationRecords(
+        ctxFor(deep.id, "ADMIN"),
+        deep.id,
+        ref,
+      );
+      const incidents = resultsOf(outcome, "incident");
+      expect(incidents.length).toBeGreaterThan(0);
+      expect(incidents[0]?.id).toBe(exact.id);
+    });
   });
 
   describe("query safety", () => {
