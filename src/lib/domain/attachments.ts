@@ -492,7 +492,7 @@ async function attachmentEvent(
  */
 async function entityEventMirror(
   tx: Prisma.TransactionClient,
-  entity: ResolvedEntity,
+  entity: Pick<ResolvedEntity, "organizationId" | "incidentId" | "expenseId">,
   type: "ATTACHMENT_ADDED" | "ATTACHMENT_REMOVED",
   attachmentId: string,
   actorAuthIdentityId: string,
@@ -928,6 +928,51 @@ export async function deleteAttachment(
         deletedByAuthIdentityId: actorAuthIdentityId,
       },
     });
+    if (marked.count === 1) {
+      // Mirror the removal onto every record the file is still linked
+      // to — tombstoning keeps the link rows (each record's history
+      // retains the fact a file existed), so each record's own feed
+      // must show the evidence was destroyed, the same way
+      // unlinkAttachment mirrors the detach path. Inside this
+      // transaction the mirror is atomic with the tombstone; the retry
+      // path above skips it because the mirrors already committed.
+      // Dedupe incidents reached through BOTH a direct link and a note
+      // link so their timeline gets one event.
+      const incidentIds = new Set(
+        attachment.incidentLinks.map((l) => l.incidentId),
+      );
+      for (const link of attachment.incidentNoteLinks) {
+        incidentIds.add(link.note.incidentId);
+      }
+      for (const incidentId of incidentIds) {
+        await entityEventMirror(
+          tx,
+          {
+            organizationId: attachment.organizationId,
+            incidentId,
+            expenseId: null,
+          },
+          "ATTACHMENT_REMOVED",
+          attachment.id,
+          actorAuthIdentityId,
+          options.reason,
+        );
+      }
+      for (const link of attachment.expenseLinks) {
+        await entityEventMirror(
+          tx,
+          {
+            organizationId: attachment.organizationId,
+            incidentId: null,
+            expenseId: link.expenseId,
+          },
+          "ATTACHMENT_REMOVED",
+          attachment.id,
+          actorAuthIdentityId,
+          options.reason,
+        );
+      }
+    }
     return { attachment, changed: marked.count === 1, retryStorage: false };
   });
 

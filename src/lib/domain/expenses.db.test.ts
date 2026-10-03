@@ -827,6 +827,40 @@ describe.skipIf(!hasDb)("vendors and expenses (issue #17)", () => {
     expect(await eventTypes(expense.id)).toContain("ATTACHMENT_REMOVED");
   });
 
+  it("mirrors ATTACHMENT_REMOVED when a linked receipt is deleted", async () => {
+    const expense = await makeExpense();
+    const receipt = await uploadAttachment(
+      { type: "EXPENSE", id: expense.id },
+      RECEIPT,
+      {},
+      actorA.id,
+      storage,
+    );
+    await transitionExpenseStatus(expense.id, "SUBMITTED", actorA.id);
+    await transitionExpenseStatus(expense.id, "APPROVED", actorA.id);
+
+    // Deleting the file (not just unlinking it) must also surface on
+    // the expense's own feed — the evidence was destroyed.
+    await deleteAttachment(
+      receipt.id,
+      { reason: "replaced by corrected invoice" },
+      actorA.id,
+      storage,
+    );
+
+    expect(await eventTypes(expense.id)).toContain("ATTACHMENT_REMOVED");
+    // The link row is retained — the tombstoned file still shows in
+    // the record's attachment list and its own audit trail records
+    // the deletion.
+    const rows = await listEntityAttachments("EXPENSE", expense.id);
+    expect(rows.map((r) => r.attachment.id)).toEqual([receipt.id]);
+    expect(rows[0]?.attachment.status).toBe("DELETED");
+    const fileEvents = await prisma.attachmentEvent.findMany({
+      where: { attachmentId: receipt.id },
+    });
+    expect(fileEvents.map((e) => e.action)).toContain("DELETED");
+  });
+
   /* ---------------- list filters ---------------- */
 
   it("filters the org expense list by every supported dimension", async () => {

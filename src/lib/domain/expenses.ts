@@ -8,6 +8,7 @@ import type {
 
 import { prisma } from "@/lib/prisma";
 import { log } from "@/lib/logging";
+import { resolveActorLabels } from "./actors";
 import { formatDateOnly } from "@/lib/dates";
 import { MoneyInputError, parseMoneyAmount } from "@/lib/money";
 import type {
@@ -1139,25 +1140,10 @@ export async function getExpenseForAdmin(expenseId: string) {
       ].filter((id): id is string => Boolean(id)),
     ),
   ];
-  const [identities, actorMembers] = await Promise.all([
-    prisma.authIdentity.findMany({
-      where: { id: { in: actorIds } },
-      select: { id: true, email: true },
-    }),
-    prisma.member.findMany({
-      where: {
-        organizationId: expense.organizationId,
-        authIdentityId: { in: actorIds },
-      },
-      select: { authIdentityId: true, displayName: true },
-    }),
-  ]);
-  const memberNameByIdentity = new Map(
-    actorMembers.map((m) => [m.authIdentityId, m.displayName]),
-  );
-  const emailByIdentity = new Map(identities.map((i) => [i.id, i.email]));
-  const actorName = (id: string | null) =>
-    id ? (memberNameByIdentity.get(id) ?? emailByIdentity.get(id) ?? id) : null;
+  // Shared audit-actor policy (#38): member display name in this org,
+  // then identity email, then the raw id as the forensic fallback.
+  const labels = await resolveActorLabels(expense.organizationId, actorIds);
+  const actorName = (id: string | null) => (id ? (labels.get(id) ?? id) : null);
 
   return {
     ...expense,
