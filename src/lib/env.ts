@@ -329,3 +329,110 @@ export function parseNotificationEnvironment(
 ): NotificationEnvironment {
   return notificationEnvironmentSchema.parse(values);
 }
+
+/**
+ * File storage configuration (issue #16) — server-only.
+ *
+ * - FILE_STORAGE_PROVIDER: explicit selection, "local" or "s3". In a real
+ *   production deployment the resolver fails closed when it is unset;
+ *   development/test may leave it unset for the local provider (see
+ *   src/lib/storage/resolve.ts for the exact rules).
+ * - FILE_STORAGE_LOCAL_ROOT: absolute directory the local provider stores
+ *   objects under. Required for "local" except that the resolver supplies
+ *   a documented development default outside the repo.
+ * - FILE_STORAGE_S3_*: endpoint/bucket/region/credentials for any
+ *   S3-compatible object store (AWS S3, Cloudflare R2, MinIO, ...).
+ *   SECRETS — never in client bundles, CI, or logs.
+ *
+ * Blank values (an uncommented-but-empty .env.example line, a Vercel var
+ * saved empty) normalize to undefined rather than failing validation —
+ * an unset option and an empty option mean the same thing.
+ */
+const storageBlankToUndefined = (value: unknown) =>
+  typeof value === "string" && value.trim() === "" ? undefined : value;
+
+export const storageEnvironmentSchema = z.object({
+  FILE_STORAGE_PROVIDER: z.preprocess(
+    storageBlankToUndefined,
+    z.enum(["local", "s3"]).optional(),
+  ),
+  FILE_STORAGE_LOCAL_ROOT: z.preprocess(
+    storageBlankToUndefined,
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(1024)
+      .refine((root) => !root.includes(".."), {
+        message: "FILE_STORAGE_LOCAL_ROOT must not contain '..'",
+      })
+      .optional(),
+  ),
+  FILE_STORAGE_S3_ENDPOINT: z.preprocess(
+    storageBlankToUndefined,
+    z
+      .string()
+      .url("FILE_STORAGE_S3_ENDPOINT must be a valid URL")
+      .max(2048)
+      // Cleartext endpoints send bytes and signed credentials over the
+      // network — HTTPS is required except on loopback, where plain
+      // HTTP serves local MinIO/dev stacks. Loopback is verified as a
+      // real IP — a textual prefix check would wrongly trust DNS names
+      // like "127.objectstore.example.com". WHATWG URL canonicalizes
+      // numeric IPv4 spellings (0x7f.1, 127.1, octal) to dotted-quad and
+      // IPv6 literals to compressed [::1] form, so exact-shape matching
+      // is sufficient. (node:net's isIP is unusable here — this module
+      // is also bundled into client code.)
+      .refine((endpoint) => {
+        const url = new URL(endpoint);
+        if (url.protocol === "https:") return true;
+        if (url.protocol !== "http:") return false;
+        const host = url.hostname;
+        if (host === "localhost" || host.endsWith(".localhost")) {
+          return true;
+        }
+        if (host === "[::1]") return true;
+        // IPv4 loopback is the entire 127.0.0.0/8 block; the strict
+        // dotted-quad shape rejects DNS names like
+        // "127.objectstore.example.com".
+        if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) {
+          return false;
+        }
+        return host.split(".")[0] === "127";
+      }, "FILE_STORAGE_S3_ENDPOINT must use https:// (http:// is allowed only for loopback/localhost endpoints)")
+      .optional(),
+  ),
+  FILE_STORAGE_S3_REGION: z.preprocess(
+    storageBlankToUndefined,
+    z.string().trim().min(1).max(128).optional(),
+  ),
+  FILE_STORAGE_S3_BUCKET: z.preprocess(
+    storageBlankToUndefined,
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(255)
+      .regex(
+        /^[a-zA-Z0-9.\-_]+$/,
+        "FILE_STORAGE_S3_BUCKET may only contain letters, digits, '.', '-' and '_'",
+      )
+      .optional(),
+  ),
+  FILE_STORAGE_S3_ACCESS_KEY_ID: z.preprocess(
+    storageBlankToUndefined,
+    z.string().trim().min(1).max(512).optional(),
+  ),
+  FILE_STORAGE_S3_SECRET_ACCESS_KEY: z.preprocess(
+    storageBlankToUndefined,
+    z.string().min(1).max(2048).optional(),
+  ),
+});
+
+export type StorageEnvironment = z.infer<typeof storageEnvironmentSchema>;
+
+export function parseStorageEnvironment(
+  values: Record<string, string | undefined> = process.env,
+): StorageEnvironment {
+  return storageEnvironmentSchema.parse(values);
+}

@@ -97,6 +97,19 @@ model Organization {
   incidentNotes           IncidentNote[]
   incidentNoteCorrections IncidentNoteCorrection[]
   incidentChanges         IncidentChange[]
+
+  attachments                    Attachment[]
+  attachmentEvents               AttachmentEvent[]
+  incidentAttachments            IncidentAttachment[]
+  incidentNoteAttachments        IncidentNoteAttachment[]
+  memberQualificationAttachments MemberQualificationAttachment[]
+  trainingEventAttachments       TrainingEventAttachment[]
+  assetAttachments               AssetAttachment[]
+  inspectionRecordAttachments    InspectionRecordAttachment[]
+  maintenanceRecordAttachments   MaintenanceRecordAttachment[]
+  defectAttachments              DefectAttachment[]
+  organizationDocuments          OrganizationDocument[]
+  organizationDocumentVersions   OrganizationDocumentVersion[]
 }
 
 // An internal operational/administrative grouping within an organization
@@ -306,9 +319,13 @@ model MemberQualification {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  member     Member                  @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
-  definition QualificationDefinition @relation(fields: [definitionId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  member      Member                          @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  definition  QualificationDefinition         @relation(fields: [definitionId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  attachments MemberQualificationAttachment[]
 
+  // Composite-FK target so MemberQualificationAttachment enforces
+  // same-organization rows at the database level.
+  @@unique([id, organizationId])
   @@index([memberId])
   @@index([definitionId])
   // Expiry-window queries (expiring-soon lists, future reminders).
@@ -381,6 +398,7 @@ model TrainingEvent {
   attendances       TrainingAttendance[]
   attendanceChanges TrainingAttendanceChange[]
   topics            TrainingTopic[]
+  attachments       TrainingEventAttachment[]
 
   // Composite-FK target for attendance/topics.
   @@unique([id, organizationId])
@@ -533,27 +551,28 @@ model InspectionDefinition {
 /// nextDueOn is an explicit date-only fact — pre-filled from the
 /// definition's recurrence when recording, freely overridable.
 model InspectionRecord {
-  id                String                   @id @default(cuid())
-  organization      Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id                String                       @id @default(cuid())
+  organization      Organization                 @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   organizationId    String
-  asset             Asset                    @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  asset             Asset                        @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
   assetId           String
-  definition        InspectionDefinition     @relation(fields: [definitionId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  definition        InspectionDefinition         @relation(fields: [definitionId, organizationId], references: [id, organizationId], onDelete: Restrict)
   definitionId      String
-  performedOn       DateTime                 @db.Date
-  inspectorMember   Member?                  @relation(fields: [inspectorMemberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  performedOn       DateTime                     @db.Date
+  inspectorMember   Member?                      @relation(fields: [inspectorMemberId, organizationId], references: [id, organizationId], onDelete: Restrict)
   inspectorMemberId String?
   inspectorName     String? // free-text inspector (e.g. external surveyor)
   conditionObserved ConditionStatus? // clerk-recorded observation, never a readiness verdict
-  nextDueOn         DateTime?                @db.Date
-  meter             AssetMeter?              @relation(fields: [meterId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  nextDueOn         DateTime?                    @db.Date
+  meter             AssetMeter?                  @relation(fields: [meterId, organizationId], references: [id, organizationId], onDelete: Restrict)
   meterId           String?
-  meterReading      Decimal?                 @db.Decimal(14, 3)
+  meterReading      Decimal?                     @db.Decimal(14, 3)
   notes             String?
-  meterReadings     AssetMeterReading[]      @relation("MeterReadingInspectionSource")
+  meterReadings     AssetMeterReading[]          @relation("MeterReadingInspectionSource")
   changes           InspectionRecordChange[]
-  createdAt         DateTime                 @default(now())
-  updatedAt         DateTime                 @updatedAt
+  attachments       InspectionRecordAttachment[]
+  createdAt         DateTime                     @default(now())
+  updatedAt         DateTime                     @updatedAt
 
   // Composite target for AssetMeterReading.inspectionRecord provenance.
   @@unique([id, organizationId])
@@ -632,28 +651,29 @@ model MaintenancePlan {
 /// AssetMeterReading in the same transaction so "current reading" has a
 /// single append-only source of truth.
 model MaintenanceRecord {
-  id                  String                    @id @default(cuid())
-  organization        Organization              @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id                  String                        @id @default(cuid())
+  organization        Organization                  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   organizationId      String
-  asset               Asset                     @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  asset               Asset                         @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
   assetId             String
-  plan                MaintenancePlan?          @relation(fields: [planId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  plan                MaintenancePlan?              @relation(fields: [planId, organizationId], references: [id, organizationId], onDelete: Restrict)
   planId              String?
-  performedOn         DateTime                  @db.Date
+  performedOn         DateTime                      @db.Date
   title               String
   workPerformed       String?
   providerName        String? // free text; real vendor/cost tracking is issue #17
-  performedByMember   Member?                   @relation(fields: [performedByMemberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  performedByMember   Member?                       @relation(fields: [performedByMemberId, organizationId], references: [id, organizationId], onDelete: Restrict)
   performedByMemberId String?
-  meter               AssetMeter?               @relation(fields: [meterId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  meter               AssetMeter?                   @relation(fields: [meterId, organizationId], references: [id, organizationId], onDelete: Restrict)
   meterId             String?
-  meterReading        Decimal?                  @db.Decimal(14, 3)
-  nextDueOn           DateTime?                 @db.Date
+  meterReading        Decimal?                      @db.Decimal(14, 3)
+  nextDueOn           DateTime?                     @db.Date
   notes               String?
-  meterReadings       AssetMeterReading[]       @relation("MeterReadingMaintenanceSource")
+  meterReadings       AssetMeterReading[]           @relation("MeterReadingMaintenanceSource")
   changes             MaintenanceRecordChange[]
-  createdAt           DateTime                  @default(now())
-  updatedAt           DateTime                  @updatedAt
+  attachments         MaintenanceRecordAttachment[]
+  createdAt           DateTime                      @default(now())
+  updatedAt           DateTime                      @updatedAt
 
   @@unique([id, organizationId])
   @@index([organizationId, assetId, performedOn])
@@ -701,23 +721,24 @@ model MaintenanceRecordChange {
 /// report time or the normal asset edit) sets OUT_OF_SERVICE, and resolving
 /// a defect never restores ACTIVE.
 model Defect {
-  id                 String         @id @default(cuid())
-  organization       Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  id                 String             @id @default(cuid())
+  organization       Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   organizationId     String
-  asset              Asset          @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  asset              Asset              @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
   assetId            String
-  reportedOn         DateTime       @db.Date
-  reportedByMember   Member?        @relation(fields: [reportedByMemberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  reportedOn         DateTime           @db.Date
+  reportedByMember   Member?            @relation(fields: [reportedByMemberId, organizationId], references: [id, organizationId], onDelete: Restrict)
   reportedByMemberId String?
   reporterName       String? // free text for non-member reporters
   title              String
   description        String?
-  status             DefectStatus   @default(OPEN)
-  resolvedOn         DateTime?      @db.Date
+  status             DefectStatus       @default(OPEN)
+  resolvedOn         DateTime?          @db.Date
   resolutionNotes    String?
   changes            DefectChange[]
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
+  attachments        DefectAttachment[]
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
 
   @@unique([id, organizationId])
   @@index([organizationId, status])
@@ -966,6 +987,9 @@ model Asset {
   // Issue #15 — explicit incident participation records. Restrict:
   // asset rows can't be hard-deleted out from under incident history.
   incidentParticipations IncidentAsset[]
+
+  // Issue #16 — documentary files (manuals, registrations, photos).
+  attachments AssetAttachment[]
 
   // Composite-FK targets so locations/children/units enforce
   // same-organization rows at the database level.
@@ -1453,6 +1477,10 @@ enum IncidentTimelineEventType {
   ASSET_ADDED
   ASSET_REMOVED
   CORRECTION_RECORDED
+  // Issue #16 — an attachment was linked to or removed from the
+  // incident's evidence set (incident-level and note-level links).
+  ATTACHMENT_ADDED
+  ATTACHMENT_REMOVED
 }
 
 // Human-authored note categories. A note is always a person's recorded
@@ -1514,6 +1542,9 @@ model Incident {
   notes        IncidentNote[]
   timeline     IncidentTimelineEvent[]
   changes      IncidentChange[]
+  // Issue #16 — incident-level documentary attachments (Restrict: an
+  // incident with linked files keeps its evidence set consistent).
+  attachments  IncidentAttachment[]
 
   // At most one incident per callout: calloutId is org-unique via the
   // composite FK (a callout belongs to exactly one organization), so
@@ -1645,6 +1676,9 @@ model IncidentNote {
   organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   incident     Incident                 @relation(fields: [incidentId, organizationId], references: [id, organizationId], onDelete: Restrict)
   corrections  IncidentNoteCorrection[]
+  // Issue #16 — files attached to this note (e.g. a photo referenced
+  // by the observation).
+  attachments  IncidentNoteAttachment[]
 
   // Composite-FK target so IncidentNoteCorrection enforces same-org rows
   // AND that a correction's denormalized incidentId matches its note's
@@ -1715,4 +1749,368 @@ model IncidentChange {
 
   @@index([incidentId, createdAt])
   @@index([organizationId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Issue #16 — attachments and organizational documents.
+//
+// An Attachment is a first-class metadata record for one stored file —
+// evidence and organizational records (incident documents and photos,
+// certificates, inspection sheets, invoices, manuals, registrations,
+// policies, reference material). The file CONTENT lives behind a
+// provider-neutral storage boundary (src/lib/storage/*); this schema
+// records only provider name + opaque storage key + integrity metadata.
+// There is deliberately no public URL column, and file bytes are never
+// stored in PostgreSQL.
+//
+// PRODUCT BOUNDARY: attachments are documentary evidence. SARbase
+// stores, retrieves, organizes, and audits files — it never infers
+// operational conclusions from file contents (no OCR-driven facts, no
+// document-based readiness scoring, no classification of safety or
+// rescue decisions).
+//
+// Relationship design: no free-form polymorphic link table. Each
+// supported parent has an explicit link table with composite
+// (parentId, organizationId) and (attachmentId, organizationId)
+// foreign keys, so a cross-organization link is physically impossible
+// at the database level. Organization-level documents are a real
+// concept (OrganizationDocument + versioned file pointers), not a fake
+// Asset or Incident.
+//
+// Actor columns are PLAIN scalar references (the scalar-actor policy):
+// upload/link/unlink/delete history must survive auth identity
+// deletion; display resolves best-effort.
+// ---------------------------------------------------------------------------
+
+// Lifecycle of the stored file. ACTIVE serves authorized downloads;
+// DELETED is a durable tombstone — the metadata row is never removed,
+// so a reviewer can always tell that a file once existed even after an
+// explicit deletion removed the blob.
+enum AttachmentStatus {
+  ACTIVE
+  DELETED
+}
+
+// Append-only attachment history — the durable who/what/when behind
+// upload, linking, unlinking, and deletion. Distinct from the incident
+// timeline: this is the file's own audit record.
+enum AttachmentEventAction {
+  UPLOADED
+  LINKED
+  UNLINKED
+  // Metadata tombstoned. `storageDeleted` on the event records whether
+  // the provider delete actually succeeded — a failed physical delete
+  // is never reported as success.
+  DELETED
+}
+
+// Administrative lifecycle for an organization-level document record.
+// ARCHIVED preserves the document and all its versions; it stops
+// presenting the document as current organizational reference material.
+enum OrganizationDocumentStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+// One stored file's durable metadata. `storageKey` is opaque and
+// organization-scoped (organizations/<org>/attachments/<uuid>) — it
+// never contains the original filename, a member name, or any business
+// context. `storageProvider` names the provider that wrote the object
+// ("local", "s3", "fake") so a later deployment can tell which store
+// holds the bytes; domain code never branches on it.
+//
+// `displayFilename` is the sanitized user-facing name — the raw client
+// filename is never used as a storage key or trusted for rendering.
+// `checksumSha256` is the server-computed content digest (integrity
+// verification and duplicate detection only — never an authorization
+// input). `description` is optional human context, indexed later by
+// search (issue #18).
+model Attachment {
+  id                       String           @id @default(cuid())
+  organizationId           String
+  displayFilename          String
+  mediaType                String
+  sizeBytes                Int
+  storageProvider          String
+  storageKey               String
+  checksumSha256           String
+  description              String?
+  status                   AttachmentStatus @default(ACTIVE)
+  deletedAt                DateTime?
+  deletedByAuthIdentityId  String?
+  uploadedByAuthIdentityId String
+  createdAt                DateTime         @default(now())
+  updatedAt                DateTime         @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  events       AttachmentEvent[]
+
+  incidentLinks      IncidentAttachment[]
+  incidentNoteLinks  IncidentNoteAttachment[]
+  qualificationLinks MemberQualificationAttachment[]
+  trainingLinks      TrainingEventAttachment[]
+  assetLinks         AssetAttachment[]
+  inspectionLinks    InspectionRecordAttachment[]
+  maintenanceLinks   MaintenanceRecordAttachment[]
+  defectLinks        DefectAttachment[]
+  documentVersions   OrganizationDocumentVersion[]
+
+  // Composite-FK target so every link/event enforces same-organization
+  // rows at the database level.
+  @@unique([id, organizationId])
+  @@index([organizationId, createdAt])
+  // Duplicate-content awareness for admins (integrity, not merging).
+  @@index([organizationId, checksumSha256])
+}
+
+// Append-only audit record for one attachment. Every upload, link,
+// unlink, and deletion writes a row — the application exposes no
+// update or delete path. `entityType`/`entityId` snapshot which record
+// a link event concerned (e.g. entityType "INCIDENT", entityId the
+// incident id); they are audit context, not live references — a link's
+// integrity lives on the link tables, this row outlives them.
+//
+// actorAuthIdentityId is a scalar reference (no FK): audit history must
+// survive auth identity deletion.
+model AttachmentEvent {
+  id                  String                @id @default(cuid())
+  organizationId      String
+  attachmentId        String
+  action              AttachmentEventAction
+  entityType          String?
+  entityId            String?
+  // Human reason — required by the domain when a closed incident's
+  // evidence set is changed, optional elsewhere.
+  reason              String?
+  // DELETED events only: whether the provider object was actually
+  // removed. NULL on other actions; honest false on provider failure.
+  storageDeleted      Boolean?
+  actorAuthIdentityId String
+  createdAt           DateTime              @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  attachment   Attachment   @relation(fields: [attachmentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@index([attachmentId, createdAt])
+  @@index([organizationId, createdAt])
+}
+
+// A general organizational record — an SOP, manual, insurance
+// certificate, registration, policy, or form — that belongs to the
+// organization itself rather than to one operational record. The
+// document is the durable identity; the current FILE is the highest
+// OrganizationDocumentVersion.versionNumber, so replacing a manual or
+// renewing a policy preserves every prior file rather than silently
+// overwriting it. `category` is the organization's own vocabulary
+// (bounded free text, like Asset.category — no enum churn).
+model OrganizationDocument {
+  id                      String                     @id @default(cuid())
+  organizationId          String
+  title                   String
+  category                String?
+  effectiveOn             DateTime?                  @db.Date
+  expiresOn               DateTime?                  @db.Date
+  notes                   String?
+  status                  OrganizationDocumentStatus @default(ACTIVE)
+  createdByAuthIdentityId String
+  createdAt               DateTime                   @default(now())
+  updatedAt               DateTime                   @updatedAt
+
+  organization Organization                  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  versions     OrganizationDocumentVersion[]
+
+  // Composite-FK target so versions enforce same-organization rows.
+  @@unique([id, organizationId])
+  @@index([organizationId, status])
+  @@index([organizationId, expiresOn])
+}
+
+// One version of an OrganizationDocument — the link between the
+// document record and the Attachment holding that version's file.
+// Rows are append-only: a replacement upload inserts the next
+// versionNumber; history is never rewritten. `note` records what
+// changed ("2026 renewal", "board revision 4") — factual context, not
+// a workflow state.
+model OrganizationDocumentVersion {
+  id                      String   @id @default(cuid())
+  organizationId          String
+  documentId              String
+  attachmentId            String
+  versionNumber           Int
+  note                    String?
+  createdByAuthIdentityId String
+  createdAt               DateTime @default(now())
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  document     OrganizationDocument @relation(fields: [documentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  attachment   Attachment           @relation(fields: [attachmentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([documentId, versionNumber])
+  @@unique([documentId, attachmentId])
+  @@unique([id, organizationId])
+  @@index([attachmentId])
+}
+
+// An explicit link between an Incident and one of its Attachments —
+// "this file is documentary evidence on this incident record". Row
+// existence is the current link; unlinking deletes the row and writes
+// UNLINKED AttachmentEvent + incident timeline rows so the historical
+// fact survives. Composite FKs make a cross-organization (or, on
+// IncidentNoteAttachment, cross-incident) link physically impossible.
+model IncidentAttachment {
+  id                      String   @id @default(cuid())
+  organizationId          String
+  incidentId              String
+  attachmentId            String
+  createdByAuthIdentityId String
+  createdAt               DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  incident     Incident     @relation(fields: [incidentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  attachment   Attachment   @relation(fields: [attachmentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([incidentId, attachmentId])
+  @@unique([id, organizationId])
+  @@index([attachmentId])
+  @@index([organizationId, incidentId])
+}
+
+// Same contract as IncidentAttachment, scoped one level deeper: the
+// three-column FK proves the note, its incident, and the attachment
+// all belong to the same organization AND the same incident — a link
+// cannot silently attach a file to a note from a different incident.
+model IncidentNoteAttachment {
+  id                      String   @id @default(cuid())
+  organizationId          String
+  incidentId              String // denormalized — composite FK pins it to the note's incident
+  noteId                  String
+  attachmentId            String
+  createdByAuthIdentityId String
+  createdAt               DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  note         IncidentNote @relation(fields: [noteId, incidentId, organizationId], references: [id, incidentId, organizationId], onDelete: Restrict)
+  attachment   Attachment   @relation(fields: [attachmentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([noteId, attachmentId])
+  @@unique([id, organizationId])
+  @@index([attachmentId])
+  @@index([organizationId, incidentId])
+}
+
+// Certificate/qualification supporting file — the scanned card,
+// issued PDF, or course certificate behind a MemberQualification row.
+// Personal data stays ADMIN-only; nothing here broadens member access.
+model MemberQualificationAttachment {
+  id                      String   @id @default(cuid())
+  organizationId          String
+  memberQualificationId   String
+  attachmentId            String
+  createdByAuthIdentityId String
+  createdAt               DateTime @default(now())
+
+  organization        Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  memberQualification MemberQualification @relation(fields: [memberQualificationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  attachment          Attachment          @relation(fields: [attachmentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([memberQualificationId, attachmentId])
+  @@unique([id, organizationId])
+  @@index([attachmentId])
+  @@index([organizationId, memberQualificationId])
+}
+
+// Attendance sheets, syllabi, and course documents on a TrainingEvent.
+model TrainingEventAttachment {
+  id                      String   @id @default(cuid())
+  organizationId          String
+  trainingEventId         String
+  attachmentId            String
+  createdByAuthIdentityId String
+  createdAt               DateTime @default(now())
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  trainingEvent TrainingEvent @relation(fields: [trainingEventId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  attachment    Attachment    @relation(fields: [attachmentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([trainingEventId, attachmentId])
+  @@unique([id, organizationId])
+  @@index([attachmentId])
+  @@index([organizationId, trainingEventId])
+}
+
+// Manuals, registrations, insurance documents, and photos recorded
+// against a durable Asset.
+model AssetAttachment {
+  id                      String   @id @default(cuid())
+  organizationId          String
+  assetId                 String
+  attachmentId            String
+  createdByAuthIdentityId String
+  createdAt               DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  asset        Asset        @relation(fields: [assetId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  attachment   Attachment   @relation(fields: [attachmentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([assetId, attachmentId])
+  @@unique([id, organizationId])
+  @@index([attachmentId])
+  @@index([organizationId, assetId])
+}
+
+// Inspection sheets and reports on an InspectionRecord.
+model InspectionRecordAttachment {
+  id                      String   @id @default(cuid())
+  organizationId          String
+  inspectionRecordId      String
+  attachmentId            String
+  createdByAuthIdentityId String
+  createdAt               DateTime @default(now())
+
+  organization     Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  inspectionRecord InspectionRecord @relation(fields: [inspectionRecordId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  attachment       Attachment       @relation(fields: [attachmentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([inspectionRecordId, attachmentId])
+  @@unique([id, organizationId])
+  @@index([attachmentId])
+  @@index([organizationId, inspectionRecordId])
+}
+
+// Invoices, service sheets, and work photos on a MaintenanceRecord.
+model MaintenanceRecordAttachment {
+  id                      String   @id @default(cuid())
+  organizationId          String
+  maintenanceRecordId     String
+  attachmentId            String
+  createdByAuthIdentityId String
+  createdAt               DateTime @default(now())
+
+  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  maintenanceRecord MaintenanceRecord @relation(fields: [maintenanceRecordId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  attachment        Attachment        @relation(fields: [attachmentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([maintenanceRecordId, attachmentId])
+  @@unique([id, organizationId])
+  @@index([attachmentId])
+  @@index([organizationId, maintenanceRecordId])
+}
+
+// Damage photos and supporting files on a Defect report.
+model DefectAttachment {
+  id                      String   @id @default(cuid())
+  organizationId          String
+  defectId                String
+  attachmentId            String
+  createdByAuthIdentityId String
+  createdAt               DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  defect       Defect       @relation(fields: [defectId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  attachment   Attachment   @relation(fields: [attachmentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([defectId, attachmentId])
+  @@unique([id, organizationId])
+  @@index([attachmentId])
+  @@index([organizationId, defectId])
 }

@@ -51,6 +51,7 @@ import {
   AssetMeterForm,
   MeterReadingForm,
 } from "../../maintenance-forms";
+import { AttachmentSection } from "../../attachment-section";
 
 export const metadata = { title: "Asset" };
 
@@ -255,6 +256,15 @@ export default async function AssetPage({
           </p>
         )}
       </section>
+
+      {/* Issue #16 — manuals, registrations, photos, and other documents
+          recorded against this asset. */}
+      <AttachmentSection
+        entityType="ASSET"
+        entityId={asset.id}
+        organizationId={orgId}
+        heading="Asset files"
+      />
 
       {(asset.childAssets.length > 0 ||
         asset.containedLocations.length > 0) && (
@@ -551,6 +561,14 @@ export default async function AssetPage({
                     </ul>
                   </details>
                 )}
+                {/* Issue #16 — inspection sheets and reports. */}
+                <AttachmentSection
+                  entityType="INSPECTION_RECORD"
+                  entityId={record.id}
+                  organizationId={orgId}
+                  heading="Record files"
+                  compact
+                />
               </li>
             ))}
           </ul>
@@ -831,6 +849,14 @@ export default async function AssetPage({
                     </ul>
                   </details>
                 )}
+                {/* Issue #16 — invoices, service sheets, work photos. */}
+                <AttachmentSection
+                  entityType="MAINTENANCE_RECORD"
+                  entityId={record.id}
+                  organizationId={orgId}
+                  heading="Record files"
+                  compact
+                />
               </li>
             ))}
           </ul>
@@ -960,6 +986,14 @@ export default async function AssetPage({
                     </div>
                   </details>
                 </div>
+                {/* Issue #16 — damage photos and supporting files. */}
+                <AttachmentSection
+                  entityType="DEFECT"
+                  entityId={defect.id}
+                  organizationId={orgId}
+                  heading="Defect files"
+                  compact
+                />
               </li>
             ))}
           </ul>

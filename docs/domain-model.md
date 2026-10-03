@@ -533,10 +533,10 @@ carry denormalized `organizationId` plus composite FKs to
 same way. All deletes are `Restrict` (topics cascade — they are part of
 the event record, not independent history).
 
-**Deferred:** reminders/notifications (#11/#13), attachments (#16 —
-training documents/attendance sheets hang off the event id), the
-generic audit/change-history framework for event-detail and other
-record edits, reporting (#19), global search (#18).
+**Deferred:** reminders/notifications (#11/#13), the generic
+audit/change-history framework for event-detail and other record edits,
+reporting (#19), global search (#18). Training documents and attendance
+sheets attach via `TrainingEventAttachment` (issue #16, below).
 
 ## Assets, inventory, and storage locations
 
@@ -885,6 +885,44 @@ Definition` play the schedule role; `MaintenanceRecord`/
   their own typed record family (they carry org-defined definitions
   and recurrence) and treats all maintenance rows uniformly —
   the factual boundary the issue asks for.
+
+## Attachments and organizational documents
+
+Issue #16 adds first-class file records. The full reference —
+provider abstraction, upload/download flow, security model — is
+`docs/attachments.md`. The domain-model essentials:
+
+- **`Attachment`** is the durable file record: organization-scoped,
+  sanitized `displayFilename`, validated `mediaType`, `sizeBytes`,
+  `storageProvider` + opaque `storageKey`
+  (`organizations/<org>/attachments/<uuid>`), server-computed
+  `checksumSha256`, `ACTIVE`/`DELETED` status, scalar
+  `uploadedByAuthIdentityId`. No blobs in PostgreSQL, no public URLs,
+  no business context in keys.
+- **Explicit link tables** — `IncidentAttachment`,
+  `IncidentNoteAttachment`, `MemberQualificationAttachment`,
+  `TrainingEventAttachment`, `AssetAttachment`,
+  `InspectionRecordAttachment`, `MaintenanceRecordAttachment`,
+  `DefectAttachment` — instead of a polymorphic `entityType`/`entityId`
+  row. Each carries composite same-org FKs on both sides plus
+  `@@unique([targetId, attachmentId])`; PostgreSQL rejects
+  cross-organization pairings structurally.
+- **`AttachmentEvent`** is append-only lifecycle history
+  (`UPLOADED`/`LINKED`/`UNLINKED`/`DELETED`) with a snapshot of the
+  entity at event time, optional reason, honest `storageDeleted` flag,
+  and scalar actor id — the same survivability policy as incident
+  change history.
+- **`OrganizationDocument`** + **`OrganizationDocumentVersion`** model
+  org-level documents (policies, SOPs, manuals, registrations,
+  insurance). Versions are append-only rows over attachments; the
+  current file is the highest `versionNumber` and archiving is a
+  status, not a deletion — replacing a policy never erases the prior
+  file.
+- **Deletion is a tombstone**, not a hard delete: status flips, link
+  rows are retained (rendered as deleted), physical object deletion is
+  attempted and its outcome recorded on the `DELETED` event. Attachment
+  mutations on `CLOSED` incidents require an explicit correction
+  reason, matching the incident record posture.
 
 ## Lifecycle and history
 
