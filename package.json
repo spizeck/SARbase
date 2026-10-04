@@ -35,15 +35,15 @@
     "deepmerge-ts": "^8.0.0"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1138.0",
+    "@aws-sdk/client-s3": "^3.1144.0",
     "@prisma/client": "^6.19.3",
     "@sentry/nextjs": "^10.75.0",
     "firebase": "^12.19.0",
-    "firebase-admin": "^14.4.0",
+    "firebase-admin": "^14.5.0",
     "next": "16.3.5",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "resend": "^6.28.1",
+    "resend": "^6.31.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
