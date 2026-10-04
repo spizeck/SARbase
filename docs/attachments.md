@@ -231,6 +231,26 @@ A database restore without the object store leaves honest tombstones-in-waiting:
 metadata intact, objects unreachable (`object_not_found`), downloads failing
 cleanly rather than serving wrong content.
 
+## Exporting attachment data (issue #19)
+
+Two halves, deliberately separate:
+
+- **Metadata** — the `attachments` CSV export carries `id`,
+  `displayFilename`, `mediaType`, `sizeBytes`, `checksumSha256`,
+  `description`, `status` (including `DELETED` tombstones — history
+  stays honest), provider name, timestamps, and scalar actor ids.
+  `attachment-links` maps every attachment to the records it hangs off
+  via `(linkType, attachmentId, targetId)`. `storageKey` is **not**
+  exported — it is a storage implementation detail, not a portability
+  contract.
+- **Files** — bytes are never inlined into CSV. Each file remains
+  retrievable through the authorized download route above, correlated
+  by `attachmentId` and verifiable against `checksumSha256`.
+  Self-hosters scripting a storage-level bulk export can read
+  `storageKey` directly from the `Attachment` table.
+
+Full export semantics: `docs/reporting.md`.
+
 ## Future seams
 
 - **#18 search** — `displayFilename`, `description`, document `title`/
