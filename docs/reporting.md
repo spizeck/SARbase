@@ -178,7 +178,8 @@ Column order is the declared order in `datasets.ts`.
 
 One-to-many links export as **relationship tables**, not packed cells:
 `attachment-links` carries `(linkId, linkType, attachmentId, targetId)`
-across all ten link tables plus document versions, and `expense-links`
+across the nine record link tables plus document versions (ten sources
+total), and `expense-links`
 carries `(linkId, linkType, expenseId, targetId, note)` across the five
 expense link tables. `linkType` names the target's dataset
 (`INCIDENT`, `TRAINING_EVENT`, `ASSET`, `MAINTENANCE_RECORD`,

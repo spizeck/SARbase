@@ -12,7 +12,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/prisma";
 import type { AuthContext } from "@/lib/auth/context";
 import { AuthorizationError } from "@/lib/auth/context";
-import { rateLimitKey } from "@/lib/rate-limit/keys";
 
 import { CSV_UTF8_BOM } from "./csv";
 import { EXPORT_DATASETS, getExportDataset } from "./datasets";
@@ -1022,12 +1021,17 @@ describe.skipIf(!hasDb)("data exports", () => {
   describe("rate limiting", () => {
     it("throttles after the per-window budget is exhausted", async () => {
       const admin = ctxFor(orgA, "ADMIN");
+      const before = await prisma.dataExportEvent.count({
+        where: { organizationId: orgA },
+      });
       // The budget key is (export.generate, org, actor); drain whatever
       // remains of this window's 60-call budget with cheap unit exports.
+      let succeeded = 0;
       let threw = false;
       for (let i = 0; i < 65 && !threw; i += 1) {
         try {
           await runCsvExport(admin, orgA, "units", emptyParams);
+          succeeded += 1;
         } catch (error) {
           expect(error).toBeInstanceOf(ExportRateLimitedError);
           threw = true;
@@ -1036,7 +1040,9 @@ describe.skipIf(!hasDb)("data exports", () => {
       expect(threw).toBe(true);
       // Rate-limited requests never wrote audit rows beyond the
       // successful exports.
-      expect(rateLimitKey.length).toBeGreaterThan(0);
+      expect(
+        await prisma.dataExportEvent.count({ where: { organizationId: orgA } }),
+      ).toBe(before + succeeded);
     });
   });
 

@@ -123,7 +123,14 @@ export async function runCsvExport(
       });
       return t;
     },
-    { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+      // The default 5s interactive-transaction timeout is too short for
+      // wide datasets (attachment-links runs ten queries inside the
+      // transaction). 30s bounds generation without unbounded holding.
+      timeout: 30_000,
+      maxWait: 10_000,
+    },
   );
 
   const today = formatDateOnly(calendarDateInZone(organization.timezone));
