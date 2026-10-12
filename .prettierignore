@@ -6,3 +6,7 @@ playwright-report/
 test-results/
 package-lock.json
 next-env.d.ts
+
+# Vendored agent skills — upstream/org content installed verbatim
+.agents/
+.devin/
