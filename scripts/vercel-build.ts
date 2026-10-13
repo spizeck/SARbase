@@ -6,6 +6,8 @@ import {
   normalizeDatabaseEndpoint,
 } from "../src/lib/env";
 
+import { parseDatabaseTargetUrl } from "./lib/db-target";
+
 /**
  * Vercel build wrapper: applies committed Prisma migrations during the
  * build for Production deployments and for Preview deployments whose
@@ -87,6 +89,21 @@ function dbHostname(url: string | undefined): string | null {
   }
 }
 
+/**
+ * A hostname check alone is not a routing boundary: drivers honor
+ * query-parameter overrides (`?host=` as a Unix-socket directory for
+ * Prisma, `hostaddr`/`port`/`service` for pg tooling). Both migration
+ * URLs must parse clean before Prisma ever sees them.
+ */
+function isSafeMigrationTarget(url: string): boolean {
+  try {
+    parseDatabaseTargetUrl(url);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function runMigrations(run: Runner): number | null {
   const migrate = run(npmCmd, ["run", "db:migrate:deploy"]);
   if (migrate.status !== 0) {
@@ -116,6 +133,15 @@ export function runVercelBuild(
     if (!env.DATABASE_URL_UNPOOLED) {
       console.error(
         `${TAG} VERCEL_ENV=production but DATABASE_URL_UNPOOLED is not set — migrations run on the direct endpoint; refusing to build.`,
+      );
+      return 1;
+    }
+    if (
+      !isSafeMigrationTarget(env.DATABASE_URL) ||
+      !isSafeMigrationTarget(env.DATABASE_URL_UNPOOLED)
+    ) {
+      console.error(
+        `${TAG} a database URL contains a routing-override query parameter — refusing to migrate.`,
       );
       return 1;
     }
@@ -173,6 +199,15 @@ export function runVercelBuild(
       if (!env.DATABASE_URL_UNPOOLED) {
         console.error(
           `${TAG} preview has DATABASE_URL but DATABASE_URL_UNPOOLED is not set — migrations run on the direct endpoint; refusing to migrate or build.`,
+        );
+        return 1;
+      }
+      if (
+        !isSafeMigrationTarget(env.DATABASE_URL) ||
+        !isSafeMigrationTarget(env.DATABASE_URL_UNPOOLED)
+      ) {
+        console.error(
+          `${TAG} a preview database URL contains a routing-override query parameter — refusing to migrate.`,
         );
         return 1;
       }

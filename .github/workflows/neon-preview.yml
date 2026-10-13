@@ -32,7 +32,9 @@ name: Neon preview databases
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, closed]
+    # `edited` covers base-branch retargets: a PR retargeted TO the
+    # default branch provisions; retargeted AWAY tears down.
+    types: [opened, reopened, synchronize, closed, edited]
   schedule:
     # Weekly stale-branch reconciliation (Mondays 04:17 UTC). The
     # schedule is ALWAYS a dry-run; deletion is manual-only (see the
@@ -70,7 +72,7 @@ jobs:
     name: Provision preview database
     # Automatic for eligible PRs: every same-repo, non-Dependabot PR
     # targeting the default branch provisions on open/reopen/
-    # synchronize — no label required. The `state == 'open'` check
+    # synchronize/edited — no label required. The `state == 'open'` check
     # prevents a trailing event on a closed PR from recreating a
     # torn-down branch. Dependabot is denied outright. PRs targeting a
     # non-default base are denied: their `base.sha` could be unmerged
@@ -83,7 +85,8 @@ jobs:
       github.event.pull_request.base.ref == github.event.repository.default_branch &&
       (github.event.action == 'opened' ||
        github.event.action == 'reopened' ||
-       github.event.action == 'synchronize') &&
+       github.event.action == 'synchronize' ||
+       github.event.action == 'edited') &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]' &&
       vars.NEON_PROJECT_ID != ''
@@ -179,7 +182,9 @@ jobs:
       github.event_name == 'pull_request_target' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       vars.NEON_PROJECT_ID != '' &&
-      github.event.action == 'closed'
+      (github.event.action == 'closed' ||
+       (github.event.action == 'edited' &&
+        github.event.pull_request.base.ref != github.event.repository.default_branch))
     runs-on: ubuntu-latest
     steps:
       # Same trusted-revision checkout as provision: default branch tip,

@@ -69,6 +69,29 @@ describe("runVercelBuild — production", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it("refuses a URL whose query params retarget the connection", () => {
+    // Hostname looks right, but `?host=` makes Prisma use a Unix-socket
+    // directory — identity checks on the authority alone would pass.
+    for (const suffix of [
+      "?host=/var/run/postgresql",
+      "?hostaddr=10.0.0.9",
+      "?service=evil",
+    ]) {
+      const run = vi.fn(ok);
+      const code = runVercelBuild(
+        {
+          VERCEL_ENV: "production",
+          DATABASE_URL: PROD_DB_POOLED + suffix,
+          DATABASE_URL_UNPOOLED: PROD_DB,
+          APP_PRODUCTION_DB_HOST: PROD_HOST,
+        },
+        run,
+      );
+      expect(code, suffix).toBe(1);
+      expect(run, suffix).not.toHaveBeenCalled();
+    }
+  });
+
   it("migrates then builds on the verified production host (pooled + direct)", () => {
     const order: string[] = [];
     const run: Runner = (_cmd, args) => {
@@ -167,6 +190,20 @@ describe("runVercelBuild — preview", () => {
           ...previewEnv,
           DATABASE_URL_UNPOOLED:
             "postgresql://u:p@ep-other-999.us-east-2.aws.neon.tech/db",
+        },
+        run,
+      ),
+    ).toBe(1);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("routing-override query params on the verified host: refuses", () => {
+    const run = vi.fn(ok);
+    expect(
+      runVercelBuild(
+        {
+          ...previewEnv,
+          DATABASE_URL_UNPOOLED: `${PREVIEW_DB}?host=/tmp/socket`,
         },
         run,
       ),
