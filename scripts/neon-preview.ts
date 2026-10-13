@@ -684,46 +684,48 @@ export async function teardown(env: Env, fetcher: Fetcher): Promise<void> {
     "VERCEL_TEAM_ID",
     "VERCEL_PROJECT_ID",
   ]);
+  // Env vars first, Neon branch second — a failed env cleanup leaves
+  // the branch (and therefore the retry path via reconcile) intact,
+  // while the reverse order orphans the vars beyond discovery.
+  if (!env.PREVIEW_GIT_BRANCH) {
+    console.warn(
+      `${TAG} PREVIEW_GIT_BRANCH unset — skipping Vercel env cleanup`,
+    );
+  } else {
+    // The env vars are scoped per git branch: if another PR is still
+    // open on the same head ref it still needs them (they'll be
+    // rewritten to that PR's own preview branch on its next provision).
+    const closedPr = Number(
+      PREVIEW_BRANCH_RE.exec(env.PREVIEW_BRANCH_NAME!)?.[1] ?? NaN,
+    );
+    const survivors = await openPrsWithRef(
+      env,
+      fetcher,
+      env.PREVIEW_GIT_BRANCH,
+      Number.isFinite(closedPr) ? closedPr : undefined,
+    );
+    if (survivors && survivors.length > 0) {
+      console.log(
+        `${TAG} keeping branch-scoped env vars — open PR(s) ` +
+          `${survivors.map((n) => `#${n}`).join(", ")} share ` +
+          `${env.PREVIEW_GIT_BRANCH}`,
+      );
+    } else {
+      if (survivors === null) {
+        console.warn(
+          `${TAG} could not verify whether another open PR uses ` +
+            `${env.PREVIEW_GIT_BRANCH} — deleting env vars anyway (the ` +
+            `vars point at the deleted branch; keeping them would be worse)`,
+        );
+      }
+      await deleteBranchEnvs(env, fetcher, env.PREVIEW_GIT_BRANCH);
+    }
+  }
   const deleted = await deletePreviewBranch(
     env,
     fetcher,
     env.PREVIEW_BRANCH_NAME!,
   );
-  if (!env.PREVIEW_GIT_BRANCH) {
-    console.warn(
-      `${TAG} PREVIEW_GIT_BRANCH unset — skipping Vercel env cleanup`,
-    );
-    return;
-  }
-  // The env vars are scoped per git branch: if another PR is still open
-  // on the same head ref it still needs them (they'll be rewritten to
-  // that PR's own preview branch on its next provision). Skip the
-  // deletion; the closing PR's Neon branch is deleted regardless.
-  const closedPr = Number(
-    PREVIEW_BRANCH_RE.exec(env.PREVIEW_BRANCH_NAME!)?.[1] ?? NaN,
-  );
-  const survivors = await openPrsWithRef(
-    env,
-    fetcher,
-    env.PREVIEW_GIT_BRANCH,
-    Number.isFinite(closedPr) ? closedPr : undefined,
-  );
-  if (survivors && survivors.length > 0) {
-    console.log(
-      `${TAG} keeping branch-scoped env vars — open PR(s) ` +
-        `${survivors.map((n) => `#${n}`).join(", ")} share ` +
-        `${env.PREVIEW_GIT_BRANCH}`,
-    );
-  } else {
-    if (survivors === null) {
-      console.warn(
-        `${TAG} could not verify whether another open PR uses ` +
-          `${env.PREVIEW_GIT_BRANCH} — deleting env vars anyway (the ` +
-          `vars point at the deleted branch; keeping them would be worse)`,
-      );
-    }
-    await deleteBranchEnvs(env, fetcher, env.PREVIEW_GIT_BRANCH);
-  }
   if (!deleted) {
     console.log(`${TAG} teardown complete (branch was already absent)`);
   }
@@ -823,9 +825,10 @@ export async function reconcile(env: Env, fetcher: Fetcher): Promise<void> {
     }
     const opts = { dryRun };
     try {
-      await deletePreviewBranch(env, fetcher, branch.name, opts);
-      // Same shared-ref rule as teardown: keep the env vars when
-      // another open PR still uses this git branch.
+      // Env vars first: reconcile discovers work by listing Neon
+      // branches, so deleting the branch before its vars would orphan
+      // them beyond any later retry. A leftover branch after a failed
+      // env cleanup is still visible to the next sweep.
       const survivors = await openPrsWithRef(
         env,
         fetcher,
@@ -840,6 +843,7 @@ export async function reconcile(env: Env, fetcher: Fetcher): Promise<void> {
       } else {
         await deleteBranchEnvs(env, fetcher, pr!.head.ref, opts);
       }
+      await deletePreviewBranch(env, fetcher, branch.name, opts);
       deleted++;
     } catch (error) {
       // One malformed or protected branch must not stop the sweep —
