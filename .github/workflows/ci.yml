@@ -208,6 +208,10 @@ jobs:
       - name: Migration replay + schema drift check
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5433/sarbase_dev
+          # The datasource declares directUrl; every prisma CLI command
+          # needs it resolvable. CI has no pooler, so the same URL serves
+          # both roles.
+          DATABASE_URL_UNPOOLED: postgresql://postgres:postgres@localhost:5433/sarbase_dev
           SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5433/shadow
         run: |
           docker compose exec -T postgres createdb -U postgres shadow
@@ -222,7 +226,9 @@ jobs:
           TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5433/sarbase_test
         run: |
           docker compose exec -T postgres createdb -U postgres sarbase_test
-          DATABASE_URL="$TEST_DATABASE_URL" npx prisma migrate deploy
+          DATABASE_URL="$TEST_DATABASE_URL" \
+          DATABASE_URL_UNPOOLED="$TEST_DATABASE_URL" \
+            npx prisma migrate deploy
           npm run test:db
       - name: Restore drill
         env:

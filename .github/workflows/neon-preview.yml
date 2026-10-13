@@ -1,0 +1,215 @@
+name: Neon preview databases
+
+# AUTOMATIC preview databases (app-foundations ADR-0001, model A —
+# adapted from the-bottom-line). Every eligible pull request gets an
+# isolated Neon branch `preview/pr-<number>` created from the
+# permanent `testing` branch — no label or manual opt-in required.
+# Eligibility is deny-by-default and checked twice (job-level `if` +
+# the script-side `gate`): the PR must be same-repo (forks never
+# qualify) and must not be Dependabot-authored. Dependabot PRs are
+# excluded unconditionally: they never get a preview database
+# regardless of labels, title, or branch naming. The permanent `main`
+# and `testing` branches are never created, reset, or deleted by this
+# workflow — the guards live in scripts/neon-preview.ts, not just here.
+#
+# Closing or merging the PR tears the preview down.
+#
+# Secret safety: this runs on `pull_request_target`, so the workflow
+# DEFINITION always comes from the base branch — a PR cannot modify
+# these steps. Every PR job additionally checks out
+# `pull_request.base.sha`, so the executed scripts are the base
+# branch's trusted revisions, never the PR's. Provider secrets are
+# therefore unreachable from PR-controlled code. The same-repo `if`
+# guards keep fork PRs out (forks DO receive secrets under
+# pull_request_target — the guard is mandatory, not optional).
+#
+# Consequence: this workflow only runs for PRs once it exists on their
+# base branch — PRs against pre-workflow bases get no automation.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, closed]
+  schedule:
+    # Weekly stale-branch reconciliation (Mondays 04:17 UTC). The
+    # schedule is ALWAYS a dry-run; deletion is manual-only (see the
+    # dry_run input below).
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: >-
+          Report stale branches without deleting anything. Default and
+          recommended. Clear ONLY to actually delete — that is the
+          explicit approval gate for automatic cleanup.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Serialize Neon/Vercel mutations per PR; never cancel a lifecycle job
+# mid-flight (a half-deleted state is worse than a queued rerun).
+concurrency:
+  group: neon-preview-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
+env:
+  NEON_PARENT_BRANCH: testing
+  NEON_DATABASE: ${{ vars.NEON_DATABASE || 'neondb' }}
+  NEON_ROLE: ${{ vars.NEON_ROLE || 'neondb_owner' }}
+  PREVIEW_BRANCH_NAME: preview/pr-${{ github.event.pull_request.number }}
+  PREVIEW_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
+
+jobs:
+  provision:
+    name: Provision preview database
+    # Automatic for eligible PRs: every same-repo, non-Dependabot PR
+    # provisions on open/reopen/synchronize — no label required. The
+    # `state == 'open'` check prevents a trailing event on a closed PR
+    # from recreating a torn-down branch. Dependabot is denied
+    # outright. The script-side `gate` step re-verifies all of this
+    # before any branch creation.
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.state == 'open' &&
+      (github.event.action == 'opened' ||
+       github.event.action == 'reopened' ||
+       github.event.action == 'synchronize') &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      vars.NEON_PROJECT_ID != ''
+    runs-on: ubuntu-latest
+    steps:
+      # Trusted-revision checkout: the script that later sees secrets is
+      # the BASE branch's version, never the PR's (pull_request_target
+      # already defaults here, but pin it explicitly — the pin is the
+      # security boundary, not a convenience default).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+
+      # Policy gate: re-verifies the deny rules in trusted, tested code
+      # before the create-branch action runs. A deny emits
+      # provision=false and the remaining steps skip — a clean no-op,
+      # not a failure.
+      - name: Evaluate provisioning policy
+        id: gate
+        env:
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_STATE: ${{ github.event.pull_request.state }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: npx tsx scripts/neon-preview.ts gate
+
+      # Idempotent: reuses the existing branch on synchronize, recreates
+      # it on reopened. Always a child of `testing`, never `main`.
+      - if: steps.gate.outputs.provision == 'true'
+        name: Create or reuse Neon branch preview/pr-${{ github.event.pull_request.number }}
+        id: neon
+        uses: neondatabase/create-branch-action@fb620d43d4c565abaf088b848a4e28e5c4ea4d9c # v6
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          branch_name: preview/pr-${{ github.event.pull_request.number }}
+          parent_branch: ${{ env.NEON_PARENT_BRANCH }}
+          database: ${{ env.NEON_DATABASE }}
+          role: ${{ env.NEON_ROLE }}
+          prisma: true
+
+      # Positive verification + Vercel wiring. Verifies the resolved
+      # branch is named preview/pr-<n> AND descends from `testing`
+      # before any credential is written to Vercel; fails closed
+      # otherwise. On opened/reopened the only deployment so far was
+      # built BEFORE these env vars existed, so a fresh deployment is
+      # triggered for the head SHA (auto-deploys on later pushes pick
+      # the vars up naturally).
+      - if: steps.gate.outputs.provision == 'true'
+        name: Verify branch identity and wire Vercel env vars
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+          NEON_BRANCH_ID: ${{ steps.neon.outputs.branch_id }}
+          NEON_DB_URL: ${{ steps.neon.outputs.db_url }}
+          NEON_DB_URL_POOLED: ${{ steps.neon.outputs.db_url_pooled }}
+          NEON_DB_HOST: ${{ steps.neon.outputs.db_host }}
+          NEON_DB_HOST_POOLED: ${{ steps.neon.outputs.db_host_pooled }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          VERCEL_PROJECT_NAME: ${{ vars.VERCEL_PROJECT_NAME }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_STATE: ${{ github.event.pull_request.state }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TRIGGER_DEPLOY: ${{ github.event.action != 'synchronize' }}
+        run: npx tsx scripts/neon-preview.ts provision
+
+  teardown:
+    name: Delete preview database
+    # Cleanup runs on close/merge. Teardown is deliberately NOT gated
+    # on the author or any other eligibility rule — cleanup is the
+    # safe path and must stay unconditional so branches created under
+    # any policy still get deleted.
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      vars.NEON_PROJECT_ID != '' &&
+      github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Delete Neon branch and Vercel env vars
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+        run: npx tsx scripts/neon-preview.ts teardown
+
+  reconcile:
+    name: Reconcile stale preview branches
+    if: >-
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      vars.NEON_PROJECT_ID != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Reconcile preview branches against open PRs
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          # Scheduled runs can never delete: DRY_RUN is forced true.
+          # Deletion requires a manual dispatch with dry_run unchecked —
+          # the documented approval gate. The script itself also
+          # defaults to dry-run when DRY_RUN is anything but "false".
+          DRY_RUN: ${{ github.event_name == 'schedule' || inputs.dry_run }}
+        run: npx tsx scripts/neon-preview.ts reconcile

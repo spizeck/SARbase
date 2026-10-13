@@ -25,6 +25,8 @@
     "db:migrate:status": "prisma migrate status",
     "db:migrate:dev": "prisma migrate dev",
     "db:seed": "tsx --env-file-if-exists=.env prisma/seed.ts",
+    "db:verify": "tsx --env-file-if-exists=.env scripts/verify-database.ts",
+    "neon:preview": "tsx scripts/neon-preview.ts",
     "admin:provision": "tsx --env-file-if-exists=.env scripts/provision-admin.ts",
     "db:wait": "tsx scripts/wait-for-postgres.ts",
     "db:backup": "tsx --env-file-if-exists=.env scripts/backup-database.ts",

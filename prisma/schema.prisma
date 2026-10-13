@@ -10,8 +10,11 @@ generator client {
 datasource db {
   provider = "postgresql"
   // Runtime queries use the pooled DATABASE_URL. Migrations and
-  // introspection should use DATABASE_URL_UNPOOLED — see .env.example.
-  url      = env("DATABASE_URL")
+  // introspection use DATABASE_URL_UNPOOLED via directUrl — PgBouncer
+  // pooling breaks the session-level advisory lock migrate deploy
+  // depends on — see .env.example.
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
 }
 
 // Administrative lifecycle for a member record. Deactivation preserves

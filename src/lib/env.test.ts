@@ -3,10 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   arePostgresqlUrlsSameDatabase,
   firebaseClientEnvironmentValues,
+  isFirebaseAdminConfigured,
   normalizeDatabaseEndpoint,
   parseAppEnvironment,
   parseDatabaseAdminEnvironment,
   parseDatabaseEnvironment,
+  parseFirebaseAdminEnvironment,
   parsePostgresqlUrl,
   parseStorageEnvironment,
   tryParseFirebaseClientEnvironment,
@@ -54,6 +56,20 @@ describe("normalizeDatabaseEndpoint", () => {
 
   it("leaves non-Neon hostnames alone", () => {
     expect(normalizeDatabaseEndpoint("localhost")).toBe("localhost");
+  });
+});
+
+describe("normalizeDatabaseEndpoint — canonicalization", () => {
+  it("lowercases hostnames", () => {
+    expect(normalizeDatabaseEndpoint("EP-PROD.Example.NEON.tech")).toBe(
+      "ep-prod.example.neon.tech",
+    );
+  });
+
+  it("strips a trailing root dot", () => {
+    expect(normalizeDatabaseEndpoint("ep-prod.neon.tech.")).toBe(
+      "ep-prod.neon.tech",
+    );
   });
 });
 
@@ -198,6 +214,70 @@ describe("parseAppEnvironment", () => {
         APP_PRODUCTION_DB_HOST: "postgresql://host/db",
       }),
     ).toThrow();
+  });
+});
+
+const FIREBASE_ADMIN_ENV = {
+  FIREBASE_ADMIN_PROJECT_ID: "sarbase-prod",
+  FIREBASE_ADMIN_CLIENT_EMAIL:
+    "firebase-admin@sarbase-prod.iam.gserviceaccount.com",
+  FIREBASE_ADMIN_PRIVATE_KEY:
+    "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n",
+} as const;
+
+describe("parseFirebaseAdminEnvironment — preview isolation", () => {
+  it("parses production-scoped credentials normally", () => {
+    const env = parseFirebaseAdminEnvironment({
+      ...FIREBASE_ADMIN_ENV,
+      VERCEL_ENV: "production",
+    });
+    expect(env.FIREBASE_ADMIN_PROJECT_ID).toBe("sarbase-prod");
+  });
+
+  it("refuses Admin credentials on preview without the opt-in flag", () => {
+    expect(() =>
+      parseFirebaseAdminEnvironment({
+        ...FIREBASE_ADMIN_ENV,
+        VERCEL_ENV: "preview",
+      }),
+    ).toThrow(/ALLOW_FIREBASE_ADMIN_IN_PREVIEW/);
+  });
+
+  it("refuses preview Admin when the service account is a different project", () => {
+    expect(() =>
+      parseFirebaseAdminEnvironment({
+        ...FIREBASE_ADMIN_ENV,
+        VERCEL_ENV: "preview",
+        ALLOW_FIREBASE_ADMIN_IN_PREVIEW: "true",
+        NEXT_PUBLIC_FIREBASE_PROJECT_ID: "sarbase-preview",
+      }),
+    ).toThrow(/different\s+project|project/i);
+  });
+
+  it("allows preview Admin when flagged and the project matches the client config", () => {
+    const env = parseFirebaseAdminEnvironment({
+      ...FIREBASE_ADMIN_ENV,
+      VERCEL_ENV: "preview",
+      ALLOW_FIREBASE_ADMIN_IN_PREVIEW: "true",
+      NEXT_PUBLIC_FIREBASE_PROJECT_ID: "sarbase-prod",
+    });
+    expect(env.FIREBASE_ADMIN_PROJECT_ID).toBe("sarbase-prod");
+  });
+
+  it("isFirebaseAdminConfigured is false on preview without the opt-in", () => {
+    expect(
+      isFirebaseAdminConfigured({
+        ...FIREBASE_ADMIN_ENV,
+        VERCEL_ENV: "preview",
+      }),
+    ).toBe(false);
+    expect(
+      isFirebaseAdminConfigured({
+        ...FIREBASE_ADMIN_ENV,
+        VERCEL_ENV: "preview",
+        ALLOW_FIREBASE_ADMIN_IN_PREVIEW: "true",
+      }),
+    ).toBe(true);
   });
 });
 

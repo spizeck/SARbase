@@ -23,6 +23,12 @@ import { StorageConfigError, type FileStorageProvider } from "./provider";
  *   would lose files and backups. Operators choose "s3" explicitly, or
  *   "local" with an explicit root for self-hosting.
  * - The in-memory fake is never selectable — tests inject it directly.
+ * - Preview deployments (VERCEL_ENV=preview) get an additional
+ *   isolation rule: `s3` requires a preview-scoped
+ *   `ALLOW_S3_IN_PREVIEW=true` — a preview must not write into a real
+ *   bucket merely because its environment inherited production-shaped
+ *   credentials. Previews should use `local`/memory storage, or a
+ *   dedicated preview bucket behind the flag.
  *
  * Resolution is lazy — called at first use so `next build` with zero
  * env vars never touches provider config.
@@ -34,6 +40,7 @@ export function resolveFileStorageProvider(
   const app = parseAppEnvironment(values);
   const isProduction =
     app.VERCEL_ENV === "production" || process.env.NODE_ENV === "production";
+  const isPreview = app.VERCEL_ENV === "preview";
 
   if (isProduction && !env.FILE_STORAGE_PROVIDER) {
     throw new StorageConfigError(
@@ -51,6 +58,11 @@ export function resolveFileStorageProvider(
     ) {
       throw new StorageConfigError(
         "File storage provider 's3' requires FILE_STORAGE_S3_BUCKET, FILE_STORAGE_S3_REGION, FILE_STORAGE_S3_ACCESS_KEY_ID and FILE_STORAGE_S3_SECRET_ACCESS_KEY.",
+      );
+    }
+    if (isPreview && app.ALLOW_S3_IN_PREVIEW !== "true") {
+      throw new StorageConfigError(
+        "File storage provider 's3' is not permitted on preview deployments by default. To use object storage on a preview deliberately (a dedicated preview bucket, never the production one), set ALLOW_S3_IN_PREVIEW=true as a preview-scoped variable.",
       );
     }
     return new S3FileStorageProvider({
