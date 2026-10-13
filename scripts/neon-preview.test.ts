@@ -243,10 +243,9 @@ describe("provisioningDecision", () => {
       " main",
       "main.",
     ]) {
-      expect(
-        provisioningDecision({ ...base, baseRef }).allow,
-        baseRef,
-      ).toBe(false);
+      expect(provisioningDecision({ ...base, baseRef }).allow, baseRef).toBe(
+        false,
+      );
     }
   });
 });
