@@ -39,6 +39,8 @@ type Fixture = {
     string,
     { state: string; head: { ref: string }; closed_at?: string | null } | null
   >;
+  /** GitHub GET /pulls?state=open&head=... list responses. */
+  openPulls?: { number: number; head: { ref: string } }[];
 };
 
 function makeFetch(fixture: Fixture): { fetcher: Fetcher; calls: Call[] } {
@@ -110,6 +112,13 @@ function makeFetch(fixture: Fixture): { fetcher: Fetcher; calls: Call[] } {
       if (pullMatch) {
         const pr = fixture.pulls?.[pullMatch[1]!];
         return pr === undefined || pr === null ? json({}, 404) : json(pr);
+      }
+      if (url.pathname.endsWith("/pulls")) {
+        const head = url.searchParams.get("head")?.split(":")[1];
+        const list = (fixture.openPulls ?? []).filter(
+          (p) => !head || p.head.ref === head,
+        );
+        return json(list);
       }
       return json({}, 404);
     }
@@ -385,6 +394,29 @@ describe("provision", () => {
     }
   });
 
+  it("refuses to overwrite another open PR's vars on a shared head ref", async () => {
+    const { fetcher, calls } = makeFetch({
+      ...BASE_FIXTURE,
+      openPulls: [
+        { number: 42, head: { ref: "feat/thing" } },
+        { number: 50, head: { ref: "feat/thing" } },
+      ],
+    });
+    await expect(provision(PROVISION_ENV, fetcher)).rejects.toThrow(/#50/);
+    expect(calls.every((c) => c.method === "GET")).toBe(true);
+  });
+
+  it("proceeds when only this PR uses the head ref", async () => {
+    const { fetcher, calls } = makeFetch({
+      ...BASE_FIXTURE,
+      openPulls: [{ number: 42, head: { ref: "feat/thing" } }],
+    });
+    await provision(PROVISION_ENV, fetcher);
+    expect(
+      calls.some((c) => c.method === "POST" && c.url.includes("/v10/")),
+    ).toBe(true);
+  });
+
   it("triggers a redeployment only when TRIGGER_DEPLOY=true", async () => {
     const { fetcher, calls } = makeFetch(BASE_FIXTURE);
     await provision(
@@ -463,6 +495,36 @@ describe("teardown", () => {
       ),
     ).resolves.toBeUndefined();
   });
+
+  it("keeps branch env vars when another open PR shares the head ref", async () => {
+    const { fetcher, calls } = makeFetch({
+      ...BASE_FIXTURE,
+      vercelEnvs: [
+        {
+          id: "e1",
+          key: "DATABASE_URL",
+          target: ["preview"],
+          gitBranch: "feat/thing",
+        },
+      ],
+      openPulls: [{ number: 50, head: { ref: "feat/thing" } }],
+    });
+    await teardown(
+      {
+        ...ENV,
+        PREVIEW_BRANCH_NAME: "preview/pr-42",
+        PREVIEW_GIT_BRANCH: "feat/thing",
+      },
+      fetcher,
+    );
+    // Neon branch still deleted; Vercel env var survives.
+    expect(calls.some((c) => c.url.includes("br-preview-1"))).toBe(true);
+    expect(
+      calls.filter(
+        (c) => c.method === "DELETE" && c.url.includes("api.vercel.com"),
+      ),
+    ).toHaveLength(0);
+  });
 });
 
 describe("reconcile", () => {
@@ -510,5 +572,47 @@ describe("reconcile", () => {
       .map((c) => c.url);
     expect(deleted).toHaveLength(1);
     expect(deleted[0]).toContain("br-preview-1");
+  });
+
+  it("continues the sweep when one branch is refused, and keeps shared-ref env vars", async () => {
+    const { fetcher, calls } = makeFetch({
+      branches: [
+        { id: "br-testing", name: "testing" },
+        // pr-42's branch has a wrong parent — refused, must not abort.
+        { ...PREVIEW_BRANCH, parent_id: "br-other" },
+        { id: "br-p9", name: "preview/pr-9", parent_id: "br-testing" },
+      ],
+      pulls: {
+        "42": {
+          state: "closed",
+          head: { ref: "feat/thing" },
+          closed_at: closedLongAgo,
+        },
+        "9": {
+          state: "closed",
+          head: { ref: "feat/shared" },
+          closed_at: closedLongAgo,
+        },
+      },
+      // An open PR #50 still uses feat/shared — its env vars must stay.
+      openPulls: [{ number: 50, head: { ref: "feat/shared" } }],
+      vercelEnvs: [
+        {
+          id: "e9",
+          key: "DATABASE_URL",
+          target: ["preview"],
+          gitBranch: "feat/shared",
+        },
+      ],
+    });
+    await reconcile({ ...reconcileEnv, DRY_RUN: "false" }, fetcher);
+    // pr-9's Neon branch was still deleted despite pr-42's refusal.
+    expect(
+      calls.some((c) => c.method === "DELETE" && c.url.includes("br-p9")),
+    ).toBe(true);
+    // But its Vercel env vars survived — PR #50 shares the git branch.
+    expect(
+      calls.some((c) => c.method === "DELETE" && c.url.includes("/env/e9")),
+    ).toBe(false);
   });
 });

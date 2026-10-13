@@ -89,6 +89,18 @@ export function assertSeedTargetAllowed(
     return;
   }
 
+  // Fail closed on ANY remote host without the marker: without it the
+  // production exclusion above cannot be proven, so no remote target
+  // is safe to seed — same rule db:verify applies.
+  if (!productionHost) {
+    throw new Error(
+      `Refusing to seed remote database at ${host}:${parsed.port}: ` +
+        "APP_PRODUCTION_DB_HOST is not set, so the production host " +
+        "cannot be excluded. Set the non-secret production hostname, " +
+        "then re-run with --target <name> --confirm.",
+    );
+  }
+
   if (!(args.target && args.confirm)) {
     throw new Error(
       `Refusing to seed remote database at ${host}:${parsed.port}. ` +

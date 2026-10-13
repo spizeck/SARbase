@@ -58,6 +58,18 @@ describe("assertSeedTargetAllowed", () => {
     ).toThrow(/production host/);
   });
 
+  it("refuses any remote host when APP_PRODUCTION_DB_HOST is unset", () => {
+    // Without the marker the production exclusion cannot be proven —
+    // no remote target is safe to seed, even with --confirm.
+    expect(() =>
+      assertSeedTargetAllowed(
+        { target: "preview-42", confirm: true },
+        TESTING_DB,
+        {},
+      ),
+    ).toThrow(/APP_PRODUCTION_DB_HOST is not set/);
+  });
+
   it("refuses remote hosts without --target --confirm", () => {
     expect(() =>
       assertSeedTargetAllowed({ confirm: false }, TESTING_DB, MARKERS),

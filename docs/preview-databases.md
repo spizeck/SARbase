@@ -114,6 +114,14 @@ Variables:
 `vercel.json` disables Vercel preview builds for `dependabot/**`
 branches on top of the database-side denial.
 
+**Shared head branches:** Vercel scopes env vars per git branch, not
+per PR. If two open PRs share one `head.ref` (e.g. a duplicate or
+retargeted PR), the later PR's provisioning is refused — the earlier
+PR's variables stay authoritative. When a PR on a shared ref closes,
+its Neon branch is deleted but the branch-scoped env vars are kept for
+the surviving open PR (its next provision rewrites them to its own
+preview branch). Avoid opening two PRs from the same branch.
+
 ## Controlled live validation (owner, disposable PR)
 
 After the one-time setup, validate end-to-end with a throwaway PR:

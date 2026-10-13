@@ -444,6 +444,38 @@ async function warnOnPreviewAdminCredentials(
   }
 }
 
+/**
+ * Open same-repo PRs sharing one git head branch — excluding `excludePr`.
+ * Vercel env vars are scoped per GIT BRANCH, not per PR, so two open
+ * PRs from the same head ref collide: provisioning the second would
+ * overwrite the first's database URLs, and tearing down the first
+ * would strip the second's vars. Returns null when GitHub cannot be
+ * asked (token absent or lookup failed) — callers decide how strict
+ * unverifiability is for their own write.
+ */
+async function openPrsWithRef(
+  env: Env,
+  fetcher: Fetcher,
+  gitBranch: string,
+  excludePr?: number,
+): Promise<number[] | null> {
+  if (!env.GITHUB_TOKEN || !env.GITHUB_REPOSITORY) {
+    return null;
+  }
+  const owner = env.GITHUB_REPOSITORY.split("/")[0];
+  const prs = await github<{ number: number; head: { ref: string } }[]>(
+    env,
+    fetcher,
+    `/repos/${env.GITHUB_REPOSITORY}/pulls?state=open&head=${owner}:${encodeURIComponent(gitBranch)}&per_page=100`,
+  );
+  if (!prs) {
+    return null;
+  }
+  return prs
+    .filter((p) => p.head.ref === gitBranch && p.number !== excludePr)
+    .map((p) => p.number);
+}
+
 // --- Provisioning policy -----------------------------------------------------
 
 export type ProvisioningContext = {
@@ -601,6 +633,32 @@ export async function provision(env: Env, fetcher: Fetcher): Promise<void> {
     );
   }
 
+  // Same-git-branch collision: Vercel env vars are scoped per git
+  // branch. If another OPEN PR shares this head ref, its vars belong to
+  // ITS preview branch — overwriting them would silently repoint that
+  // PR's deployments at this database. Refuse; the earlier PR keeps
+  // them, and this PR builds without a preview database.
+  const prNumber = Number(PREVIEW_BRANCH_RE.exec(branchName)![1]);
+  const others = await openPrsWithRef(
+    env,
+    fetcher,
+    env.PREVIEW_GIT_BRANCH!,
+    prNumber,
+  );
+  if (others === null) {
+    console.warn(
+      `${TAG} could not check for other open PRs on ${env.PREVIEW_GIT_BRANCH} — proceeding (GitHub lookup unavailable)`,
+    );
+  } else if (others.length > 0) {
+    fail(
+      `git branch ${env.PREVIEW_GIT_BRANCH} is also the head of open ` +
+        `PR(s) ${others.map((n) => `#${n}`).join(", ")} — Vercel preview ` +
+        `env vars are scoped per git branch, so provisioning this PR ` +
+        `would overwrite that PR's database. Refusing; close or rebase ` +
+        `the duplicate PR first.`,
+    );
+  }
+
   for (const [key, value] of [
     ["DATABASE_URL", env.NEON_DB_URL_POOLED],
     ["DATABASE_URL_UNPOOLED", env.NEON_DB_URL],
@@ -637,7 +695,35 @@ export async function teardown(env: Env, fetcher: Fetcher): Promise<void> {
     );
     return;
   }
-  await deleteBranchEnvs(env, fetcher, env.PREVIEW_GIT_BRANCH);
+  // The env vars are scoped per git branch: if another PR is still open
+  // on the same head ref it still needs them (they'll be rewritten to
+  // that PR's own preview branch on its next provision). Skip the
+  // deletion; the closing PR's Neon branch is deleted regardless.
+  const closedPr = Number(
+    PREVIEW_BRANCH_RE.exec(env.PREVIEW_BRANCH_NAME!)?.[1] ?? NaN,
+  );
+  const survivors = await openPrsWithRef(
+    env,
+    fetcher,
+    env.PREVIEW_GIT_BRANCH,
+    Number.isFinite(closedPr) ? closedPr : undefined,
+  );
+  if (survivors && survivors.length > 0) {
+    console.log(
+      `${TAG} keeping branch-scoped env vars — open PR(s) ` +
+        `${survivors.map((n) => `#${n}`).join(", ")} share ` +
+        `${env.PREVIEW_GIT_BRANCH}`,
+    );
+  } else {
+    if (survivors === null) {
+      console.warn(
+        `${TAG} could not verify whether another open PR uses ` +
+          `${env.PREVIEW_GIT_BRANCH} — deleting env vars anyway (the ` +
+          `vars point at the deleted branch; keeping them would be worse)`,
+      );
+    }
+    await deleteBranchEnvs(env, fetcher, env.PREVIEW_GIT_BRANCH);
+  }
   if (!deleted) {
     console.log(`${TAG} teardown complete (branch was already absent)`);
   }
@@ -736,9 +822,33 @@ export async function reconcile(env: Env, fetcher: Fetcher): Promise<void> {
       continue;
     }
     const opts = { dryRun };
-    await deletePreviewBranch(env, fetcher, branch.name, opts);
-    await deleteBranchEnvs(env, fetcher, pr!.head.ref, opts);
-    deleted++;
+    try {
+      await deletePreviewBranch(env, fetcher, branch.name, opts);
+      // Same shared-ref rule as teardown: keep the env vars when
+      // another open PR still uses this git branch.
+      const survivors = await openPrsWithRef(
+        env,
+        fetcher,
+        pr!.head.ref,
+        Number(prNumber),
+      );
+      if (survivors && survivors.length > 0) {
+        console.log(
+          `${TAG} keeping env vars for ${pr!.head.ref} — open PR(s) ` +
+            `${survivors.map((n) => `#${n}`).join(", ")} share the branch`,
+        );
+      } else {
+        await deleteBranchEnvs(env, fetcher, pr!.head.ref, opts);
+      }
+      deleted++;
+    } catch (error) {
+      // One malformed or protected branch must not stop the sweep —
+      // report it as retained and keep going.
+      console.warn(
+        `${TAG} ${branch.name} skipped: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      retained++;
+    }
   }
   console.log(
     `${TAG} reconcile complete: ${deleted} ${dryRun ? "candidate(s) reported" : "deleted"}, ${retained} retained`,

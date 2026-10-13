@@ -145,6 +145,9 @@ jobs:
           VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
           VERCEL_PROJECT_NAME: ${{ vars.VERCEL_PROJECT_NAME }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          # Used only for the shared-head-ref collision check (open PRs
+          # on the same git branch share Vercel env vars).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_STATE: ${{ github.event.pull_request.state }}
@@ -181,6 +184,8 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
           VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: npx tsx scripts/neon-preview.ts teardown
 
   reconcile:
