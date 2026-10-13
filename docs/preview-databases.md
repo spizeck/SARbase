@@ -31,17 +31,23 @@ migrations + `db:seed`, never refreshed from production.
    empty and seed it.
 2. Mark `testing` as protected in Neon so it cannot be deleted or reset
    accidentally. `main` is already primary/protected.
-3. Apply committed migrations to `testing` and seed it:
+3. Create a Neon API key scoped to this project → GitHub secret
+   `NEON_API_KEY`.
+4. Initialize `testing` — run the **"Initialize Neon testing
+   database"** workflow (Actions tab → Run workflow). It resolves the
+   branch and both connection URIs through the Neon API, verifies the
+   target is not production, then runs `migrate deploy` → `db:seed` →
+   `db:verify`. See [Initializing the testing baseline](#initializing-the-testing-baseline).
+
+   The manual equivalent (e.g. from a maintainer workstation) is:
 
    ```bash
    DATABASE_URL_UNPOOLED=<testing direct URL> \
    APP_PRODUCTION_DB_HOST=<prod host> APP_TESTING_DB_HOST=<testing host> \
+   npm run db:migrate:deploy
    npm run db:seed -- --target testing --confirm
    npm run db:verify   # same env — must exit 0
    ```
-
-4. Create a Neon API key scoped to this project → GitHub secret
-   `NEON_API_KEY`.
 
 ### 2. Vercel
 
@@ -93,10 +99,15 @@ Variables:
 
 ## Day-to-day behavior
 
-- **Open/reopen a same-repo PR** → workflow creates `preview/pr-<n>`
-  from `testing`, writes `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, and
-  `APP_PREVIEW_DB_HOST` as preview env vars scoped to the PR's git
-  branch, and triggers a fresh deployment for the head SHA.
+- **Open/reopen a same-repo PR targeting the default branch** →
+  workflow creates `preview/pr-<n>` from `testing`, writes
+  `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, and `APP_PREVIEW_DB_HOST`
+  as preview env vars scoped to the PR's git branch, and triggers a
+  fresh deployment for the head SHA. PRs targeting a non-default base
+  are never provisioned (a non-default base can be unmerged
+  contributor code, so it is outside the trust boundary).
+- **Retarget a PR** (`edited` event) → retargeting TO the default
+  branch provisions; retargeting AWAY from it tears the preview down.
 - **Push to the PR** → provisioning is idempotent (the branch is reused)
   and Vercel auto-deploys pick up the vars.
 - **Close/merge the PR** → the Neon branch and its branch-scoped env
@@ -121,6 +132,73 @@ PR's variables stay authoritative. When a PR on a shared ref closes,
 its Neon branch is deleted but the branch-scoped env vars are kept for
 the surviving open PR (its next provision rewrites them to its own
 preview branch). Avoid opening two PRs from the same branch.
+
+## Initializing the testing baseline
+
+`.github/workflows/neon-testing-init.yml` applies committed migrations,
+seeds the fictional baseline, and verifies the result on the permanent
+`testing` branch. It is `workflow_dispatch`-only and deliberately
+separate from the automatic PR lifecycle.
+
+### Prerequisites
+
+- The `testing` branch exists in the `SARBase-db` Neon project
+  (`rough-thunder-07294432`) and is not the primary branch.
+- GitHub secret `NEON_API_KEY` — a project-scoped Neon API key.
+- Optional repo variables `NEON_DATABASE` (default `neondb`) and
+  `NEON_ROLE` (default `neondb_owner`).
+- **Not required:** `vars.NEON_PROJECT_ID` — the init workflow pins the
+  project id as an internal identity constant, so it works before
+  automatic preview provisioning is activated.
+
+### Run it
+
+Actions → **Initialize Neon testing database** → Run workflow. The job
+checks out the default branch, runs `npm ci`, then
+`scripts/neon-testing-init.ts`, which:
+
+1. Verifies the Neon project (id + name) and resolves the `testing`
+   and primary branches through the API.
+2. Fetches pooled + unpooled connection URIs for `testing` and a URI
+   for the primary branch; masks every credential before use.
+3. Fails closed unless `testing` is non-primary, both URIs parse
+   cleanly (no routing-override query parameters), resolve to the same
+   non-loopback database, and differ from the primary branch's host.
+4. Runs `prisma migrate deploy`, `db:seed -- --target testing
+--confirm`, and `db:verify`, each receiving
+   `APP_TESTING_DB_HOST`/`APP_PRODUCTION_DB_HOST` derived from the
+   verified hosts — so the tooling re-checks the same identities.
+5. Writes a sanitized job summary (host:port/database only — never a
+   connection string).
+
+A green run ends with `db:verify OK` in the verify step's output and a
+summary table showing all three steps passed.
+
+### Safe reruns and partial failure
+
+The whole flow is idempotent: `migrate deploy` only applies pending
+migrations, the seed uses fixed `seed-*` upserts, and `db:verify` is
+read-only. If a step fails, the job stops — fix the cause and re-run
+the workflow; earlier completed steps simply re-verify.
+
+- **`migrate deploy` fails** → check the step log; the most common
+  cause is a migration that fails on partially-applied state. Neon
+  instant restore on the `testing` branch can roll back, then re-run.
+- **`db:seed` fails** → usually identity misconfiguration; the log
+  names which guard refused.
+- **`db:verify` warns** → non-seed rows exist on `testing` (e.g. a
+  preview accidentally pointed at it). Warnings do not fail the run;
+  failures (non-fictional members/identities, production host) do.
+
+### Activating preview provisioning afterward
+
+Once `testing` is verified, set the GitHub repo **variable**
+`NEON_PROJECT_ID` to `rough-thunder-07294432` — that is the enable
+switch for `neon-preview.yml`. Confirm the Vercel prerequisites in
+[One-time setup](#2-vercel) first (native integration posture,
+`APP_PRODUCTION_DB_HOST` on Production and Preview, no project-level
+Preview database URLs), then validate with a disposable PR per
+[Controlled live validation](#controlled-live-validation-owner-disposable-pr).
 
 ## Controlled live validation (owner, disposable PR)
 
@@ -163,5 +241,9 @@ APP_PREVIEW_DB_HOST — applying committed migrations`.
 - Connection URLs are masked before use and never printed; env values
   are never read back from Vercel.
 - Provider secrets are unreachable from PR code: `pull_request_target`
-  runs the base branch's trusted revision (`pull_request.base.sha`
-  checkout), and fork/Dependabot PRs are denied in three places.
+  jobs check out the repository's default branch — never
+  `pull_request.base.sha` (which can be contributor-controlled on
+  non-default bases) or PR head code — so `npm ci` and the lifecycle
+  script always run trusted revisions. Provisioning additionally
+  requires the PR to target the default branch, and fork/Dependabot
+  PRs are denied in three places.
