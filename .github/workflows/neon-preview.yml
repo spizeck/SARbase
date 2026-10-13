@@ -16,12 +16,16 @@ name: Neon preview databases
 #
 # Secret safety: this runs on `pull_request_target`, so the workflow
 # DEFINITION always comes from the base branch — a PR cannot modify
-# these steps. Every PR job additionally checks out
-# `pull_request.base.sha`, so the executed scripts are the base
-# branch's trusted revisions, never the PR's. Provider secrets are
-# therefore unreachable from PR-controlled code. The same-repo `if`
-# guards keep fork PRs out (forks DO receive secrets under
-# pull_request_target — the guard is mandatory, not optional).
+# these steps. Every job additionally checks out the repository's
+# DEFAULT branch tip (`github.event.repository.default_branch`), so the
+# executed scripts, lockfile, and `npm ci` dependency installs are
+# trusted revisions — never PR code. The PR's base SHA would NOT be
+# safe here: for a PR targeting a non-default branch it can resolve to
+# unmerged contributor code. Provisioning is therefore
+# additionally restricted to PRs whose base is the default branch.
+# Provider secrets are unreachable from PR-controlled code. The
+# same-repo `if` guards keep fork PRs out (forks DO receive secrets
+# under pull_request_target — the guard is mandatory, not optional).
 #
 # Consequence: this workflow only runs for PRs once it exists on their
 # base branch — PRs against pre-workflow bases get no automation.
@@ -65,14 +69,18 @@ jobs:
   provision:
     name: Provision preview database
     # Automatic for eligible PRs: every same-repo, non-Dependabot PR
-    # provisions on open/reopen/synchronize — no label required. The
-    # `state == 'open'` check prevents a trailing event on a closed PR
-    # from recreating a torn-down branch. Dependabot is denied
-    # outright. The script-side `gate` step re-verifies all of this
-    # before any branch creation.
+    # targeting the default branch provisions on open/reopen/
+    # synchronize — no label required. The `state == 'open'` check
+    # prevents a trailing event on a closed PR from recreating a
+    # torn-down branch. Dependabot is denied outright. PRs targeting a
+    # non-default base are denied: their `base.sha` could be unmerged
+    # contributor code, and preview databases are only meaningful for
+    # default-branch work. The script-side `gate` re-verifies all of
+    # this before any branch creation.
     if: >-
       github.event_name == 'pull_request_target' &&
       github.event.pull_request.state == 'open' &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
       (github.event.action == 'opened' ||
        github.event.action == 'reopened' ||
        github.event.action == 'synchronize') &&
@@ -81,13 +89,15 @@ jobs:
       vars.NEON_PROJECT_ID != ''
     runs-on: ubuntu-latest
     steps:
-      # Trusted-revision checkout: the script that later sees secrets is
-      # the BASE branch's version, never the PR's (pull_request_target
-      # already defaults here, but pin it explicitly — the pin is the
-      # security boundary, not a convenience default).
+      # Trusted-revision checkout: the DEFAULT branch tip, never PR or
+      # base-sha content. This is the security boundary: the checkout,
+      # `npm ci` install (lockfile + lifecycle scripts), and the
+      # lifecycle script itself must all be trusted code — a base SHA
+      # could resolve to unmerged contributor code for PRs with a
+      # non-default base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -105,6 +115,8 @@ jobs:
           PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_STATE: ${{ github.event.pull_request.state }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: npx tsx scripts/neon-preview.ts gate
 
@@ -151,6 +163,8 @@ jobs:
           PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_STATE: ${{ github.event.pull_request.state }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           TRIGGER_DEPLOY: ${{ github.event.action != 'synchronize' }}
         run: npx tsx scripts/neon-preview.ts provision
@@ -168,9 +182,12 @@ jobs:
       github.event.action == 'closed'
     runs-on: ubuntu-latest
     steps:
+      # Same trusted-revision checkout as provision: default branch tip,
+      # never base.sha (which can be contributor code on non-default
+      # bases). npm ci + the lifecycle script then run trusted code only.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -195,8 +212,11 @@ jobs:
       vars.NEON_PROJECT_ID != ''
     runs-on: ubuntu-latest
     steps:
+      # Trusted-revision checkout — pin the default branch tip
+      # explicitly so the rule holds regardless of trigger shape.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:

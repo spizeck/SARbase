@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -170,6 +174,8 @@ describe("provisioningDecision", () => {
     headRepo: "spizeck/SARbase",
     repo: "spizeck/SARbase",
     state: "open",
+    baseRef: "main",
+    defaultBranch: "main",
   };
 
   it("allows an eligible same-repo open PR", () => {
@@ -198,6 +204,50 @@ describe("provisioningDecision", () => {
     expect(provisioningDecision({ ...base, state: "closed" }).allow).toBe(
       false,
     );
+  });
+
+  it("denies PRs targeting a non-default base branch", () => {
+    // The P1 finding: a same-repo contributor can open a PR against an
+    // unmerged contributor branch — base.sha then resolves to code they
+    // control. Even with a trusted default-branch checkout, previews
+    // only exist for default-branch PRs.
+    expect(
+      provisioningDecision({ ...base, baseRef: "feat/someone-elses-pr" }).allow,
+    ).toBe(false);
+    expect(
+      provisioningDecision({ ...base, baseRef: "release/staging" }).allow,
+    ).toBe(false);
+  });
+
+  it("denies when the base or default branch is unverifiable", () => {
+    expect(provisioningDecision({ ...base, baseRef: undefined }).allow).toBe(
+      false,
+    );
+    expect(
+      provisioningDecision({ ...base, defaultBranch: undefined }).allow,
+    ).toBe(false);
+    expect(
+      provisioningDecision({
+        ...base,
+        baseRef: undefined,
+        defaultBranch: undefined,
+      }).allow,
+    ).toBe(false);
+  });
+
+  it("denies manipulated base metadata (ref-shaped or spoofed strings)", () => {
+    for (const baseRef of [
+      "refs/heads/main",
+      "MAIN",
+      "main ",
+      " main",
+      "main.",
+    ]) {
+      expect(
+        provisioningDecision({ ...base, baseRef }).allow,
+        baseRef,
+      ).toBe(false);
+    }
   });
 });
 
@@ -325,6 +375,8 @@ const PROVISION_ENV = {
   PR_AUTHOR_LOGIN: "chad",
   PR_HEAD_REPO: "spizeck/SARbase",
   PR_STATE: "open",
+  PR_BASE_REF: "main",
+  DEFAULT_BRANCH: "main",
 };
 
 describe("provision", () => {
@@ -614,5 +666,61 @@ describe("reconcile", () => {
     expect(
       calls.some((c) => c.method === "DELETE" && c.url.includes("/env/e9")),
     ).toBe(false);
+  });
+});
+
+/**
+ * Trust-boundary regression tests for the privileged workflow itself.
+ * The script guards are meaningless if the workflow checks out
+ * contributor-controlled code — `npm ci` (lockfile + lifecycle
+ * scripts) and `npx tsx scripts/neon-preview.ts` run whatever the
+ * checkout contains with NEON_API_KEY / VERCEL_TOKEN in scope.
+ */
+describe("neon-preview workflow trust boundary", () => {
+  const workflowPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    ".github",
+    "workflows",
+    "neon-preview.yml",
+  );
+  const yaml = readFileSync(workflowPath, "utf-8");
+
+  it("never checks out pull_request.base.sha or PR head content", () => {
+    // base.sha can be contributor-controlled on non-default-base PRs;
+    // head.sha/head.ref are always attacker-controlled.
+    expect(yaml).not.toMatch(/pull_request\.base\.sha/);
+    expect(yaml).not.toMatch(
+      /pull_request\.head\.(sha|ref)\s*}}.*checkout|checkout.*pull_request\.head/,
+    );
+  });
+
+  it("checks out the trusted default-branch revision in every job", () => {
+    const checkoutRefs = [
+      ...yaml.matchAll(
+        /uses: actions\/checkout@[^\n]+\n(?:.*\n)*?.*?ref: \$\{\{ ([^}]+) \}\}/g,
+      ),
+    ].map((m) => m[1]);
+    // Every checkout step must pin the default branch explicitly.
+    const checkoutCount = (yaml.match(/uses: actions\/checkout@/g) ?? [])
+      .length;
+    expect(checkoutCount).toBeGreaterThanOrEqual(3);
+    expect(checkoutRefs.length).toBe(checkoutCount);
+    for (const ref of checkoutRefs) {
+      expect(ref).toBe("github.event.repository.default_branch");
+    }
+  });
+
+  it("requires PRs to target the default branch in the provision job gate", () => {
+    expect(yaml).toMatch(
+      /pull_request\.base\.ref == github\.event\.repository\.default_branch/,
+    );
+  });
+
+  it("preserves the fork and Dependabot exclusions", () => {
+    expect(yaml).toMatch(
+      /pull_request\.head\.repo\.full_name == github\.repository/,
+    );
+    expect(yaml).toMatch(/user\.login != 'dependabot\[bot\]'/);
   });
 });

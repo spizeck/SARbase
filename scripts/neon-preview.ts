@@ -483,6 +483,10 @@ export type ProvisioningContext = {
   headRepo: string | undefined;
   repo: string | undefined;
   state?: string | undefined;
+  /** github.event.pull_request.base.ref — the branch the PR targets. */
+  baseRef?: string | undefined;
+  /** github.event.repository.default_branch — the trusted base. */
+  defaultBranch?: string | undefined;
 };
 
 /**
@@ -513,6 +517,19 @@ export function provisioningDecision(ctx: ProvisioningContext): {
       reason: `head repo ${ctx.headRepo ?? "?"} does not match ${ctx.repo ?? "?"} — fork PRs are never provisioned`,
     };
   }
+  // Trusted-base requirement: preview databases only exist for PRs
+  // targeting the repository's default branch. A non-default base can
+  // be unmerged contributor code — and preview databases are
+  // meaningless for stacked/PR-to-PR work anyway.
+  if (!ctx.baseRef || !ctx.defaultBranch || ctx.baseRef !== ctx.defaultBranch) {
+    return {
+      allow: false,
+      reason:
+        `PR targets base ${ctx.baseRef ?? "?"}, not the default branch ` +
+        `${ctx.defaultBranch ?? "?"} — preview databases only provision ` +
+        `for default-branch PRs`,
+    };
+  }
   // A non-open PR must not (re)create a branch — e.g. a trailing event
   // arriving after teardown deleted the branch.
   if (ctx.state !== undefined && ctx.state !== "open") {
@@ -535,12 +552,20 @@ export function provisioningDecision(ctx: ProvisioningContext): {
  * a job failure (a Dependabot PR is not "broken").
  */
 export async function gate(env: Env): Promise<void> {
-  requireEnv(env, ["PR_AUTHOR_LOGIN", "PR_HEAD_REPO", "GITHUB_REPOSITORY"]);
+  requireEnv(env, [
+    "PR_AUTHOR_LOGIN",
+    "PR_HEAD_REPO",
+    "PR_BASE_REF",
+    "DEFAULT_BRANCH",
+    "GITHUB_REPOSITORY",
+  ]);
   const decision = provisioningDecision({
     authorLogin: env.PR_AUTHOR_LOGIN,
     headRepo: env.PR_HEAD_REPO,
     repo: env.GITHUB_REPOSITORY,
     state: env.PR_STATE,
+    baseRef: env.PR_BASE_REF,
+    defaultBranch: env.DEFAULT_BRANCH,
   });
   console.log(
     `${TAG} provisioning ${decision.allow ? "allowed" : "skipped"}: ${decision.reason}`,
@@ -560,6 +585,8 @@ export async function provision(env: Env, fetcher: Fetcher): Promise<void> {
       headRepo: env.PR_HEAD_REPO,
       repo: env.GITHUB_REPOSITORY,
       state: env.PR_STATE,
+      baseRef: env.PR_BASE_REF,
+      defaultBranch: env.DEFAULT_BRANCH,
     });
     if (!decision.allow) {
       fail(`provisioning refused by policy: ${decision.reason}`);
