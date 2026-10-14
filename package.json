@@ -21,6 +21,7 @@
     "test:watch": "vitest",
     "test:db": "vitest run --config vitest.db.config.ts",
     "test:e2e": "playwright test",
+    "test:e2e:hosted": "playwright test --config playwright.hosted.config.ts",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:migrate:status": "prisma migrate status",
     "db:migrate:dev": "prisma migrate dev",

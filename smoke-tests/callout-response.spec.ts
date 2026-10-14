@@ -42,7 +42,16 @@ test.describe("callout response — invalid link", () => {
 });
 
 test.describe("callout response — token flow", () => {
-  const prisma = new PrismaClient();
+  // Fixture DB: SMOKE_DATABASE_URL when set (hosted runs — the operator
+  // names the deployment's database explicitly), else ambient
+  // DATABASE_URL (local mode — the webServer shares this process's env).
+  // Either way the DEPLOYMENT must have CALLOUT_RESPONSE_TOKEN_SECRET
+  // configured or /respond 500s — a real misconfig signal, not a flake.
+  const prisma = new PrismaClient({
+    datasources: {
+      db: { url: process.env.SMOKE_DATABASE_URL ?? process.env.DATABASE_URL },
+    },
+  });
   // The fixture token must be the token the server would derive for
   // this invitation — the response path verifies against the live
   // derivation, not just the stored hash. Same pepper as the smoke
