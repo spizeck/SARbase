@@ -81,9 +81,11 @@ always a redeploy.
    `docs/attachments.md`. In short: a private bucket, CORS POST from
    the app origin only, a 7-day `staging/` expiry, an IAM credential
    scoped to `staging/*` + `organizations/*` on the one bucket, and the
-   five `FILE_STORAGE_S3_*` vars + `FILE_STORAGE_PROVIDER=s3`. Without
-   this the deploy keeps working but large uploads proxy through the
-   action body (Vercel ~4.5 MB cap).
+   five `FILE_STORAGE_S3_*` vars + `FILE_STORAGE_PROVIDER=s3`. With
+   `FILE_STORAGE_PROVIDER=local` and an explicit
+   `FILE_STORAGE_LOCAL_ROOT`, uploads proxy through the action body
+   (Vercel ~4.5 MB cap); an unset provider in production fails closed
+   and uploads error rather than falling back silently.
 6. **Sentry** _(secret-adjacent)_ — `SENTRY_DSN`,
    `NEXT_PUBLIC_SENTRY_DSN`; `SENTRY_ORG`/`SENTRY_PROJECT`/
    `SENTRY_AUTH_TOKEN` for sourcemap upload.

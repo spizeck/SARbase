@@ -262,14 +262,15 @@ recommended.
   replication instead.)
 - **If versioning was already enabled:** prefer **suspending** it
   (bucket → Properties → Bucket versioning → Suspend). Existing
-  noncurrent versions persist until expired — either delete them or
-  rely on the lifecycle rule below, which expires noncurrent versions
-  under `staging/`. Keeping versioning ON is workable but weaker:
-  `DeleteObject` then only writes a delete marker, so a tombstoned
-  attachment's bytes remain recoverable as a noncurrent version
-  (storage cost plus longer retention of content the app considers
-  deleted). If you keep it, add `NoncurrentVersionExpiration` covering
-  `organizations/` as well, or deleted files accumulate forever.
+  noncurrent versions persist until expired — the lifecycle rule below
+  covers only `staging/`; noncurrent versions under `organizations/`
+  need their own rule or a manual delete. Keeping versioning ON is
+  workable but weaker: `DeleteObject` then only writes a delete marker,
+  so a tombstoned attachment's bytes remain recoverable as a
+  noncurrent version (storage cost plus longer retention of content
+  the app considers deleted). If you keep it, add a second rule with
+  `NoncurrentVersionExpiration` covering `organizations/`, or deleted
+  files accumulate forever.
 
 ### 2. Lifecycle rule — expire abandoned staging objects
 
