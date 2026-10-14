@@ -260,6 +260,16 @@ recommended.
   every delete into a delete-marker pair and complicate lifecycle.
   (If you want extra byte-level protection, rely on bucket backups or
   replication instead.)
+- **If versioning was already enabled:** prefer **suspending** it
+  (bucket → Properties → Bucket versioning → Suspend). Existing
+  noncurrent versions persist until expired — either delete them or
+  rely on the lifecycle rule below, which expires noncurrent versions
+  under `staging/`. Keeping versioning ON is workable but weaker:
+  `DeleteObject` then only writes a delete marker, so a tombstoned
+  attachment's bytes remain recoverable as a noncurrent version
+  (storage cost plus longer retention of content the app considers
+  deleted). If you keep it, add `NoncurrentVersionExpiration` covering
+  `organizations/` as well, or deleted files accumulate forever.
 
 ### 2. Lifecycle rule — expire abandoned staging objects
 
@@ -272,11 +282,20 @@ Apply to prefix `staging/`, expire current versions after **7 days**:
       "ID": "expire-abandoned-staging",
       "Status": "Enabled",
       "Filter": { "Prefix": "staging/" },
-      "Expiration": { "Days": 7 }
+      "Expiration": { "Days": 7 },
+      "NoncurrentVersionExpiration": { "NoncurrentDays": 7 }
     }
   ]
 }
 ```
+
+The `NoncurrentVersionExpiration` clause is harmless with versioning
+off and essential with versioning on — without it a deleted staging
+object's bytes persist as noncurrent versions. Confirm the console rule
+is scoped to prefix `staging/` exactly: S3 lifecycle filters are literal
+string prefixes, and the code writes only under
+`staging/organizations/<orgId>/` (`ATTACHMENT_STAGING_PREFIX` in
+`src/lib/domain/attachments.ts`).
 
 This is the backstop for interrupted/abandoned direct uploads —
 finalize deletes staging objects on success, the lifecycle catches
@@ -341,6 +360,13 @@ Production environment scope:
 
 Leave `FILE_STORAGE_S3_ENDPOINT` **unset** for AWS (it exists for
 R2/MinIO).
+
+Vercel environment variables are snapshotted at deploy time — a
+deployment already running never sees a variable added afterward.
+Saving these variables activates nothing until the next production
+deployment; verify `FILE_STORAGE_PROVIDER` is exactly `s3` — a typo
+fails closed at provider resolution (uploads error out) rather than
+silently falling back to ephemeral local storage.
 
 Preview environment scope — only if preview uploads should exercise
 the real path: same five variables pointed at `sarbase-files-preview`
