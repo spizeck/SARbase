@@ -74,11 +74,12 @@ try {
   const jose = pkgFor("jose", [jwksDir]);
   const dot = jose.exports?.["."];
   const hasCjsEntry =
-    typeof jose.main === "string" ||
-    (dot != null &&
-      typeof dot === "object" &&
-      (typeof dot.require === "string" ||
-        (dot.node != null && typeof dot.node.require === "string")));
+    jose.exports === undefined
+      ? typeof jose.main === "string"
+      : dot != null &&
+        typeof dot === "object" &&
+        (typeof dot.require === "string" ||
+          (dot.node != null && typeof dot.node.require === "string"));
   if (hasCjsEntry) {
     ok(`jwks-rsa -> jose@${jose.version} has a CJS entrypoint`);
   } else {

@@ -33,21 +33,21 @@ Status legend: **verified** (exercised end-to-end), **implemented**
 Set each variable only in the environment named — previews must never
 inherit writable production resources.
 
-| Variable                                              | Production                | Preview                                                                                          | Notes                            |
-| ----------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------ | -------------------------------- |
-| `DATABASE_URL` / `DATABASE_URL_UNPOOLED`              | Neon `main` pooled/direct | `preview/pr-N` (workflow-set)                                                                    |                                  |
-| `APP_PRODUCTION_DB_HOST`                              | production host           | same value — identity check                                                                      | non-secret hostname              |
-| `APP_PREVIEW_DB_HOST`                                 | —                         | `preview/pr-N` host (workflow-set)                                                               |                                  |
-| `APP_TESTING_DB_HOST`                                 | —                         | CI only                                                                                          |                                  |
-| `FIREBASE_ADMIN_*`                                    | `saba-sarbase` (shared)   | shared project **or** dedicated preview project; requires `ALLOW_FIREBASE_ADMIN_IN_PREVIEW=true` | SECRET                           |
-| `NEXT_PUBLIC_FIREBASE_*`                              | `saba-sarbase` (shared)   | shared or preview project                                                                        | public by design                 |
-| `FILE_STORAGE_PROVIDER`                               | `s3`                      | `s3` **only with** `ALLOW_S3_IN_PREVIEW=true` + preview bucket, else `local`                     | production fails closed if unset |
-| `FILE_STORAGE_S3_*`                                   | production bucket/creds   | dedicated preview bucket, never production creds                                                 | SECRET                           |
-| `RESEND_API_KEY` + `NOTIFICATION_EMAIL_FROM`          | real sender               | **preview Resend key/domain only**, requires `ALLOW_RESEND_IN_PREVIEW=true`                      | SECRET                           |
-| `CALLOUT_RESPONSE_TOKEN_SECRET`                       | production pepper         | preview pepper (distinct value)                                                                  | SECRET                           |
-| `SENTRY_DSN` (+ `NEXT_PUBLIC_SENTRY_DSN`)             | real DSN                  | optional; same or preview project                                                                | ingest credential                |
-| `SENTRY_ORG` / `SENTRY_PROJECT` / `SENTRY_AUTH_TOKEN` | set                       | optional                                                                                         | sourcemap upload                 |
-| `APP_BASE_URL` / `NEXT_PUBLIC_SITE_URL`               | https origin              | https origin                                                                                     | Secure-cookie gate               |
+| Variable                                              | Production                | Preview                                                                                                           | Notes                            |
+| ----------------------------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| `DATABASE_URL` / `DATABASE_URL_UNPOOLED`              | Neon `main` pooled/direct | `preview/pr-N` (workflow-set)                                                                                     |                                  |
+| `APP_PRODUCTION_DB_HOST`                              | production host           | same value — identity check                                                                                       | non-secret hostname              |
+| `APP_PREVIEW_DB_HOST`                                 | —                         | `preview/pr-N` host (workflow-set)                                                                                |                                  |
+| `APP_TESTING_DB_HOST`                                 | —                         | CI only                                                                                                           |                                  |
+| `FIREBASE_ADMIN_*`                                    | `saba-sarbase` (shared)   | shared project **or** dedicated preview project; requires `ALLOW_FIREBASE_ADMIN_IN_PREVIEW=true`                  | SECRET                           |
+| `NEXT_PUBLIC_FIREBASE_*`                              | `saba-sarbase` (shared)   | shared or preview project                                                                                         | public by design                 |
+| `FILE_STORAGE_PROVIDER`                               | `s3`                      | `s3` **only with** `ALLOW_S3_IN_PREVIEW=true` + preview bucket (otherwise fails closed); unset/`local` uses local | production fails closed if unset |
+| `FILE_STORAGE_S3_*`                                   | production bucket/creds   | dedicated preview bucket, never production creds                                                                  | SECRET                           |
+| `RESEND_API_KEY` + `NOTIFICATION_EMAIL_FROM`          | real sender               | **preview Resend key/domain only**, requires `ALLOW_RESEND_IN_PREVIEW=true`                                       | SECRET                           |
+| `CALLOUT_RESPONSE_TOKEN_SECRET`                       | production pepper         | preview pepper (distinct value)                                                                                   | SECRET                           |
+| `SENTRY_DSN` (+ `NEXT_PUBLIC_SENTRY_DSN`)             | real DSN                  | optional; same or preview project                                                                                 | ingest credential                |
+| `SENTRY_ORG` / `SENTRY_PROJECT` / `SENTRY_AUTH_TOKEN` | set                       | optional                                                                                                          | sourcemap upload                 |
+| `APP_BASE_URL` / `NEXT_PUBLIC_SITE_URL`               | https origin              | https origin                                                                                                      | Secure-cookie gate               |
 
 ## Owner activation checklist
 
