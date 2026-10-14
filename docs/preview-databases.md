@@ -78,9 +78,12 @@ migrations + `db:seed`, never refreshed from production.
      (same `FIREBASE_ADMIN_*` values on Preview). Shared means the same
      user pool signs in on previews, but grants still come from the
      preview's own Neon branch; the one caveat is that preview
-     sign-out revokes that user's production sessions too. Either way,
-     `NEXT_PUBLIC_FIREBASE_PROJECT_ID` must equal
-     `FIREBASE_ADMIN_PROJECT_ID` or initialization refuses.
+     sign-out revokes that user's production sessions too. One guard
+     applies either way: when `NEXT_PUBLIC_FIREBASE_PROJECT_ID` is set,
+     the Admin SDK refuses to initialize if it does not equal
+     `FIREBASE_ADMIN_PROJECT_ID` — a service account for a different
+     project than the app's client config is a credential leak, not
+     configuration.
    - `RESEND_API_KEY`/`NOTIFICATION_PROVIDER` — leave unset on Preview
      (notifications use the in-process fake). For a real mail test use
      a preview Resend key + `NOTIFICATION_PROVIDER=resend` +
