@@ -286,9 +286,13 @@ what never finalized.
 
 Apply the CORS block from [Bucket CORS](#bucket-cors) above, with
 `AllowedOrigins` set to the real app origin
-(`https://<your-domain>`). The presigned POST is a multipart form
-submission — CORS-safelisted, so no preflight occurs — but the browser
-still needs `AllowedOrigins` to observe the response status.
+(`https://<your-domain>`). Expect an `OPTIONS` preflight before each
+upload — per the Fetch spec, attaching an `XMLHttpRequest.upload`
+progress listener (which the upload forms do) upgrades the cross-origin
+POST to a preflighted request even though multipart form data is
+otherwise safelisted. The rule above answers it: `POST` in
+`AllowedMethods` covers the preflight's `Access-Control-Request-Method`,
+and `AllowedHeaders`/`AllowedOrigins` admit it.
 
 ### 4. IAM policy and credentials
 
