@@ -133,6 +133,8 @@ not speculated now.
 - **`@grpc/grpc-js` advisory residual** — reachable only via
   `@firebase/firestore`, which SARbase never imports (auth only);
   documented rather than force-downgrading `firebase`.
-- **`serverActions.bodySizeLimit: "32mb"`** — retained for the local
-  dev proxied-upload path; harmless on Vercel where direct uploads
-  bypass it.
+- **`serverActions.bodySizeLimit: "32mb"`** — applies to the proxied
+  Server Action upload path, which remains for local dev and providers
+  without presign support. On Vercel that path is still subject to the
+  platform's ~4.5 MB function payload limit; direct-to-store uploads
+  (the S3 provider's default flow) bypass it entirely.
