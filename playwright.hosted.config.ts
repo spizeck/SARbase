@@ -1,6 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
-import { SMOKE_AUTH_STATE } from "./smoke-tests/hosted/auth-state";
+import {
+  SMOKE_AUTH_STATE,
+  SMOKE_BYPASS_STATE,
+} from "./smoke-tests/hosted/auth-state";
 
 /**
  * Hosted smoke tests — the same deterministic specs, pointed at a real
@@ -22,9 +25,10 @@ import { SMOKE_AUTH_STATE } from "./smoke-tests/hosted/auth-state";
  *                  storage state file is an empty session.
  *
  * Vercel Deployment Protection: set SMOKE_VERCEL_BYPASS to the
- * protection-bypass secret and it is sent as the
- * `x-vercel-protection-bypass` header on every request — never logged,
- * never in test output.
+ * protection-bypass secret. Global setup sends it exactly once — to the
+ * deployment origin, requesting the bypass cookie — and both projects
+ * load that domain-scoped cookie from storage state. The secret is
+ * never attached to cross-origin requests and never logged.
  */
 const baseURL = process.env.SMOKE_BASE_URL;
 if (!baseURL) {
@@ -33,22 +37,36 @@ if (!baseURL) {
       "instance (e.g. SMOKE_BASE_URL=https://sar-base-git-x.vercel.app).",
   );
 }
+const parsedBaseURL = new URL(baseURL);
+const isLoopback = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(
+  parsedBaseURL.hostname,
+);
+if (parsedBaseURL.protocol !== "https:" && !isLoopback) {
+  throw new Error(
+    "SMOKE_BASE_URL must be https:// — a plaintext http:// target would " +
+      "send the bypass secret unencrypted. http:// is allowed only for " +
+      "loopback targets.",
+  );
+}
 
 export default defineConfig({
   testDir: "./smoke-tests",
   forbidOnly: !!process.env.CI,
   retries: 0,
   timeout: 45_000,
-  reporter: process.env.CI ? [["github"], ["list"]] : [["list"]],
+  reporter: process.env.CI
+    ? [["github"], ["list"], ["html", { open: "never" }]]
+    : [["list"]],
   globalSetup: "./smoke-tests/hosted/global-setup.ts",
   use: {
     baseURL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     reducedMotion: "reduce",
-    extraHTTPHeaders: process.env.SMOKE_VERCEL_BYPASS
-      ? { "x-vercel-protection-bypass": process.env.SMOKE_VERCEL_BYPASS }
-      : {},
+    // Deployment-scoped bypass cookie written by global-setup. Applies
+    // to browser pages and the `request` fixture alike; when the target
+    // is unprotected (e.g. loopback) the file holds an empty session.
+    storageState: SMOKE_BYPASS_STATE,
   },
   projects: [
     {

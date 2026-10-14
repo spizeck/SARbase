@@ -39,6 +39,11 @@ jobs:
           SMOKE_VERCEL_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           SMOKE_TEST_EMAIL: ${{ secrets.SMOKE_TEST_EMAIL }}
           SMOKE_TEST_PASSWORD: ${{ secrets.SMOKE_TEST_PASSWORD }}
+          # Token-flow fixture DB + the pepper the TARGET deployment
+          # uses (a preview value — never the production secret). Both
+          # are optional: without them the data-coupled specs skip.
+          SMOKE_DATABASE_URL: ${{ secrets.SMOKE_DATABASE_URL }}
+          CALLOUT_RESPONSE_TOKEN_SECRET: ${{ secrets.SMOKE_CALLOUT_RESPONSE_TOKEN_SECRET }}
         run: npm run test:e2e:hosted
       - name: Upload Playwright report
         if: ${{ failure() }}
