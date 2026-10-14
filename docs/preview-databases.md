@@ -64,7 +64,11 @@ migrations + `db:seed`, never refreshed from production.
    environment only.
 4. Set `APP_PRODUCTION_DB_HOST` (plain hostname, no scheme/credentials)
    on **Production and Preview** — it is the identity anchor for both.
-5. Decide preview external-service posture (default: all off):
+5. Confirm the project **Build Command** is `npm run build:vercel` —
+   see [Required Vercel build command](#required-vercel-build-command).
+   This is what makes database identity checks and migrations run
+   inside every deployment.
+6. Decide preview external-service posture (default: all off):
    - `FIREBASE_ADMIN_*` — do not set on Preview. To exercise auth on
      previews, create a dedicated Firebase project, set its
      `NEXT_PUBLIC_FIREBASE_*` + matching `FIREBASE_ADMIN_*` on Preview,
@@ -199,6 +203,102 @@ switch for `neon-preview.yml`. Confirm the Vercel prerequisites in
 `APP_PRODUCTION_DB_HOST` on Production and Preview, no project-level
 Preview database URLs), then validate with a disposable PR per
 [Controlled live validation](#controlled-live-validation-owner-disposable-pr).
+
+## Required Vercel build command
+
+Every SARbase Vercel deployment must build with
+**`npm run build:vercel`**. That command runs
+`scripts/vercel-build.ts`, which performs the database identity checks
+and applies committed Prisma migrations before `next build`.
+
+**Why `npm run build` is insufficient:** it is a bare `next build`. It
+compiles and deploys successfully while silently skipping migrations
+and every production/preview identity guard — the deployment reaches
+READY against an unmigrated or even miswired database. This exact
+failure was discovered during PR #49's lifecycle validation: the
+project's Build Command had been left at `npm run build`, so the first
+preview deployment never ran `vercel-build.ts` at all. The build
+succeeded; only reading the build log revealed the gap.
+
+### Where it is configured
+
+Vercel resolves the build command in precedence order:
+
+1. The **project-level Build Command setting** (Vercel dashboard →
+   Settings → General → Build Command, or the `buildCommand` field via
+   the API). When set, it overrides everything below.
+2. **`buildCommand` in `vercel.json`** — declared in the repository
+   (`"buildCommand": "npm run build:vercel"`), so the requirement is
+   version-controlled and applies whenever the project setting is
+   unset.
+3. Framework auto-detection — for Next.js, `npm run build` (unsafe
+   here; see above).
+
+Both layers 1 and 2 are set to the same required value. Keeping the
+dashboard override in place is deliberate defense in depth: an
+accidental `vercel.json` regression then cannot change the effective
+command, and the scheduled check verifies the dashboard layer that
+repo review cannot see.
+
+### How to verify the effective setting
+
+- **Repository side** — on every PR, the unit tests in
+  `scripts/vercel-build-check.test.ts` assert `vercel.json` declares
+  the required command and that `build:vercel` invokes
+  `scripts/vercel-build.ts`. No secrets needed; fork PRs included.
+- **Project side** — the **Vercel build-command check** workflow
+  (`.github/workflows/vercel-build-check.yml`) reads the project's
+  `buildCommand` back through the Vercel API and compares it with
+  `vercel.json`, resolving precedence exactly the way Vercel does. It
+  runs daily, on pushes to the default branch, and manually via
+  Actions → "Vercel build-command check" → Run workflow. It is
+  read-only and prints no credentials.
+- **Manually** — Vercel dashboard → project → Settings → General →
+  Build Command should read `npm run build:vercel`.
+
+The remote check reports three distinct outcomes: **OK**, **MISMATCH**
+(the effective command verifiably bypasses `vercel-build.ts`), or
+**UNVERIFIABLE** (missing config, API error, or insufficient
+permissions). UNVERIFIABLE still fails the job — it is never reported
+as a pass.
+
+### What the logs look like
+
+A healthy build log contains one of:
+
+- `preview database verified against APP_PREVIEW_DB_HOST — applying
+committed migrations (npm run db:migrate:deploy)` followed by Prisma
+  `migrate deploy` output (previews with a provisioned database);
+- `production deployment verified against APP_PRODUCTION_DB_HOST —
+applying committed migrations` (production);
+- `preview deployment without DATABASE_URL — no preview branch
+provisioned; skipping migrations` (previews without a database);
+- `migrations applied or already current — building` after the
+  migration step.
+
+A build log that goes straight from `npm run build:vercel` to Next.js
+compilation with none of those lines — or that shows `npm run build`
+at all — means the safeguard did not run.
+
+### When migrations or identity checks fail
+
+`vercel-build.ts` exits non-zero → the build fails → the deployment is
+**never promoted**; the previous release keeps serving. A failed or
+refused migration cannot deploy broken code. Recovery is fix-forward:
+land a corrective migration in a new commit — never `migrate reset` a
+hosted branch.
+
+### Preventing future drift
+
+- Do not change `buildCommand` in `vercel.json`, the `build:vercel`
+  script in `package.json`, or the project Build Command setting —
+  the unit test and the scheduled check will catch all three.
+- If the project Build Command is intentionally cleared, `vercel.json`
+  takes over — keep it correct.
+- If the scheduled check reports MISMATCH, restore
+  `npm run build:vercel` in the Vercel project settings, then treat
+  the intervening deployments as unverified: confirm `migrate status`
+  on the affected database before deploying again.
 
 ## Controlled live validation (owner, disposable PR)
 

@@ -64,7 +64,11 @@ deploy`, introspection, and seed/backup scripts. PgBouncer-pooled
 ## Migration posture
 
 Production migrations run **inside the Vercel build**
-(`build:vercel` → `scripts/vercel-build.ts`), before `next build`:
+(`build:vercel` → `scripts/vercel-build.ts`), before `next build`.
+This only happens if Vercel actually invokes `build:vercel` — the
+required build command, where it is configured, and the drift checks
+around it are documented in
+[preview-databases.md → Required Vercel build command](preview-databases.md#required-vercel-build-command):
 
 - `VERCEL_ENV=production` → requires `DATABASE_URL`,
   `DATABASE_URL_UNPOOLED`, and `APP_PRODUCTION_DB_HOST`; both URLs must
