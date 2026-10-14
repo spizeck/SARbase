@@ -12,21 +12,21 @@ Status legend: **verified** (exercised end-to-end), **implemented**
 
 ## Readiness matrix
 
-| Area                    | Status            | Notes                                                                                                                                       |
-| ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Database lifecycle      | verified          | Neon `testing` baseline + per-PR `preview/pr-N` branches, identity-checked migrations, teardown (PRs #46/#48/#49)                           |
-| Vercel build safeguards | verified          | `npm run build:vercel` identity-gates migrations; misconfigured envs fail the build closed (PR #50)                                         |
-| Firebase authentication | verified (design) | Session cookies verified with revocation; preview Admin SDK gated behind `ALLOW_FIREBASE_ADMIN_IN_PREVIEW`; production env vars pending     |
-| Authorization           | verified          | Org-scoped `OrganizationAccess` checks, composite same-org FKs, opaque cross-org failures                                                   |
-| Application workflows   | implemented       | Incidents/callouts/expenses/assets/documents covered by db + unit + smoke tests; full hosted journeys need the authenticated smoke identity |
-| Attachment uploads      | implemented       | Direct-to-store prepare → browser POST → verified finalize; proxied fallback for providers without presigned POST                           |
-| Attachment downloads    | verified          | Authorized streaming route, private objects, `attachment`+`nosniff`, honest 404/410                                                         |
-| Object storage          | implemented       | Code complete; bucket + IAM + Vercel vars configured by owner — pending redeploy and live smoke test (see below)                            |
-| Background processing   | not applicable    | No jobs/queues/schedulers exist; notification retries are operator-invoked actions                                                          |
-| External integrations   | implemented       | Resend notifications (fake provider otherwise); Sentry wired, credentials optional                                                          |
-| Monitoring              | partially         | Sentry SDK + structured request logs + `/api/health`; alert policy is an operator decision                                                  |
-| Backup & recovery       | verified (db)     | `runbooks/database-backup-restore.md` + automated restore drill in CI; object-store backup is operator scope                                |
-| Deployment protection   | verified          | Vercel Deployment Protection stays on; automation uses the bypass header, never a public route                                              |
+| Area                    | Status            | Notes                                                                                                                                                         |
+| ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Database lifecycle      | verified          | Neon `testing` baseline + per-PR `preview/pr-N` branches, identity-checked migrations, teardown (PRs #46/#48/#49)                                             |
+| Vercel build safeguards | verified          | `npm run build:vercel` identity-gates migrations; misconfigured envs fail the build closed (PR #50)                                                           |
+| Firebase authentication | verified (design) | Session cookies verified with revocation; env vars configured prod + preview on shared project; preview sign-in still needs `ALLOW_FIREBASE_ADMIN_IN_PREVIEW` |
+| Authorization           | verified          | Org-scoped `OrganizationAccess` checks, composite same-org FKs, opaque cross-org failures                                                                     |
+| Application workflows   | implemented       | Incidents/callouts/expenses/assets/documents covered by db + unit + smoke tests; full hosted journeys need the authenticated smoke identity                   |
+| Attachment uploads      | implemented       | Direct-to-store prepare → browser POST → verified finalize; proxied fallback for providers without presigned POST                                             |
+| Attachment downloads    | verified          | Authorized streaming route, private objects, `attachment`+`nosniff`, honest 404/410                                                                           |
+| Object storage          | implemented       | Code complete; bucket + IAM + Vercel vars configured by owner — pending redeploy and live smoke test (see below)                                              |
+| Background processing   | not applicable    | No jobs/queues/schedulers exist; notification retries are operator-invoked actions                                                                            |
+| External integrations   | implemented       | Resend notifications (fake provider otherwise); Sentry wired, credentials optional                                                                            |
+| Monitoring              | partially         | Sentry SDK + structured request logs + `/api/health`; alert policy is an operator decision                                                                    |
+| Backup & recovery       | verified (db)     | `runbooks/database-backup-restore.md` + automated restore drill in CI; object-store backup is operator scope                                                  |
+| Deployment protection   | verified          | Vercel Deployment Protection stays on; automation uses the bypass header, never a public route                                                                |
 
 ## Environment matrix
 
@@ -60,16 +60,17 @@ always a redeploy.
 1. **Production database** — already live (Neon `main`,
    `APP_PRODUCTION_DB_HOST` configured, build-time identity checks
    verified).
-2. **Firebase** — set the four `NEXT_PUBLIC_FIREBASE_*` values (from
-   the web app's SDK config) plus `FIREBASE_ADMIN_PROJECT_ID`,
-   `FIREBASE_ADMIN_CLIENT_EMAIL`, `FIREBASE_ADMIN_PRIVATE_KEY` _(secret,
-   service-account key from the console)_, all production-scoped; in the
-   Firebase console enable **Email/Password** sign-in, add
-   `sar-base.vercel.app` to _Authentication → Settings → Authorized
-   domains_, and create the first user. After the redeploy, sign in once
-   and run `npm run admin:provision` to grant the first org ADMIN (see
-   `docs/authentication.md`). A _separate_ preview project is required
-   for previews if preview sign-ins matter (`ALLOW_FIREBASE_ADMIN_IN_PREVIEW`).
+2. **Firebase** — the four `NEXT_PUBLIC_FIREBASE_*` values plus
+   `FIREBASE_ADMIN_PROJECT_ID`, `FIREBASE_ADMIN_CLIENT_EMAIL`,
+   `FIREBASE_ADMIN_PRIVATE_KEY` _(secret)_ are configured on Production
+   and Preview against the shared `saba-sarbase` project. For preview
+   sign-ins, also set `ALLOW_FIREBASE_ADMIN_IN_PREVIEW=true`
+   preview-scoped — without it the Admin SDK refuses to initialize on
+   previews and login fails closed (see `docs/authentication.md` for the
+   shared-project caveats). Console side: **Email/Password** enabled,
+   `sar-base.vercel.app` in _Authorized domains_, and at least one user
+   created. After the redeploy, sign in once and run
+   `npm run admin:provision` to grant the first org ADMIN.
 3. **Notifications** — `RESEND_API_KEY` + `NOTIFICATION_EMAIL_FROM`
    _(secret)_; preview sends need `ALLOW_RESEND_IN_PREVIEW` +
    preview-domain key.

@@ -69,10 +69,18 @@ migrations + `db:seed`, never refreshed from production.
    This is what makes database identity checks and migrations run
    inside every deployment.
 6. Decide preview external-service posture (default: all off):
-   - `FIREBASE_ADMIN_*` — do not set on Preview. To exercise auth on
-     previews, create a dedicated Firebase project, set its
-     `NEXT_PUBLIC_FIREBASE_*` + matching `FIREBASE_ADMIN_*` on Preview,
-     and set `ALLOW_FIREBASE_ADMIN_IN_PREVIEW=true`.
+   - `FIREBASE_ADMIN_*` — do not set on Preview unless preview sign-ins
+     should work. Two supported postures, both requiring
+     `ALLOW_FIREBASE_ADMIN_IN_PREVIEW=true`:
+     a _dedicated_ preview Firebase project (set its
+     `NEXT_PUBLIC_FIREBASE_*` + matching `FIREBASE_ADMIN_*`), or —
+     the current small-team choice — the _shared_ production project
+     (same `FIREBASE_ADMIN_*` values on Preview). Shared means the same
+     user pool signs in on previews, but grants still come from the
+     preview's own Neon branch; the one caveat is that preview
+     sign-out revokes that user's production sessions too. Either way,
+     `NEXT_PUBLIC_FIREBASE_PROJECT_ID` must equal
+     `FIREBASE_ADMIN_PROJECT_ID` or initialization refuses.
    - `RESEND_API_KEY`/`NOTIFICATION_PROVIDER` — leave unset on Preview
      (notifications use the in-process fake). For a real mail test use
      a preview Resend key + `NOTIFICATION_PROVIDER=resend` +

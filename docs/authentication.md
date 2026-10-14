@@ -202,11 +202,38 @@ service account:
    set `FIREBASE_ADMIN_PROJECT_ID`, `FIREBASE_ADMIN_CLIENT_EMAIL`,
    `FIREBASE_ADMIN_PRIVATE_KEY` (paste with `\n` escapes). These are
    secret — deployment env only, never committed, never in CI.
-3. Authentication → _Users_ → _Add user_ for each sign-in account.
+3. Authentication → _Settings_ → _Authorized domains_ — add every
+   deployment origin, e.g. `sar-base.vercel.app`. `vercel.app` wildcard
+   entries are not supported: each `sar-base-git-<branch>-*.vercel.app`
+   preview alias is a distinct domain. Email/password sign-in works
+   without an entry (it calls `identitytoolkit.googleapis.com`
+   directly), but popup/redirect providers and email-link flows need
+   the exact domain authorized — add domains before enabling those.
+4. Authentication → _Users_ → _Add user_ for each sign-in account.
    There is no public registration; SARbase provisions zero-access
    `AuthIdentity` rows at first sign-in.
-4. `npm run admin:provision` (above) grants the first org ADMIN;
+5. `npm run admin:provision` (above) grants the first org ADMIN;
    that admin links member records in the UI.
+
+**Sign-in providers:** only Email/Password is implemented
+(`signInWithEmailAndPassword` in `src/app/login/login-form.tsx`).
+Enabling another provider in the console (e.g. Google) changes nothing
+in the app — there is no popup/redirect UI. Adding one is a small
+deliberate feature: `signInWithPopup` + a button, with the CSP/COOP
+groundwork already in place (`apis.google.com` in `script-src`,
+`same-origin-allow-popups` in `src/lib/security/headers.ts`).
+
+**Preview sign-ins** need two things on top of the client config: the
+three `FIREBASE_ADMIN_*` variables scoped to Preview, and
+`ALLOW_FIREBASE_ADMIN_IN_PREVIEW=true` — without the flag the Admin
+SDK refuses to initialize on previews and sign-in fails closed
+(`docs/preview-databases.md`). When the preview environment shares the
+production Firebase project (small-team setup), sign-in works against
+the same user pool but authorization still comes from the preview's own
+Neon branch — a production ADMIN's grants do not carry over. One
+consequence to know: signing out on a preview calls
+`revokeRefreshTokens` on the shared project, which ends that user's
+production sessions too.
 
 All env vars are listed in `.env.example`. Missing config fails closed:
 the sign-in UI reports "authentication is not configured", no session
