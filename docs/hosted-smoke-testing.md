@@ -120,3 +120,9 @@ a misconfiguration failure, not a skip. For hosted runs, set the suite's
 previews that is a preview value, never the production secret. The
 dispatch workflow maps GitHub secret `SMOKE_CALLOUT_RESPONSE_TOKEN_SECRET`
 into that variable.
+
+## Manual verification
+
+For provider-touching paths automation cannot see — real S3 buckets,
+real Resend delivery, preview-environment flags — use the manual
+checklist in `docs/production-smoke-checklist.md`.
