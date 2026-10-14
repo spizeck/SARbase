@@ -217,9 +217,12 @@ export async function resolveTestingTarget(
   const unpooledUrl = await connectionUri(env, fetcher, testing.id, false);
   const pooledUrl = await connectionUri(env, fetcher, testing.id, true);
   const productionUrl = await connectionUri(env, fetcher, production.id, false);
-  // Mask before anything else can echo these values.
+  // Mask before anything else can echo these values — including the
+  // production URI, which is only used for host comparison but carries
+  // production credentials.
   mask(unpooledUrl);
   mask(pooledUrl);
+  mask(productionUrl);
 
   // Strict parse: refuses malformed strings AND routing-override query
   // parameters (host/hostaddr/port/database/dbname/service) that could

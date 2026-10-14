@@ -347,6 +347,7 @@ describe("secret hygiene", () => {
       const printed = log.mock.calls.map((c) => String(c[0])).join("\n");
       expect(printed).toContain(`::add-mask::${TESTING_URL}`);
       expect(printed).toContain(`::add-mask::${TESTING_URL_POOLED}`);
+      expect(printed).toContain(`::add-mask::${PROD_URL}`);
       expect(printed).toContain(`::add-mask::${ENV.NEON_API_KEY}`);
 
       const summary = readFileSync(summaryPath, "utf-8");
