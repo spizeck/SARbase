@@ -32,10 +32,14 @@
     "db:wait": "tsx scripts/wait-for-postgres.ts",
     "db:backup": "tsx --env-file-if-exists=.env scripts/backup-database.ts",
     "db:restore-drill": "tsx --env-file-if-exists=.env scripts/restore-drill.ts",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm run check:react-versions && npm run test && npm run build"
+    "check:admin-import": "node scripts/check-admin-import.mjs",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run check:react-versions && npm run check:admin-import && npm run test && npm run build"
   },
   "overrides": {
-    "deepmerge-ts": "^8.0.0"
+    "deepmerge-ts": "^8.0.0",
+    "jwks-rsa": {
+      "jose": "5.10.0"
+    }
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1138.0",
