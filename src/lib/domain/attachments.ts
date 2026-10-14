@@ -957,6 +957,18 @@ export async function prepareDocumentUpload(
   );
 }
 
+/**
+ * Versions only land on ACTIVE documents — the UI hides the form on
+ * archived ones, and the domain enforces the same rule server-side.
+ */
+function requireDocumentAcceptsVersions(document: { status: string }): void {
+  if (document.status !== "ACTIVE") {
+    throw new AttachmentInputError(
+      "This document is archived and cannot accept new versions.",
+    );
+  }
+}
+
 /** Authorize a direct upload for the next version of a document. */
 export async function prepareDocumentVersionUpload(
   documentId: string,
@@ -966,9 +978,10 @@ export async function prepareDocumentVersionUpload(
 ): Promise<PreparedUpload | null> {
   const document = await prisma.organizationDocument.findUnique({
     where: { id: documentId },
-    select: { organizationId: true },
+    select: { organizationId: true, status: true },
   });
   if (!document) throw new CrossOrganizationAttachmentError();
+  requireDocumentAcceptsVersions(document);
   return prepareUploadGrant(
     document.organizationId,
     declared,
@@ -1765,6 +1778,7 @@ export async function addOrganizationDocumentVersion(
     select: { id: true, organizationId: true, status: true },
   });
   if (!document) throw new CrossOrganizationAttachmentError();
+  requireDocumentAcceptsVersions(document);
 
   const displayFilename = sanitizeDisplayFilename(file.name);
   const checksumSha256 = createHash("sha256").update(file.bytes).digest("hex");
@@ -1773,6 +1787,13 @@ export async function addOrganizationDocumentVersion(
 
   try {
     const version = await prisma.$transaction(async (tx) => {
+      // Re-check inside the transaction — an archive landing between the
+      // outer check and this commit must not win the race.
+      const current = await tx.organizationDocument.findUniqueOrThrow({
+        where: { id: documentId },
+        select: { status: true },
+      });
+      requireDocumentAcceptsVersions(current);
       const latest = await tx.organizationDocumentVersion.aggregate({
         where: { documentId },
         _max: { versionNumber: true },
@@ -1957,9 +1978,10 @@ export async function finalizeDocumentVersion(
 ) {
   const document = await prisma.organizationDocument.findUnique({
     where: { id: documentId },
-    select: { id: true, organizationId: true },
+    select: { id: true, organizationId: true, status: true },
   });
   if (!document) throw new CrossOrganizationAttachmentError();
+  requireDocumentAcceptsVersions(document);
 
   const verified = await verifyStagedUpload(
     document.organizationId,
@@ -1979,6 +2001,13 @@ export async function finalizeDocumentVersion(
   const displayFilename = sanitizeDisplayFilename(declared.name);
   try {
     const version = await prisma.$transaction(async (tx) => {
+      // Re-check inside the transaction — an archive landing between the
+      // outer check and this commit must not win the race.
+      const current = await tx.organizationDocument.findUniqueOrThrow({
+        where: { id: documentId },
+        select: { status: true },
+      });
+      requireDocumentAcceptsVersions(current);
       const latest = await tx.organizationDocumentVersion.aggregate({
         where: { documentId },
         _max: { versionNumber: true },

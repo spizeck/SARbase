@@ -644,6 +644,38 @@ describe.skipIf(!hasDb)("attachments (issue #16)", () => {
     }
   });
 
+  it("refuses new versions on an archived document", async () => {
+    const document = await createOrganizationDocument(
+      orgA.id,
+      { ...PDF_FILE, name: "policy.pdf" },
+      { title: "Policy" },
+      null,
+      actorA.id,
+      storage,
+    );
+    await setOrganizationDocumentStatus(document.id, "ARCHIVED", actorA.id);
+
+    // Proxied path.
+    await expect(
+      addOrganizationDocumentVersion(
+        document.id,
+        { ...PDF_FILE, name: "v2.pdf" },
+        null,
+        actorA.id,
+        storage,
+      ),
+    ).rejects.toThrow(/archived/);
+    // Direct path — prepare AND finalize both enforce the rule.
+    await expect(
+      prepareDocumentVersionUpload(
+        document.id,
+        { name: "v2.pdf", mediaType: "application/pdf", sizeBytes: 4 },
+        actorA.id,
+        storage,
+      ),
+    ).rejects.toThrow(/archived/);
+  });
+
   it("lists documents with their current version and archives without deleting", async () => {
     const document = await createOrganizationDocument(
       orgA.id,
