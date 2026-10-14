@@ -88,6 +88,9 @@ async function getProjectBuildCommand(
     `${VERCEL_API}/v9/projects/${env.VERCEL_PROJECT_ID}?teamId=${env.VERCEL_TEAM_ID}`,
     {
       headers: { authorization: `Bearer ${env.VERCEL_TOKEN}` },
+      // Undici's defaults allow a stalled request to hang for minutes;
+      // a hung check should still report UNVERIFIABLE quickly.
+      signal: AbortSignal.timeout(15_000),
     },
   );
   if (!res.ok) {
