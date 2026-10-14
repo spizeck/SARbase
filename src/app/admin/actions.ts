@@ -168,18 +168,26 @@ import {
 import { NotificationConfigError } from "@/lib/notifications/provider";
 import {
   uploadAttachment,
+  finalizeAttachmentUpload,
+  prepareAttachmentUpload,
   unlinkAttachment,
   deleteAttachment,
   createOrganizationDocument,
   addOrganizationDocumentVersion,
+  prepareDocumentUpload,
+  finalizeDocumentCreate,
+  prepareDocumentVersionUpload,
+  finalizeDocumentVersion,
   updateOrganizationDocument,
   setOrganizationDocumentStatus,
   isAttachmentEntityType,
   AttachmentInputError,
   AttachmentReasonRequiredError,
   AttachmentDeletedError,
+  AttachmentUploadGrantError,
   CrossOrganizationAttachmentError,
   type AttachmentFileInput,
+  type PreparedUpload,
 } from "@/lib/domain/attachments";
 import { StorageConfigError, StorageError } from "@/lib/storage/provider";
 import {
@@ -410,7 +418,8 @@ function mapDomainError(error: unknown): ActionState {
   if (
     error instanceof AttachmentInputError ||
     error instanceof AttachmentReasonRequiredError ||
-    error instanceof AttachmentDeletedError
+    error instanceof AttachmentDeletedError ||
+    error instanceof AttachmentUploadGrantError
   ) {
     // Upload policy and own-org lifecycle facts — safe to surface.
     return { message: error.message };
@@ -2738,6 +2747,288 @@ export async function uploadAttachmentAction(
     return mapDomainError(error);
   }
   revalidateAttachmentTarget(entityType, entityId, target);
+  return {};
+}
+
+/* -------- Direct-to-store uploads -------- */
+
+/**
+ * The browser-side shape of a direct upload: declared file metadata
+ * the client sends at prepare time and echoes again at finalize.
+ * Declared, never trusted — the domain layer re-validates it against
+ * policy and against the real stored object.
+ */
+export interface DirectUploadDeclared {
+  name: string;
+  mediaType: string;
+  sizeBytes: number;
+}
+
+/** The staged-object handle the client returns after its PUT completes. */
+export interface DirectUploadCompletion extends DirectUploadDeclared {
+  stagingKey: string;
+  finalKey: string;
+  ticket: string;
+}
+
+/**
+ * Result of a prepare action: "direct" carries the upload grant the
+ * browser PUTs to; "proxied" tells the form to use the classic
+ * server-mediated path (provider cannot direct-upload); "error" is a
+ * normal ActionState.
+ */
+export type PreparedUploadResult =
+  | { status: "direct"; upload: PreparedUpload }
+  | { status: "proxied" }
+  | { status: "error"; error: ActionState };
+
+/**
+ * Authorize a direct upload onto a record. Identical authorization,
+ * rate limiting, and protected-record checks as the proxied upload —
+ * this only decides WHERE the bytes may land and hands back a scoped,
+ * short-lived grant.
+ */
+export async function prepareAttachmentUploadAction(
+  entityType: string,
+  entityId: string,
+  input: DirectUploadDeclared & { reason?: string | null },
+): Promise<PreparedUploadResult> {
+  const ctx = await requireAuth();
+  if (!isAttachmentEntityType(entityType)) {
+    return { status: "error", error: { message: "Not found." } };
+  }
+  let target;
+  try {
+    target = await requireOrgAdminForAttachmentTarget(
+      ctx,
+      entityType,
+      entityId,
+    );
+  } catch (error) {
+    return { status: "error", error: mapDomainError(error) };
+  }
+  const limited = await checkAttachmentRateLimit(
+    target.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return { status: "error", error: limited };
+
+  const parsed = attachmentMutationSchema.safeParse({
+    reason: input.reason,
+  });
+  if (!parsed.success) {
+    return { status: "error", error: zodErrors(parsed.error) };
+  }
+
+  try {
+    const upload = await prepareAttachmentUpload(
+      { type: entityType, id: entityId },
+      input,
+      parsed.data,
+      ctx.identity.id,
+    );
+    return upload ? { status: "direct", upload } : { status: "proxied" };
+  } catch (error) {
+    return { status: "error", error: mapDomainError(error) };
+  }
+}
+
+/**
+ * Record a completed direct upload onto a record. The staged object is
+ * verified against the grant and the upload policy (size, signature,
+ * checksum over the real bytes), promoted to its final key, and
+ * persisted — the client only supplies handles, never bytes.
+ */
+export async function finalizeAttachmentUploadAction(
+  entityType: string,
+  entityId: string,
+  completion: DirectUploadCompletion & {
+    description?: string | null;
+    reason?: string | null;
+  },
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  if (!isAttachmentEntityType(entityType)) {
+    return { message: "Not found." };
+  }
+  let target;
+  try {
+    target = await requireOrgAdminForAttachmentTarget(
+      ctx,
+      entityType,
+      entityId,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkAttachmentRateLimit(
+    target.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+
+  const parsed = attachmentUploadSchema.safeParse({
+    description: completion.description,
+    reason: completion.reason,
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await finalizeAttachmentUpload(
+      { type: entityType, id: entityId },
+      completion,
+      completion,
+      parsed.data,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidateAttachmentTarget(entityType, entityId, target);
+  return {};
+}
+
+/** Authorize a direct upload for a new organization document. */
+export async function prepareDocumentUploadAction(
+  organizationId: string,
+  input: DirectUploadDeclared,
+): Promise<PreparedUploadResult> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return { status: "error", error: mapDomainError(error) };
+  }
+  const limited = await checkAttachmentRateLimit(
+    organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return { status: "error", error: limited };
+
+  try {
+    const upload = await prepareDocumentUpload(
+      organizationId,
+      input,
+      ctx.identity.id,
+    );
+    return upload ? { status: "direct", upload } : { status: "proxied" };
+  } catch (error) {
+    return { status: "error", error: mapDomainError(error) };
+  }
+}
+
+/** Record a completed direct upload as a new organization document. */
+export async function finalizeDocumentCreateAction(
+  organizationId: string,
+  completion: DirectUploadCompletion,
+  document: {
+    title?: string | null;
+    category?: string | null;
+    effectiveOn?: string | null;
+    expiresOn?: string | null;
+    notes?: string | null;
+    description?: string | null;
+    versionNote?: string | null;
+  },
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkAttachmentRateLimit(
+    organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+
+  const parsed = organizationDocumentInputSchema.safeParse(document);
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await finalizeDocumentCreate(
+      organizationId,
+      completion,
+      completion,
+      parsed.data,
+      parsed.data.versionNote ?? null,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/organizations/${organizationId}/documents`);
+  return {};
+}
+
+/** Authorize a direct upload for the next version of a document. */
+export async function prepareDocumentVersionAction(
+  documentId: string,
+  input: DirectUploadDeclared,
+): Promise<PreparedUploadResult> {
+  const ctx = await requireAuth();
+  let document;
+  try {
+    document = await requireOrgAdminForOrganizationDocument(ctx, documentId);
+  } catch (error) {
+    return { status: "error", error: mapDomainError(error) };
+  }
+  const limited = await checkAttachmentRateLimit(
+    document.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return { status: "error", error: limited };
+
+  try {
+    const upload = await prepareDocumentVersionUpload(
+      documentId,
+      input,
+      ctx.identity.id,
+    );
+    return upload ? { status: "direct", upload } : { status: "proxied" };
+  } catch (error) {
+    return { status: "error", error: mapDomainError(error) };
+  }
+}
+
+/** Record a completed direct upload as the next document version. */
+export async function finalizeDocumentVersionAction(
+  documentId: string,
+  completion: DirectUploadCompletion,
+  input: { note?: string | null },
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let document;
+  try {
+    document = await requireOrgAdminForOrganizationDocument(ctx, documentId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  const limited = await checkAttachmentRateLimit(
+    document.organizationId,
+    ctx.identity.id,
+  );
+  if (limited) return limited;
+
+  const parsed = documentVersionSchema.safeParse(input);
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await finalizeDocumentVersion(
+      documentId,
+      completion,
+      completion,
+      parsed.data.note ?? null,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+  revalidatePath(`/admin/organizations/${document.organizationId}/documents`);
+  revalidatePath(
+    `/admin/organizations/${document.organizationId}/documents/${documentId}`,
+  );
   return {};
 }
 

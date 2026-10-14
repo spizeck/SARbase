@@ -43,9 +43,10 @@ URLs, and request metadata cannot leak into logs or responses.
   `FILE_STORAGE_LOCAL_ROOT` — a directory outside the source tree, gitignored.
   Self-hosters may use it in production but own filesystem backup.
 - **`s3`**: any S3-compatible API (AWS S3, Cloudflare R2, MinIO) via
-  `@aws-sdk/client-s3`. Buckets are expected to be **private**; SARbase never
-  builds public or presigned object URLs — every download streams through the
-  authorized route.
+  `@aws-sdk/client-s3` + `@aws-sdk/s3-presigned-post`. Buckets are expected to
+  be **private**; SARbase never builds public or presigned _read_ URLs — every
+  download streams through the authorized route. The only signing is
+  short-lived, write-only presigned POSTs for direct uploads (see below).
 - **`memory`**: deterministic in-process fake for tests; never selectable via
   configuration at all — tests inject it directly.
 
@@ -125,8 +126,91 @@ SOPs, manuals, insurance, registrations, forms.
 
 ## Upload flow
 
+Two paths exist behind the same policy. The preferred path on providers
+that support it (S3) is **direct-to-store**, keeping file bytes off the
+hosting platform entirely — the serverless request-body limit (~4.5 MB
+on Vercel) never applies. Providers without direct-upload support fall
+back to the classic **proxied** path.
+
+### Direct-to-store (prepare → client POST → finalize)
+
+```
+client → prepare action  → authorized upload grant (presigned POST + ticket)
+client → object store    → file bytes, straight to a staging key
+client → finalize action → verified, promoted, recorded
+```
+
+1. **Prepare** — the form asks a server action for an upload grant with
+   the declared name/type/size. The server resolves the target record,
+   derives the real organization, enforces admin authorization, rate
+   limits, and the protected-record reason rule, then validates the
+   declared metadata (allowlisted type, extension/type consistency,
+   ≤ 25 MiB). Only then does it mint:
+   - a **presigned POST** (`createPresignedPost`) scoped to one exact
+     staging key, with the declared `Content-Type` as an exact-match
+     policy field and `content-length-range` pinned to the declared
+     byte size — the store edge itself rejects a relabeled or resized
+     upload. 15-minute expiry.
+   - an **upload ticket** — an HMAC-SHA256-signed grant
+     (`src/lib/storage/upload-ticket.ts`) binding staging key, final
+     key, actor, declared type/size, and the same expiry. The signing
+     secret derives from the S3 credential; rotating it rotates grants.
+2. **Client upload** — the browser POSTs the signed fields plus the
+   file straight to the bucket as multipart form data (the only way
+   progress events exist). Bytes never touch the app.
+3. **Finalize** — the client echoes the grant handles back. The server
+   re-resolves the record and re-checks authorization and the reason
+   rule, verifies the ticket (signature, expiry, actor, key pair,
+   declared fields), verifies the staging key lives in this
+   organization's staging namespace, `HEAD`s the staging object, then
+   **streams it once** computing SHA-256 and sampling the head for the
+   magic-byte/text checks — against the real stored bytes, not client
+   claims. On success it `CopyObject`s staging → final key, deletes the
+   staging copy, and commits `Attachment` + link + `UPLOADED`/`LINKED`
+   events in one transaction.
+4. **Compensation** — a failed commit deletes the promoted object;
+   a rejected staged object is deleted from staging. Finalize is
+   idempotent: retrying a grant whose record already committed returns
+   the existing row.
+
+### Staged-object lifecycle
+
+Unfinalized objects live under `staging/organizations/<orgId>/<uuid>` —
+a prefix a bucket **lifecycle rule should expire** (e.g. delete after
+7 days). Abandoned uploads therefore cost nothing forever, never
+collide with the recorded `organizations/` namespace, and can never be
+recorded without a ticket.
+
+### Bucket CORS
+
+The bucket must allow browser POSTs **from the app origin only**:
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://<app-host>"],
+    "AllowedMethods": ["POST"],
+    "AllowedHeaders": ["*"],
+    "MaxAgeSeconds": 3000
+  }
+]
+```
+
+### Minimal IAM posture
+
+The credential needs: `PutObject` on `staging/*` (the browser POST is
+signed by the server — the browser holds no credentials),
+`GetObject`/`DeleteObject` on `staging/*` and `organizations/*`,
+`PutObject` on `organizations/*` (proxied puts + promote copies), and
+`HeadObject` (covered by `GetObject`) on both. Scope all of it to the
+one bucket; a dedicated prefix or separate bucket per environment is
+required — **production and preview never share writable storage**.
+
+### Proxied fallback
+
 `uploadAttachment` (and the document variants) in
-`src/lib/domain/attachments.ts`:
+`src/lib/domain/attachments.ts` — used when the configured provider
+lacks direct-upload support (local dev, `memory` tests):
 
 1. Resolve the **target record** and derive the real organization from it —
    caller-supplied ids are untrusted selectors only.

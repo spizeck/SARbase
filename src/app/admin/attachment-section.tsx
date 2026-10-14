@@ -6,6 +6,8 @@ import { resolveActorLabels } from "@/lib/domain/actors";
 
 import {
   deleteAttachmentAction,
+  finalizeAttachmentUploadAction,
+  prepareAttachmentUploadAction,
   unlinkAttachmentAction,
   uploadAttachmentAction,
 } from "./actions";
@@ -143,6 +145,16 @@ export async function AttachmentSection({
       <div className={compact ? "mt-3 max-w-md" : "mt-4 max-w-lg"}>
         <AttachmentUploadForm
           action={uploadAction}
+          prepare={prepareAttachmentUploadAction.bind(
+            null,
+            entityType,
+            entityId,
+          )}
+          finalize={finalizeAttachmentUploadAction.bind(
+            null,
+            entityType,
+            entityId,
+          )}
           requireReason={requireReason}
           idPrefix={sectionId}
         />

@@ -1,5 +1,6 @@
 import {
   StorageError,
+  type DirectUploadTarget,
   type FileStorageProvider,
   type StorageErrorCode,
   type StorageObjectStat,
@@ -82,5 +83,44 @@ export class InMemoryFileStorageProvider implements FileStorageProvider {
   async delete(key: string): Promise<void> {
     this.maybeFail("delete", key);
     this.objects.delete(key);
+  }
+
+  /**
+   * Fake direct-upload capability for tests: the "URL" is opaque and
+   * never fetched — tests stage bytes with `put(stagingKey, ...)`.
+   */
+  async createUploadTarget(
+    key: string,
+    options: {
+      contentType: string;
+      sizeBytes: number;
+      expiresInSeconds: number;
+    },
+  ): Promise<DirectUploadTarget> {
+    this.maybeFail("createUploadTarget", key);
+    return {
+      url: `memory://upload/${key}`,
+      method: "POST",
+      fields: {
+        key,
+        "Content-Type": options.contentType,
+        Policy: "fake-policy",
+        "X-Amz-Signature": "fake-signature",
+      },
+      expiresAt: new Date(Date.now() + options.expiresInSeconds * 1000),
+    };
+  }
+
+  async promoteObject(stagingKey: string, finalKey: string): Promise<void> {
+    this.maybeFail("promoteObject", stagingKey);
+    const object = this.objects.get(stagingKey);
+    if (!object) {
+      throw new StorageError(
+        "object_not_found",
+        "The stored object does not exist.",
+      );
+    }
+    this.objects.set(finalKey, object);
+    this.objects.delete(stagingKey);
   }
 }

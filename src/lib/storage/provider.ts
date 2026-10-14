@@ -66,6 +66,22 @@ export interface StorageObjectStat {
   contentType: string | null;
 }
 
+/**
+ * A short-lived, narrowly scoped target the browser uploads one object
+ * to DIRECTLY (e.g. an S3 presigned POST). The server never sees the
+ * bytes — uploads beyond the hosting platform's request-body limit stay
+ * possible. `fields` are the signed grant itself: the client MUST send
+ * them verbatim in the multipart form (they bind the exact key, the
+ * declared Content-Type, and the byte-size range at the store edge).
+ * The URL is a write-only capability — never logged or persisted.
+ */
+export interface DirectUploadTarget {
+  url: string;
+  method: "POST";
+  fields: Record<string, string>;
+  expiresAt: Date;
+}
+
 export interface FileStorageProvider {
   /**
    * Stable identifier persisted on `Attachment.storageProvider`
@@ -98,4 +114,28 @@ export interface FileStorageProvider {
    * idempotent deletion keeps repeated delete actions honest.
    */
   delete(key: string): Promise<void>;
+
+  /**
+   * OPTIONAL capability — issue a direct-upload target for `key`
+   * (providers without one simply omit this and callers fall back to
+   * the server-proxied path). The target MUST be scoped to exactly this
+   * key, write-only, and expire quickly. `contentType` and `sizeBytes`
+   * are bound into the grant where the provider supports it.
+   */
+  createUploadTarget?(
+    key: string,
+    options: {
+      contentType: string;
+      sizeBytes: number;
+      expiresInSeconds: number;
+    },
+  ): Promise<DirectUploadTarget>;
+
+  /**
+   * OPTIONAL capability — move `stagingKey` to `finalKey` server-side
+   * (an object-store copy, never a byte round-trip through the app),
+   * then remove the staging object. Present iff `createUploadTarget` is:
+   * a staged direct upload must be promotable before it is recorded.
+   */
+  promoteObject?(stagingKey: string, finalKey: string): Promise<void>;
 }

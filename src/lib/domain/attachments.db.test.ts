@@ -13,17 +13,28 @@ import { createHash } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { InMemoryFileStorageProvider } from "@/lib/storage/memory";
 import {
+  resolveUploadTicketSecret,
+  signUploadTicket,
+} from "@/lib/storage/upload-ticket";
+import {
   addOrganizationDocumentVersion,
   createOrganizationDocument,
   deleteAttachment,
+  finalizeAttachmentUpload,
+  finalizeDocumentCreate,
+  finalizeDocumentVersion,
   listEntityAttachments,
   listOrganizationDocuments,
   openAttachmentDownload,
+  prepareAttachmentUpload,
+  prepareDocumentUpload,
+  prepareDocumentVersionUpload,
   setOrganizationDocumentStatus,
   unlinkAttachment,
   uploadAttachment,
   AttachmentDeletedError,
   AttachmentReasonRequiredError,
+  AttachmentUploadGrantError,
   CrossOrganizationAttachmentError,
   type AttachmentFileInput,
 } from "./attachments";
@@ -663,5 +674,406 @@ describe.skipIf(!hasDb)("attachments (issue #16)", () => {
     await expect(
       openAttachmentDownload(attachment, storage),
     ).resolves.toBeDefined();
+  });
+
+  /* ---------------- direct (staged) uploads ---------------- */
+
+  describe("direct-to-store uploads", () => {
+    const TICKET_SECRET_ENV = "db-direct-upload-secret";
+
+    async function prepare(
+      entityType: Parameters<typeof prepareAttachmentUpload>[0]["type"],
+      entityId: string,
+      overrides: Partial<{
+        name: string;
+        mediaType: string;
+        sizeBytes: number;
+      }> = {},
+      options: { reason?: string | null } = {},
+    ) {
+      return prepareAttachmentUpload(
+        { type: entityType, id: entityId },
+        {
+          name: uniq("file.pdf"),
+          mediaType: "application/pdf",
+          sizeBytes: PDF_FILE.bytes.byteLength,
+          ...overrides,
+        },
+        options,
+        actorA.id,
+        storage,
+      );
+    }
+
+    /** Simulate the browser PUT: stage the declared bytes under the granted key. */
+    async function stage(
+      prepared: { stagingKey: string },
+      bytes: Uint8Array = PDF_FILE.bytes,
+      mediaType = "application/pdf",
+    ) {
+      await storage.put(prepared.stagingKey, bytes, mediaType);
+    }
+
+    function completionOf(
+      prepared: { stagingKey: string; finalKey: string; ticket: string },
+      overrides: Partial<{
+        stagingKey: string;
+        finalKey: string;
+        ticket: string;
+      }> = {},
+    ) {
+      return {
+        stagingKey: prepared.stagingKey,
+        finalKey: prepared.finalKey,
+        ticket: prepared.ticket,
+        ...overrides,
+      };
+    }
+
+    /** Forge a grant for arbitrary fields — used to test binding checks. */
+    function forge(fields: {
+      stagingKey: string;
+      finalKey: string;
+      actorId?: string;
+      mediaType?: string;
+      sizeBytes?: number;
+      expiresAt?: number;
+    }) {
+      return signUploadTicket(
+        {
+          stagingKey: fields.stagingKey,
+          finalKey: fields.finalKey,
+          actorId: fields.actorId ?? actorA.id,
+          mediaType: fields.mediaType ?? "application/pdf",
+          sizeBytes: fields.sizeBytes ?? PDF_FILE.bytes.byteLength,
+          expiresAt: fields.expiresAt ?? Math.floor(Date.now() / 1000) + 900,
+        },
+        resolveUploadTicketSecret({
+          FILE_STORAGE_S3_SECRET_ACCESS_KEY: TICKET_SECRET_ENV,
+        }),
+      );
+    }
+
+    beforeAll(() => {
+      vi.stubEnv("FILE_STORAGE_S3_SECRET_ACCESS_KEY", TICKET_SECRET_ENV);
+    });
+
+    afterAll(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("prepares a scoped grant, then finalizes: object promoted, rows + audit", async () => {
+      const prepared = await prepare("INCIDENT", incidentA.id);
+      expect(prepared).not.toBeNull();
+      expect(prepared!.stagingKey).toMatch(
+        /^staging\/organizations\/.+\/[0-9a-f-]{36}$/,
+      );
+      expect(prepared!.finalKey).toMatch(
+        /^organizations\/.+\/attachments\/[0-9a-f-]{36}$/,
+      );
+      expect(prepared!.ticket).toBeTruthy();
+      expect(prepared!.fields["Content-Type"]).toBe("application/pdf");
+      expect(prepared!.fields["key"]).toBe(prepared!.stagingKey);
+
+      await stage(prepared!);
+      const declared = {
+        name: "direct.pdf",
+        mediaType: "application/pdf",
+        sizeBytes: PDF_FILE.bytes.byteLength,
+      };
+      const attachment = await finalizeAttachmentUpload(
+        { type: "INCIDENT", id: incidentA.id },
+        completionOf(prepared!),
+        declared,
+        {},
+        actorA.id,
+        storage,
+      );
+
+      expect(attachment.storageKey).toBe(prepared!.finalKey);
+      expect(attachment.checksumSha256).toBe(
+        createHash("sha256").update(PDF_FILE.bytes).digest("hex"),
+      );
+      expect(attachment.displayFilename).toBe("direct.pdf");
+      // The staging object is gone; the recorded key holds the bytes.
+      expect(storage.objects.has(prepared!.stagingKey)).toBe(false);
+      expect(storage.objects.has(prepared!.finalKey)).toBe(true);
+      expect(await eventActions(attachment.id)).toEqual(["UPLOADED", "LINKED"]);
+      const link = await prisma.incidentAttachment.findFirst({
+        where: { incidentId: incidentA.id, attachmentId: attachment.id },
+      });
+      expect(link).not.toBeNull();
+    });
+
+    it("falls back to proxied when the provider cannot direct-upload", async () => {
+      const legacy = { providerName: "local" } as never;
+      const prepared = await prepareAttachmentUpload(
+        { type: "ASSET", id: assetA.id },
+        {
+          name: "file.pdf",
+          mediaType: "application/pdf",
+          sizeBytes: PDF_FILE.bytes.byteLength,
+        },
+        {},
+        actorA.id,
+        legacy,
+      );
+      expect(prepared).toBeNull();
+    });
+
+    it("rejects a tampered ticket and a foreign staging key", async () => {
+      const prepared = await prepare("ASSET", assetA.id);
+      await stage(prepared!);
+      const declared = {
+        name: "x.pdf",
+        mediaType: "application/pdf",
+        sizeBytes: PDF_FILE.bytes.byteLength,
+      };
+      await expect(
+        finalizeAttachmentUpload(
+          { type: "ASSET", id: assetA.id },
+          completionOf(prepared!, { ticket: `${prepared!.ticket}x` }),
+          declared,
+          {},
+          actorA.id,
+          storage,
+        ),
+      ).rejects.toBeInstanceOf(AttachmentUploadGrantError);
+
+      // A grant replayed against a different staging key fails binding.
+      const forged = forge({
+        stagingKey: `staging/organizations/${orgB.id}/foreign`,
+        finalKey: `organizations/${orgB.id}/attachments/foreign`,
+      });
+      await expect(
+        finalizeAttachmentUpload(
+          { type: "ASSET", id: assetA.id },
+          {
+            stagingKey: `staging/organizations/${orgB.id}/foreign`,
+            finalKey: `organizations/${orgB.id}/attachments/foreign`,
+            ticket: forged,
+          },
+          declared,
+          {},
+          actorA.id,
+          storage,
+        ),
+      ).rejects.toBeInstanceOf(AttachmentUploadGrantError);
+    });
+
+    it("rejects a grant issued to a different actor", async () => {
+      const prepared = await prepare("ASSET", assetA.id);
+      await stage(prepared!);
+      await expect(
+        finalizeAttachmentUpload(
+          { type: "ASSET", id: assetA.id },
+          completionOf(prepared!),
+          {
+            name: "x.pdf",
+            mediaType: "application/pdf",
+            sizeBytes: PDF_FILE.bytes.byteLength,
+          },
+          {},
+          "a-different-actor",
+          storage,
+        ),
+      ).rejects.toBeInstanceOf(AttachmentUploadGrantError);
+    });
+
+    it("rejects and cleans a staged object whose bytes violate policy", async () => {
+      // Declared pdf, staged bytes are not a PDF at all. The grant is
+      // issued for the bogus length so verification reaches the content
+      // signature check.
+      const bogus = new TextEncoder().encode("definitely not a pdf");
+      const prepared = await prepare("ASSET", assetA.id, {
+        sizeBytes: bogus.byteLength,
+      });
+      await storage.put(prepared!.stagingKey, bogus, "application/pdf");
+      await expect(
+        finalizeAttachmentUpload(
+          { type: "ASSET", id: assetA.id },
+          completionOf(prepared!),
+          {
+            name: "x.pdf",
+            mediaType: "application/pdf",
+            sizeBytes: bogus.byteLength,
+          },
+          {},
+          actorA.id,
+          storage,
+        ),
+      ).rejects.toThrow(
+        /contents do not match the declared file type|does not match the authorized upload/,
+      );
+      // The rejected object was removed from staging.
+      expect(storage.objects.has(prepared!.stagingKey)).toBe(false);
+      expect(
+        await prisma.attachment.findFirst({
+          where: { storageKey: prepared!.finalKey },
+        }),
+      ).toBeNull();
+    });
+
+    it("rejects a staged object whose real size differs from the grant", async () => {
+      const prepared = await prepare("ASSET", assetA.id);
+      // Stage MORE bytes than declared — finalize must not trust the
+      // declared size.
+      const bigger = new Uint8Array(PDF_FILE.bytes.byteLength + 64);
+      bigger.set(PDF_FILE.bytes);
+      await storage.put(prepared!.stagingKey, bigger, "application/pdf");
+      await expect(
+        finalizeAttachmentUpload(
+          { type: "ASSET", id: assetA.id },
+          completionOf(prepared!),
+          {
+            name: "x.pdf",
+            mediaType: "application/pdf",
+            sizeBytes: PDF_FILE.bytes.byteLength,
+          },
+          {},
+          actorA.id,
+          storage,
+        ),
+      ).rejects.toThrow(/does not match the authorized upload/);
+      expect(storage.objects.has(prepared!.stagingKey)).toBe(false);
+    });
+
+    it("fails when the staging object never landed, and retries idempotently after success", async () => {
+      const prepared = await prepare("ASSET", assetA.id);
+      const declared = {
+        name: "x.pdf",
+        mediaType: "application/pdf",
+        sizeBytes: PDF_FILE.bytes.byteLength,
+      };
+      // Nothing staged — finalize has nothing to verify.
+      await expect(
+        finalizeAttachmentUpload(
+          { type: "ASSET", id: assetA.id },
+          completionOf(prepared!),
+          declared,
+          {},
+          actorA.id,
+          storage,
+        ),
+      ).rejects.toBeInstanceOf(AttachmentUploadGrantError);
+
+      // Complete the upload, then finalize a second time (client retry):
+      // the staging object is gone but the recorded key resolves to the
+      // already-committed attachment.
+      await stage(prepared!);
+      const first = await finalizeAttachmentUpload(
+        { type: "ASSET", id: assetA.id },
+        completionOf(prepared!),
+        declared,
+        {},
+        actorA.id,
+        storage,
+      );
+      const second = await finalizeAttachmentUpload(
+        { type: "ASSET", id: assetA.id },
+        completionOf(prepared!),
+        declared,
+        {},
+        actorA.id,
+        storage,
+      );
+      expect(second.id).toBe(first.id);
+    });
+
+    it("enforces the protected-record reason rule at prepare AND finalize", async () => {
+      const incident = await createIncident(
+        orgA.id,
+        { title: uniq("closed-direct") },
+        actorA.id,
+      );
+      await transitionIncidentStatus(incident.id, "CLOSED", actorA.id);
+
+      await expect(prepare("INCIDENT", incident.id)).rejects.toBeInstanceOf(
+        AttachmentReasonRequiredError,
+      );
+
+      const declared = {
+        name: "x.pdf",
+        mediaType: "application/pdf",
+        sizeBytes: PDF_FILE.bytes.byteLength,
+      };
+      const prepared = await prepare(
+        "INCIDENT",
+        incident.id,
+        {},
+        { reason: "late evidence" },
+      );
+      await stage(prepared!);
+      await expect(
+        finalizeAttachmentUpload(
+          { type: "INCIDENT", id: incident.id },
+          completionOf(prepared!),
+          declared,
+          {},
+          actorA.id,
+          storage,
+        ),
+      ).rejects.toBeInstanceOf(AttachmentReasonRequiredError);
+
+      const attachment = await finalizeAttachmentUpload(
+        { type: "INCIDENT", id: incident.id },
+        completionOf(prepared!),
+        declared,
+        { reason: "late evidence" },
+        actorA.id,
+        storage,
+      );
+      expect(attachment.id).toBeTruthy();
+    });
+
+    it("finalizes a document create and a document version", async () => {
+      const declared = {
+        name: "direct-doc.pdf",
+        mediaType: "application/pdf",
+        sizeBytes: PDF_FILE.bytes.byteLength,
+      };
+      const docPrepared = await prepareDocumentUpload(
+        orgA.id,
+        declared,
+        actorA.id,
+        storage,
+      );
+      await stage(docPrepared!);
+      const document = await finalizeDocumentCreate(
+        orgA.id,
+        completionOf(docPrepared!),
+        declared,
+        { title: "Direct Upload SOP", category: "SOP" },
+        "v1 note",
+        actorA.id,
+        storage,
+      );
+      const v1 = await prisma.organizationDocumentVersion.findFirstOrThrow({
+        where: { documentId: document.id },
+      });
+      const a1 = await prisma.attachment.findUniqueOrThrow({
+        where: { id: v1.attachmentId },
+      });
+      expect(a1.storageKey).toBe(docPrepared!.finalKey);
+      expect(storage.objects.has(a1.storageKey)).toBe(true);
+      expect(await eventActions(a1.id)).toEqual(["UPLOADED", "LINKED"]);
+
+      const vPrepared = await prepareDocumentVersionUpload(
+        document.id,
+        declared,
+        actorA.id,
+        storage,
+      );
+      await stage(vPrepared!);
+      const v2 = await finalizeDocumentVersion(
+        document.id,
+        completionOf(vPrepared!),
+        declared,
+        "v2 note",
+        actorA.id,
+        storage,
+      );
+      expect(v2.versionNumber).toBe(2);
+    });
   });
 });
