@@ -64,19 +64,15 @@ never committed, never in CI.
    preview-domain key.
 4. **Callout links** — `CALLOUT_RESPONSE_TOKEN_SECRET` _(secret)_.
    Required: `/respond` fails closed without it in production.
-5. **Object storage (S3-compatible)** _(secret + infra)_:
-   - Create a **private** bucket (AWS S3, Cloudflare R2, or MinIO).
-   - CORS: allow `POST` from the app origin only (`docs/attachments.md`
-     has the exact block).
-   - Lifecycle rule: expire the `staging/` prefix (suggested 7 days) —
-     abandoned direct uploads self-clean.
-   - IAM credential scoped to the one bucket: `s3:GetObject`,
-     `s3:PutObject`, `s3:DeleteObject` on `staging/*` and
-     `organizations/*` (see the minimal-IAM section of
-     `docs/attachments.md`).
-   - Set `FILE_STORAGE_PROVIDER=s3` + the five `FILE_STORAGE_S3_*`
-     vars. Uploads then flow direct-to-store; without this the deploy
-     keeps working but large uploads proxy through the action body.
+5. **Object storage (S3-compatible)** _(secret + infra)_ — the full
+   operator runbook, including copy-ready IAM policy, CORS block, and
+   lifecycle rule JSON, is the **"AWS S3 activation"** section of
+   `docs/attachments.md`. In short: a private bucket, CORS POST from
+   the app origin only, a 7-day `staging/` expiry, an IAM credential
+   scoped to `staging/*` + `organizations/*` on the one bucket, and the
+   five `FILE_STORAGE_S3_*` vars + `FILE_STORAGE_PROVIDER=s3`. Without
+   this the deploy keeps working but large uploads proxy through the
+   action body (Vercel ~4.5 MB cap).
 6. **Sentry** _(secret-adjacent)_ — `SENTRY_DSN`,
    `NEXT_PUBLIC_SENTRY_DSN`; `SENTRY_ORG`/`SENTRY_PROJECT`/
    `SENTRY_AUTH_TOKEN` for sourcemap upload.

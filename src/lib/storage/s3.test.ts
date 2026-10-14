@@ -1,3 +1,4 @@
+import { S3ServiceException } from "@aws-sdk/client-s3";
 import { describe, expect, it, vi } from "vitest";
 
 import { S3FileStorageProvider } from "./s3";
@@ -92,6 +93,50 @@ describe("S3FileStorageProvider — direct uploads", () => {
     expect(del).toMatchObject({
       Bucket: "sarbase-files",
       Key: "staging/organizations/org-1/uuid-1",
+    });
+  });
+
+  it("pins the promotion copy to the verified ETag", async () => {
+    const send = vi.fn().mockResolvedValue({});
+    const p = new S3FileStorageProvider({
+      bucket: "sarbase-files",
+      region: "us-east-1",
+      accessKeyId: "key",
+      secretAccessKey: "secret",
+      client: { send } as never,
+    });
+
+    await p.promoteObject(
+      "staging/organizations/org-1/uuid-1",
+      "organizations/org-1/attachments/uuid-2",
+      { ifMatchEtag: '"etag-observed-at-verify"' },
+    );
+
+    const [copy] = send.mock.calls.map(([command]) => command.input);
+    expect(copy.CopySourceIfMatch).toBe('"etag-observed-at-verify"');
+  });
+
+  it("maps a failed copy precondition to precondition_failed", async () => {
+    const send = vi.fn().mockRejectedValue(
+      new S3ServiceException({
+        name: "PreconditionFailed",
+        $fault: "client",
+        $metadata: { httpStatusCode: 412 },
+      }),
+    );
+    const p = new S3FileStorageProvider({
+      bucket: "b",
+      region: "r",
+      accessKeyId: "k",
+      secretAccessKey: "s",
+      client: { send } as never,
+    });
+
+    await expect(
+      p.promoteObject("a/b", "c/d", { ifMatchEtag: '"stale"' }),
+    ).rejects.toMatchObject({
+      name: "StorageError",
+      code: "precondition_failed",
     });
   });
 

@@ -194,10 +194,17 @@ The bucket must allow browser POSTs **from the app origin only**:
     "AllowedOrigins": ["https://<app-host>"],
     "AllowedMethods": ["POST"],
     "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
     "MaxAgeSeconds": 3000
   }
 ]
 ```
+
+`POST` is the only method the browser uses — uploads are presigned
+POSTs (multipart form); downloads are proxied through the application,
+so no `GET` exposure is needed or wanted. A preview bucket that serves
+hosted smoke tests adds the preview origins to `AllowedOrigins`, e.g.
+`"https://sar-base-*.vercel.app"`.
 
 ### Minimal IAM posture
 
@@ -208,6 +215,170 @@ signed by the server — the browser holds no credentials),
 `HeadObject` (covered by `GetObject`) on both. Scope all of it to the
 one bucket; a dedicated prefix or separate bucket per environment is
 required — **production and preview never share writable storage**.
+
+## AWS S3 activation (operator runbook)
+
+The `s3` provider uses exactly five AWS API operations — `PutObject`,
+`GetObject`, `HeadObject`, `CopyObject`, `DeleteObject` — plus presigned
+POST signing (no API call; the signature is computed locally). The
+IAM actions those map to are `s3:PutObject`, `s3:GetObject`,
+`s3:DeleteObject` — `HeadObject` is covered by `s3:GetObject`, and
+`CopyObject` reads the source (`s3:GetObject`) and writes the
+destination (`s3:PutObject`). The app never lists keys, so no
+`s3:ListBucket` is granted. All key material lives under exactly two
+prefixes: `staging/` and `organizations/`.
+
+Provider-specific behavior the finalize path relies on:
+
+- **`x-amz-copy-source-if-match`** (S3 `CopyObject` conditional
+  header) pins the promotion to the ETag observed during verification
+  — the TOCTOU guard. Native AWS S3 supports this; if you point
+  `FILE_STORAGE_S3_ENDPOINT` at an S3-compatible store instead, verify
+  it honors conditional copy headers (R2 and recent MinIO do; older
+  MinIO silently ignores them).
+- **ETag presence** — AWS S3 always returns an ETag from `HeadObject`.
+  If a compatible store ever returned none, promotion would proceed
+  unconditionally; do not use such a store.
+
+### 1. Create the bucket
+
+Production and preview get **separate buckets** — e.g.
+`sarbase-files-prod` and `sarbase-files-preview`. Separate buckets are
+the isolation boundary; prefix-sharing one bucket is weaker and not
+recommended.
+
+- **Region:** the AWS region closest to your Vercel function region —
+  `us-east-1` is the default unless Vercel is configured otherwise.
+- **Block Public Access:** all four settings ON (the default).
+- **Object Ownership:** "Bucket owner enforced" (the default — ACLs
+  disabled). The provider never sends ACLs; this must stay on.
+- **Default encryption:** SSE-S3 (AES-256) — the default. SSE-KMS is
+  optional hardening but adds key-policy complexity; only adopt it if
+  you need key-level audit.
+- **Versioning:** leave OFF. SARbase does its own record versioning,
+  and deletes are deliberate tombstones — S3 versioning would turn
+  every delete into a delete-marker pair and complicate lifecycle.
+  (If you want extra byte-level protection, rely on bucket backups or
+  replication instead.)
+
+### 2. Lifecycle rule — expire abandoned staging objects
+
+Apply to prefix `staging/`, expire current versions after **7 days**:
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "expire-abandoned-staging",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "staging/" },
+      "Expiration": { "Days": 7 }
+    }
+  ]
+}
+```
+
+This is the backstop for interrupted/abandoned direct uploads —
+finalize deletes staging objects on success, the lifecycle catches
+what never finalized.
+
+### 3. CORS
+
+Apply the CORS block from [Bucket CORS](#bucket-cors) above, with
+`AllowedOrigins` set to the real app origin
+(`https://<your-domain>`). The presigned POST is a multipart form
+submission — CORS-safelisted, so no preflight occurs — but the browser
+still needs `AllowedOrigins` to observe the response status.
+
+### 4. IAM policy and credentials
+
+Create a dedicated IAM user (e.g. `sarbase-app-prod`) with an inline or
+attached policy scoped to one bucket and two prefixes — replace
+`<BUCKET>`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SarbaseAttachmentObjects",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": [
+        "arn:aws:s3:::<BUCKET>/staging/*",
+        "arn:aws:s3:::<BUCKET>/organizations/*"
+      ]
+    }
+  ]
+}
+```
+
+Then create an access key pair for that user ("Application running
+outside AWS" use case). That pair feeds the `FILE_STORAGE_S3_*` Vercel
+variables — **the secret access key also derives the HMAC key that
+signs upload tickets**, so rotating it invalidates outstanding grants
+(15-minute window; harmless). Rotate by creating a second key, updating
+Vercel, redeploying, then deactivating the old key.
+
+The preview bucket gets its own user and policy with the same shape —
+**never reuse production credentials on a preview.**
+
+### 5. Vercel environment variables
+
+Production environment scope:
+
+| Variable                            | Value                     |
+| ----------------------------------- | ------------------------- |
+| `FILE_STORAGE_PROVIDER`             | `s3`                      |
+| `FILE_STORAGE_S3_BUCKET`            | `sarbase-files-prod`      |
+| `FILE_STORAGE_S3_REGION`            | `us-east-1` (your region) |
+| `FILE_STORAGE_S3_ACCESS_KEY_ID`     | the IAM access key        |
+| `FILE_STORAGE_S3_SECRET_ACCESS_KEY` | the IAM secret — SECRET   |
+
+Leave `FILE_STORAGE_S3_ENDPOINT` **unset** for AWS (it exists for
+R2/MinIO).
+
+Preview environment scope — only if preview uploads should exercise
+the real path: same five variables pointed at `sarbase-files-preview`
+plus `ALLOW_S3_IN_PREVIEW=true` (the resolver fails closed without the
+explicit opt-in — see `src/lib/storage/resolve.ts`).
+
+### 6. Verify activation
+
+After deploying with the variables set:
+
+1. **Upload** — as an org admin, attach a PDF to an incident. In
+   browser devtools the file POST goes to `https://<bucket>.s3.<region>
+.amazonaws.com` — no large request body reaches Vercel. A `204`
+   response is the normal AWS answer for presigned POST.
+2. **Download** — the attachment row downloads through
+   `/api/attachments/<id>/download` and the object exists under
+   `organizations/<orgId>/attachments/` in the bucket.
+3. **Access control** — `GET /api/attachments/<foreign-org-id>/download`
+   returns 404; the bucket itself has no public access (confirm with
+   the AWS "check public access" banner).
+4. **Cleanup** — start an upload and abandon it; confirm the
+   `staging/` lifecycle rule exists and will expire the object.
+5. **Failure mode** — if `FILE_STORAGE_S3_*` values are wrong the
+   provider fails closed at first use with a `StorageConfigError`;
+   uploads surface a safe error, nothing is written.
+
+### 7. Rollback
+
+Object storage is independent of code deploys: rolling back the Vercel
+deployment (instant rollback) restores the previous application
+behavior while the bucket and objects stay untouched. If storage is
+misconfigured, uploads/deletes fail with honest errors — nothing is
+silently lost, and metadata rows never claim an object exists without
+the object having been verified.
+
+### 8. Cost posture
+
+At attachment scale (≤ 25 MiB each, modest volume) S3 spend is
+dominated by storage — pennies per GB-month; requests and the
+staging-prefix lifecycle are negligible. Still set an **AWS Budgets**
+alert (e.g. $5/month with email notification) so a pathological uploader
+or a misconfigured loop shows up as an alert, not a bill.
 
 ### Proxied fallback
 
