@@ -60,6 +60,11 @@ model Organization {
   id        String   @id @default(cuid())
   name      String
   timezone  String   @default("UTC")
+  // When an admin dismissed the new-organization setup checklist. NULL
+  // means the checklist still shows until every item is complete or an
+  // admin hides it; it is guidance, never a gate — every item is
+  // optional and nothing in the application requires completing it.
+  setupChecklistDismissedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

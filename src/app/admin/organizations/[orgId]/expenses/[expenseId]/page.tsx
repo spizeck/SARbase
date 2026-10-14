@@ -649,6 +649,7 @@ export default async function ExpenseDetailPage({
               submittedByMemberId: detail.submittedByMemberId,
               paidByMemberId: detail.paidByMemberId,
             }}
+            orgId={orgId}
             vendors={vendorOptions}
             members={memberOptions}
             categories={categories}

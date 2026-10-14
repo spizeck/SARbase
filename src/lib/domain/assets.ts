@@ -466,8 +466,13 @@ export function listAssets(
     storageLocationId?: string;
     status?: "ACTIVE" | "INACTIVE" | "OUT_OF_SERVICE" | "RETIRED";
     includeRetired?: boolean;
+    /** Free-text match across the identifying fields. */
+    query?: string;
+    /** Exact (case-insensitive) category match. */
+    category?: string;
   } = {},
 ) {
+  const query = options.query?.trim();
   return prisma.asset.findMany({
     where: {
       organizationId,
@@ -480,9 +485,109 @@ export function listAssets(
       ...(options.storageLocationId
         ? { storageLocationId: options.storageLocationId }
         : {}),
+      ...(query
+        ? {
+            OR: [
+              { name: { contains: query, mode: "insensitive" } },
+              { manufacturer: { contains: query, mode: "insensitive" } },
+              { model: { contains: query, mode: "insensitive" } },
+              { serialNumber: { contains: query, mode: "insensitive" } },
+              { assetTag: { contains: query, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+      ...(options.category?.trim()
+        ? {
+            category: {
+              equals: options.category.trim(),
+              mode: "insensitive",
+            },
+          }
+        : {}),
     },
     orderBy: { name: "asc" },
     include: assetInclude,
+  });
+}
+
+/**
+ * Distinct categories already in use — the organization's emergent
+ * vocabulary, offered as filter options and form suggestions. Free
+ * text stays free text; there is no fixed taxonomy to maintain.
+ */
+export async function listAssetCategories(organizationId: string) {
+  const rows = await prisma.asset.findMany({
+    where: { organizationId, category: { not: null } },
+    select: { category: true },
+    distinct: ["category"],
+    orderBy: { category: "asc" },
+  });
+  return rows.map((r) => r.category!);
+}
+
+/**
+ * Distinct vendor strings already recorded on assets — merges with the
+ * org's Vendor records to seed the form's autocomplete, so free text
+ * converges on the established spellings over time.
+ */
+export async function listAssetVendorNames(organizationId: string) {
+  const rows = await prisma.asset.findMany({
+    where: { organizationId, vendor: { not: null } },
+    select: { vendor: true },
+    distinct: ["vendor"],
+    orderBy: { vendor: "asc" },
+  });
+  return rows.map((r) => r.vendor!);
+}
+
+/**
+ * Advisory duplicate detection: existing assets that share a serial
+ * number, asset tag, or (case-insensitive) exact name with the input.
+ * Deliberately not a hard constraint — two physically distinct assets
+ * can legitimately share a name, and serial numbers are optional. The
+ * caller surfaces these as "possible duplicates" and lets the user
+ * confirm rather than blocking the write.
+ */
+export function findPotentialAssetDuplicates(
+  organizationId: string,
+  input: {
+    name: string;
+    serialNumber?: string | null;
+    assetTag?: string | null;
+  },
+  options: { excludeId?: string; take?: number } = {},
+) {
+  return prisma.asset.findMany({
+    where: {
+      organizationId,
+      ...(options.excludeId ? { id: { not: options.excludeId } } : {}),
+      OR: [
+        ...(input.serialNumber
+          ? [
+              {
+                serialNumber: {
+                  equals: input.serialNumber,
+                  mode: "insensitive" as const,
+                },
+              },
+            ]
+          : []),
+        ...(input.assetTag
+          ? [
+              {
+                assetTag: {
+                  equals: input.assetTag,
+                  mode: "insensitive" as const,
+                },
+              },
+            ]
+          : []),
+        { name: { equals: input.name, mode: "insensitive" as const } },
+      ],
+    },
+    orderBy: { name: "asc" },
+    take: options.take ?? 5,
+    select: { id: true, name: true, assetTag: true, serialNumber: true },
   });
 }
 
@@ -630,6 +735,29 @@ export function getInventoryItem(id: string) {
     where: { id },
     include: itemInclude,
   });
+}
+
+/** Distinct inventory categories in use — same emergent-vocabulary
+ * approach as `listAssetCategories`. */
+export async function listInventoryCategories(organizationId: string) {
+  const rows = await prisma.inventoryItem.findMany({
+    where: { organizationId, category: { not: null } },
+    select: { category: true },
+    distinct: ["category"],
+    orderBy: { category: "asc" },
+  });
+  return rows.map((r) => r.category!);
+}
+
+/** Distinct vendor strings already recorded on inventory items. */
+export async function listInventoryVendorNames(organizationId: string) {
+  const rows = await prisma.inventoryItem.findMany({
+    where: { organizationId, vendor: { not: null } },
+    select: { vendor: true },
+    distinct: ["vendor"],
+    orderBy: { vendor: "asc" },
+  });
+  return rows.map((r) => r.vendor!);
 }
 
 export async function createInventoryItem(

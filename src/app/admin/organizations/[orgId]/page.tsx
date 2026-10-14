@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { getOrganization } from "@/lib/domain/organization";
+import { getOrganizationSetup } from "@/lib/domain/setup";
 import { listMembers } from "@/lib/domain/member";
 import {
   listQualificationDefinitions,
@@ -23,6 +24,7 @@ import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
 
 import {
   updateOrganizationAction,
+  setSetupChecklistDismissedAction,
   createUnitAction,
   updateUnitAction,
   createMemberAction,
@@ -31,6 +33,7 @@ import {
   setQualificationDefinitionStatusAction,
   createTrainingEventAction,
 } from "../../actions";
+import { SetupChecklist } from "../../setup-checklist";
 import {
   OrganizationForm,
   UnitCreateForm,
@@ -146,6 +149,7 @@ export default async function OrganizationPage({
     to: trainingToDate,
   });
   const allMembers = await listMembers(orgId);
+  const setup = await getOrganizationSetup(orgId);
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
@@ -252,6 +256,22 @@ export default async function OrganizationPage({
           Expenses
         </Link>
       </nav>
+
+      {setup && (
+        <SetupChecklist
+          setup={setup}
+          dismissAction={setSetupChecklistDismissedAction.bind(
+            null,
+            orgId,
+            true,
+          )}
+          restoreAction={setSetupChecklistDismissedAction.bind(
+            null,
+            orgId,
+            false,
+          )}
+        />
+      )}
 
       <section aria-labelledby="units-heading" className="mt-10">
         <h2 id="units-heading" className="text-lg font-medium">
