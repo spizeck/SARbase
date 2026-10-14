@@ -24,6 +24,7 @@
 export type StorageErrorCode =
   | "config_missing"
   | "object_not_found"
+  | "precondition_failed"
   | "provider_unavailable"
   | "provider_error";
 
@@ -64,6 +65,14 @@ export interface StorageObjectStream {
 export interface StorageObjectStat {
   sizeBytes: number;
   contentType: string | null;
+  /**
+   * Opaque version token for the observed object (S3 ETag, memory
+   * content hash). Direct-upload finalization pins the promotion copy
+   * to the verified object via `ifMatchEtag` — the presigned POST stays
+   * valid until expiry, so without a precondition the staged object
+   * could be re-uploaded between verification and promote.
+   */
+  etag?: string | null;
 }
 
 /**
@@ -136,6 +145,15 @@ export interface FileStorageProvider {
    * (an object-store copy, never a byte round-trip through the app),
    * then remove the staging object. Present iff `createUploadTarget` is:
    * a staged direct upload must be promotable before it is recorded.
+   * `options.ifMatchEtag` makes the copy conditional on the source
+   * object still being the verified version — the grant that wrote it
+   * is live until expiry and could overwrite it mid-finalize. Providers
+   * that cannot enforce the precondition ignore it (in-memory fakes
+   * model it for tests).
    */
-  promoteObject?(stagingKey: string, finalKey: string): Promise<void>;
+  promoteObject?(
+    stagingKey: string,
+    finalKey: string,
+    options?: { ifMatchEtag?: string },
+  ): Promise<void>;
 }

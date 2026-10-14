@@ -165,7 +165,10 @@ client → finalize action → verified, promoted, recorded
    organization's staging namespace, `HEAD`s the staging object, then
    **streams it once** computing SHA-256 and sampling the head for the
    magic-byte/text checks — against the real stored bytes, not client
-   claims. On success it `CopyObject`s staging → final key, deletes the
+   claims. On success it `CopyObject`s staging → final key **pinned to
+   the verified ETag** (`x-amz-copy-source-if-match` — the presigned
+   POST stays valid until expiry, so a replayed grant cannot swap the
+   object's bytes between verification and promotion), deletes the
    staging copy, and commits `Attachment` + link + `UPLOADED`/`LINKED`
    events in one transaction.
 4. **Compensation** — a failed commit deletes the promoted object;

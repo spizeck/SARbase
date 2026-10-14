@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   StorageError,
   type DirectUploadTarget,
@@ -23,7 +25,7 @@ export class InMemoryFileStorageProvider implements FileStorageProvider {
 
   readonly objects = new Map<
     string,
-    { body: Uint8Array; contentType: string }
+    { body: Uint8Array; contentType: string; etag: string }
   >();
   readonly calls: { op: string; key: string }[] = [];
 
@@ -44,7 +46,13 @@ export class InMemoryFileStorageProvider implements FileStorageProvider {
 
   async put(key: string, body: Uint8Array, contentType: string): Promise<void> {
     this.maybeFail("put", key);
-    this.objects.set(key, { body: new Uint8Array(body), contentType });
+    this.objects.set(key, {
+      body: new Uint8Array(body),
+      contentType,
+      // A cheap content etag: re-uploading different bytes (the grant
+      // replay CodeRabbit flagged) produces a different version token.
+      etag: `mem-${createHash("sha256").update(body).digest("hex").slice(0, 16)}`,
+    });
   }
 
   async openRead(key: string): Promise<StorageObjectStream> {
@@ -77,6 +85,7 @@ export class InMemoryFileStorageProvider implements FileStorageProvider {
     return {
       sizeBytes: object.body.byteLength,
       contentType: object.contentType,
+      etag: object.etag,
     };
   }
 
@@ -111,13 +120,23 @@ export class InMemoryFileStorageProvider implements FileStorageProvider {
     };
   }
 
-  async promoteObject(stagingKey: string, finalKey: string): Promise<void> {
+  async promoteObject(
+    stagingKey: string,
+    finalKey: string,
+    options?: { ifMatchEtag?: string },
+  ): Promise<void> {
     this.maybeFail("promoteObject", stagingKey);
     const object = this.objects.get(stagingKey);
     if (!object) {
       throw new StorageError(
         "object_not_found",
         "The stored object does not exist.",
+      );
+    }
+    if (options?.ifMatchEtag && object.etag !== options.ifMatchEtag) {
+      throw new StorageError(
+        "precondition_failed",
+        "The stored object changed while it was being verified.",
       );
     }
     this.objects.set(finalKey, object);

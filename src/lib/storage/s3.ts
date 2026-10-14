@@ -123,6 +123,7 @@ export class S3FileStorageProvider implements FileStorageProvider {
       return {
         sizeBytes: response.ContentLength ?? 0,
         contentType: response.ContentType ?? null,
+        etag: response.ETag ?? null,
       };
     } catch (error) {
       if (isS3NotFound(error)) {
@@ -181,8 +182,19 @@ export class S3FileStorageProvider implements FileStorageProvider {
    * staging object. A failed staging delete leaves a duplicate that the
    * documented staging-prefix lifecycle rule expires — the final object
    * is authoritative and the operation still succeeds.
+   *
+   * `ifMatchEtag` sets x-amz-copy-source-if-match: the presigned POST
+   * stays valid until expiry, so the grant holder could re-upload the
+   * staging object between our verify pass and this copy. Pinning the
+   * copy to the observed ETag makes a swapped object fail the
+   * promotion (S3 answers 412 PreconditionFailed) instead of recording
+   * unverified bytes under a mismatched checksum.
    */
-  async promoteObject(stagingKey: string, finalKey: string) {
+  async promoteObject(
+    stagingKey: string,
+    finalKey: string,
+    options?: { ifMatchEtag?: string },
+  ) {
     assertStorageKeyShape(stagingKey);
     assertStorageKeyShape(finalKey);
     try {
@@ -191,6 +203,7 @@ export class S3FileStorageProvider implements FileStorageProvider {
           Bucket: this.bucket,
           Key: finalKey,
           CopySource: `${this.bucket}/${stagingKey}`,
+          CopySourceIfMatch: options?.ifMatchEtag,
         }),
       );
     } catch (error) {
@@ -228,6 +241,16 @@ function mapS3Error(error: unknown, operation: string): StorageError {
       return new StorageError(
         "object_not_found",
         "The stored object does not exist.",
+        error,
+      );
+    }
+    if (status === 412) {
+      // Conditional copy (copy-source-if-match): the staged object was
+      // replaced after verification — the finalize must restart, not
+      // record whatever arrived last.
+      return new StorageError(
+        "precondition_failed",
+        "The stored object changed while it was being verified.",
         error,
       );
     }

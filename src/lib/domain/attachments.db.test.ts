@@ -970,6 +970,49 @@ describe.skipIf(!hasDb)("attachments (issue #16)", () => {
       expect(storage.objects.has(prepared!.stagingKey)).toBe(false);
     });
 
+    it("rejects and cleans when the staging object is re-uploaded after verification", async () => {
+      // The presigned POST stays valid until expiry — a grant holder
+      // can POST the same key again after our verify pass. The promote
+      // is pinned to the verified ETag, so the swap fails the finalize
+      // (grant error) instead of recording unverified bytes.
+      const prepared = await prepare("ASSET", assetA.id);
+      await stage(prepared!);
+      // Replay the grant with different bytes of the same declared size
+      // and type AFTER head/verify but before promote — the store edge
+      // would accept the replay; the ETag precondition must not.
+      const swapped = new Uint8Array(PDF_FILE.bytes);
+      swapped[10] = swapped[10]! ^ 0xff;
+      const originalOpenRead = storage.openRead.bind(storage);
+      storage.openRead = async (key: string) => {
+        const result = await originalOpenRead(key);
+        // Simulate a mid-finalize overwrite: the read stream still
+        // yields the verified bytes, but the live object is new.
+        await storage.put(key, swapped, "application/pdf");
+        return result;
+      };
+      try {
+        await expect(
+          finalizeAttachmentUpload(
+            { type: "ASSET", id: assetA.id },
+            completionOf(prepared!),
+            {
+              name: "x.pdf",
+              mediaType: "application/pdf",
+              sizeBytes: PDF_FILE.bytes.byteLength,
+            },
+            {},
+            actorA.id,
+            storage,
+          ),
+        ).rejects.toBeInstanceOf(AttachmentUploadGrantError);
+      } finally {
+        storage.openRead = originalOpenRead;
+      }
+      // The swapped object was cleaned — nothing promoted or recorded.
+      expect(storage.objects.has(prepared!.stagingKey)).toBe(false);
+      expect(storage.objects.has(prepared!.finalKey)).toBe(false);
+    });
+
     it("fails when the staging object never landed, and retries idempotently after success", async () => {
       const prepared = await prepare("ASSET", assetA.id);
       const declared = {

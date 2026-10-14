@@ -1143,7 +1143,22 @@ async function verifyStagedUpload(
     throw error;
   }
 
-  await storage.promoteObject(staged.stagingKey, staged.finalKey);
+  // Pin the promotion to the verified object version. The presigned
+  // POST stays valid until expiry: without the precondition the grant
+  // holder could re-POST the same key between this verify pass and the
+  // copy — promoting bytes that never saw the signature checks and
+  // recording a checksum that doesn't match. A 412 means "restart".
+  try {
+    await storage.promoteObject(staged.stagingKey, staged.finalKey, {
+      ifMatchEtag: stat.etag ?? undefined,
+    });
+  } catch (error) {
+    if (error instanceof StorageError && error.code === "precondition_failed") {
+      await cleanupStagingObject(storage, staged.stagingKey, organizationId);
+      throw new AttachmentUploadGrantError();
+    }
+    throw error;
+  }
   return {
     kind: "verified",
     finalKey: staged.finalKey,
