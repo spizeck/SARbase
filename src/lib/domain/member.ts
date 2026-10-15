@@ -2,7 +2,11 @@ import { prisma } from "@/lib/prisma";
 import { log } from "@/lib/logging";
 import { normalizePhoneField } from "@/lib/contact";
 
-import type { MemberInput, MemberStatusInput } from "./schemas";
+import type {
+  MemberContactDetailsInput,
+  MemberInput,
+  MemberStatusInput,
+} from "./schemas";
 
 /**
  * Thrown when a member is assigned to a unit outside their organization.
@@ -61,6 +65,55 @@ export async function getMember(id: string) {
   });
 }
 
+/**
+ * The member-editable contact fields and their audit context (issue
+ * #71). Every write — admin or self-service — appends one
+ * MemberContactChange row per changed field inside the same
+ * transaction, so the member's contact history is one continuous,
+ * attributable record.
+ */
+const CONTACT_AUDIT_FIELDS = [
+  "email",
+  "phone",
+  "emergencyContactName",
+  "emergencyContactPhone",
+] as const;
+
+type ContactAuditField = (typeof CONTACT_AUDIT_FIELDS)[number];
+
+interface ContactAudit {
+  actorAuthIdentityId: string;
+  /** True when the actor edited their own linked member record. */
+  selfReported: boolean;
+}
+
+/** Append change rows for whichever contact fields actually changed. */
+async function auditContactChanges(
+  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+  before: Record<ContactAuditField, string | null> & {
+    id: string;
+    organizationId: string;
+  },
+  after: Record<ContactAuditField, string | null>,
+  audit: ContactAudit,
+) {
+  const rows = CONTACT_AUDIT_FIELDS.filter(
+    (field) => (before[field] ?? null) !== (after[field] ?? null),
+  ).map((field) => ({
+    organizationId: before.organizationId,
+    memberId: before.id,
+    field,
+    previousValue: before[field],
+    newValue: after[field],
+    selfReported: audit.selfReported,
+    actorAuthIdentityId: audit.actorAuthIdentityId,
+  }));
+  if (rows.length > 0) {
+    await tx.memberContactChange.createMany({ data: rows });
+  }
+  return rows.length;
+}
+
 export async function createMember(organizationId: string, input: MemberInput) {
   const member = await prisma.member.create({
     data: {
@@ -68,6 +121,11 @@ export async function createMember(organizationId: string, input: MemberInput) {
       displayName: input.displayName,
       email: input.email ?? null,
       phone: normalizePhoneField(input.phone, input.phoneRegion),
+      emergencyContactName: input.emergencyContactName ?? null,
+      emergencyContactPhone: normalizePhoneField(
+        input.emergencyContactPhone,
+        input.emergencyContactPhoneRegion,
+      ),
     },
   });
   log({
@@ -80,14 +138,40 @@ export async function createMember(organizationId: string, input: MemberInput) {
   return member;
 }
 
-export async function updateMember(id: string, input: MemberInput) {
-  const member = await prisma.member.update({
-    where: { id },
-    data: {
-      displayName: input.displayName,
-      email: input.email ?? null,
-      phone: normalizePhoneField(input.phone, input.phoneRegion),
-    },
+export async function updateMember(
+  id: string,
+  input: MemberInput,
+  audit?: ContactAudit,
+) {
+  const member = await prisma.$transaction(async (tx) => {
+    const before = await tx.member.findUniqueOrThrow({ where: { id } });
+    const updated = await tx.member.update({
+      where: { id },
+      data: {
+        displayName: input.displayName,
+        email: input.email ?? null,
+        phone: normalizePhoneField(input.phone, input.phoneRegion),
+        emergencyContactName: input.emergencyContactName ?? null,
+        emergencyContactPhone: normalizePhoneField(
+          input.emergencyContactPhone,
+          input.emergencyContactPhoneRegion,
+        ),
+      },
+    });
+    if (audit) {
+      await auditContactChanges(
+        tx,
+        before,
+        {
+          email: updated.email,
+          phone: updated.phone,
+          emergencyContactName: updated.emergencyContactName,
+          emergencyContactPhone: updated.emergencyContactPhone,
+        },
+        audit,
+      );
+    }
+    return updated;
   });
   log({
     event: "member.updated",
@@ -97,6 +181,61 @@ export async function updateMember(id: string, input: MemberInput) {
     organizationId: member.organizationId,
   });
   return member;
+}
+
+/**
+ * Member self-service contact edit (issue #71). The caller has already
+ * verified `memberId` resolves to a Member linked to their identity in
+ * an organization they currently hold access to — this function only
+ * performs the audited write. displayName is not member-editable.
+ */
+export async function updateMemberContactDetails(
+  memberId: string,
+  input: MemberContactDetailsInput,
+  actorAuthIdentityId: string,
+) {
+  const member = await prisma.$transaction(async (tx) => {
+    const before = await tx.member.findUniqueOrThrow({
+      where: { id: memberId },
+    });
+    const next = {
+      email: input.email ?? null,
+      phone: normalizePhoneField(input.phone, input.phoneRegion),
+      emergencyContactName: input.emergencyContactName ?? null,
+      emergencyContactPhone: normalizePhoneField(
+        input.emergencyContactPhone,
+        input.emergencyContactPhoneRegion,
+      ),
+    };
+    const updated = await tx.member.update({
+      where: { id: memberId },
+      data: next,
+    });
+    await auditContactChanges(tx, before, next, {
+      actorAuthIdentityId,
+      selfReported: true,
+    });
+    return updated;
+  });
+  log({
+    event: "member.contact_updated",
+    subsystem: "domain",
+    entityType: "Member",
+    entityId: member.id,
+    organizationId: member.organizationId,
+    actorId: actorAuthIdentityId,
+    selfReported: true,
+  });
+  return member;
+}
+
+/** A member's contact-field change history, newest first. */
+export function listMemberContactChanges(memberId: string, limit = 50) {
+  return prisma.memberContactChange.findMany({
+    where: { memberId },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+  });
 }
 
 /**

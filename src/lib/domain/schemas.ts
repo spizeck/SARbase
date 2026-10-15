@@ -93,23 +93,33 @@ const phoneContactFields = {
  * Region-aware phone validity check for object schemas that collect
  * `{ phone, phoneRegion }` — surfaces a field error on `phone`.
  */
-function phoneRefinement(
-  data: { phone?: string; phoneRegion?: string },
+function phonePairRefinement<K extends string>(
+  data: Partial<Record<K, string | undefined>>,
   ctx: z.RefinementCtx,
+  phoneField: K,
+  regionField: K,
 ): void {
-  if (data.phone == null) return;
+  const phone = data[phoneField];
+  if (phone == null) return;
   try {
-    normalizePhoneNumber(data.phone, data.phoneRegion);
+    normalizePhoneNumber(phone, data[regionField]);
   } catch (error) {
     ctx.addIssue({
       code: "custom",
-      path: ["phone"],
+      path: [phoneField],
       message:
         error instanceof PhoneNumberInvalidError
           ? error.message
           : "Enter a valid phone number.",
     });
   }
+}
+
+function phoneRefinement(
+  data: { phone?: string; phoneRegion?: string },
+  ctx: z.RefinementCtx,
+): void {
+  phonePairRefinement(data, ctx, "phone", "phoneRegion");
 }
 
 /**
@@ -143,14 +153,62 @@ export const unitInputSchema = z.object({
 });
 export type UnitInput = z.infer<typeof unitInputSchema>;
 
+/**
+ * Emergency-contact pair (issue #71) — same permissive phone policy as
+ * the member's own number; the name is a free-text label.
+ */
+export const emergencyContactFields = {
+  emergencyContactName: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().max(120).optional(),
+  ),
+  emergencyContactPhone: phoneSchema,
+  emergencyContactPhoneRegion: phoneRegionSchema,
+} as const;
+
+function emergencyPhoneRefinement(
+  data: {
+    emergencyContactPhone?: string;
+    emergencyContactPhoneRegion?: string;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  phonePairRefinement(
+    data,
+    ctx,
+    "emergencyContactPhone",
+    "emergencyContactPhoneRegion",
+  );
+}
+
 export const memberInputSchema = z
   .object({
     displayName: displayNameSchema,
     email: emailSchema,
     ...phoneContactFields,
+    ...emergencyContactFields,
   })
-  .superRefine(phoneRefinement);
+  .superRefine(phoneRefinement)
+  .superRefine(emergencyPhoneRefinement);
 export type MemberInput = z.infer<typeof memberInputSchema>;
+
+/**
+ * Member self-service contact edit (issue #71) — the subset of Member
+ * fields a signed-in member may change on their own linked record.
+ * displayName is deliberately absent: the roster name is administrative
+ * data. Every write is audited by MemberContactChange rows.
+ */
+export const memberContactDetailsSchema = z
+  .object({
+    email: emailSchema,
+    ...phoneContactFields,
+    ...emergencyContactFields,
+  })
+  .superRefine(phoneRefinement)
+  .superRefine(emergencyPhoneRefinement);
+export type MemberContactDetailsInput = z.infer<
+  typeof memberContactDetailsSchema
+>;
 
 /**
  * Member invitation issuance — the admin's explicit destination and role
@@ -233,6 +291,73 @@ export const memberQualificationInputSchema = z
 export type MemberQualificationInput = z.infer<
   typeof memberQualificationInputSchema
 >;
+
+/**
+ * Member self-service submissions (issue #71). A QUALIFICATION_CLAIM
+ * asserts the member holds a certification — the claim names the org's
+ * QualificationDefinition it matches plus the claimed details. A
+ * RECORD_CORRECTION reports a problem with an existing record, naming
+ * the member's own MemberQualification when it concerns one.
+ * Submission never mutates a verified record — only admin review can.
+ */
+export const memberSubmissionInputSchema = z
+  .object({
+    kind: z.enum(["QUALIFICATION_CLAIM", "RECORD_CORRECTION"]),
+    details: z.string().trim().min(1, "Describe the submission.").max(2000),
+    qualificationDefinitionId: z.preprocess(
+      emptyToUndefined,
+      z.string().min(1).optional(),
+    ),
+    issuedOn: dateOnlySchema,
+    expiresOn: dateOnlySchema,
+    issuer: optionalText(120),
+    reference: optionalText(120),
+    targetMemberQualificationId: z.preprocess(
+      emptyToUndefined,
+      z.string().min(1).optional(),
+    ),
+  })
+  .refine(
+    (value) =>
+      !value.issuedOn || !value.expiresOn || value.expiresOn >= value.issuedOn,
+    {
+      message: "Expiry cannot be earlier than the issue date.",
+      path: ["expiresOn"],
+    },
+  )
+  .superRefine((value, ctx) => {
+    if (
+      value.kind === "QUALIFICATION_CLAIM" &&
+      !value.qualificationDefinitionId
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["qualificationDefinitionId"],
+        message: "Choose the qualification this evidence is for.",
+      });
+    }
+  });
+export type MemberSubmissionInput = z.infer<typeof memberSubmissionInputSchema>;
+
+/**
+ * Administrator review of a member submission. Feedback is required on
+ * a rejection — the member sees the note verbatim.
+ */
+export const submissionReviewSchema = z
+  .object({
+    decision: z.enum(["APPROVED", "REJECTED"]),
+    note: optionalText(500),
+  })
+  .superRefine((value, ctx) => {
+    if (value.decision === "REJECTED" && !value.note) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["note"],
+        message: "Tell the member why this was not accepted.",
+      });
+    }
+  });
+export type SubmissionReviewInput = z.infer<typeof submissionReviewSchema>;
 
 /**
  * Required calendar-date input ("YYYY-MM-DD") → a Date pinned to UTC

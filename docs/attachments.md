@@ -89,8 +89,10 @@ survives.
 
 ### Explicit link tables
 
-Nine same-org link tables — `IncidentAttachment`, `IncidentNoteAttachment`,
-`MemberQualificationAttachment`, `TrainingEventAttachment`, `AssetAttachment`,
+Ten same-org link tables — `IncidentAttachment`, `IncidentNoteAttachment`,
+`MemberQualificationAttachment`, `MemberSubmissionAttachment` (issue #71
+member-filed evidence),
+`TrainingEventAttachment`, `AssetAttachment`,
 `InspectionRecordAttachment`, `MaintenanceRecordAttachment`, `DefectAttachment`,
 `ExpenseAttachment` (issue #17 receipts and invoices)
 — each with a composite `(targetId, organizationId)` FK to the target,
@@ -728,6 +730,12 @@ silent.
   The allowlist, magic-byte checks, `attachment` disposition, and
   `nosniff` remain as layered mitigations on top.
 - Callout response tokens and `/respond` paths have no attachment access.
+- **Member evidence (issue #71).** `MEMBER_SUBMISSION` targets admit the
+  owning member (resolved server-side via `linkedMembersWithAccess`,
+  never a client-supplied id) for upload/unlink/download while the
+  submission is `PENDING`; the domain freezes the evidence set at review
+  by re-checking status inside the write transaction. Physical delete
+  stays admin-only.
 
 ## Backup and restore
 

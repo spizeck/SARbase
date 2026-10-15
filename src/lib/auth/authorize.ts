@@ -536,6 +536,80 @@ export async function requireOrgAdminForAttachment(
   return attachment;
 }
 
+/**
+ * Issue #71 member-scope attachment access — evidence files on the
+ * caller's OWN records. A non-admin may download an attachment only
+ * when it is linked to a MemberSubmission they filed or a
+ * MemberQualification on their own linked member record, in an
+ * organization they currently hold access to. Same opaque denial as
+ * every other scope check.
+ */
+export async function requireAttachmentForAdminOrOwner(
+  ctx: AuthContext,
+  attachmentId: string,
+) {
+  const attachment = await prisma.attachment.findUnique({
+    where: { id: attachmentId },
+    include: {
+      submissionLinks: {
+        select: {
+          memberSubmission: { select: { memberId: true } },
+        },
+      },
+      qualificationLinks: {
+        select: {
+          memberQualification: { select: { memberId: true } },
+        },
+      },
+    },
+  });
+  if (!attachment) {
+    logDenial("authz.attachment_scope_denied", ctx, {
+      entityId: attachmentId,
+    });
+    throw new AuthorizationError();
+  }
+  if (isOrgAdmin(ctx, attachment.organizationId)) return attachment;
+
+  const ownMemberIds = new Set(linkedMembersWithAccess(ctx).map((m) => m.id));
+  const isOwn =
+    attachment.submissionLinks.some((l) =>
+      ownMemberIds.has(l.memberSubmission.memberId),
+    ) ||
+    attachment.qualificationLinks.some((l) =>
+      ownMemberIds.has(l.memberQualification.memberId),
+    );
+  if (!isOwn) {
+    logDenial("authz.attachment_scope_denied", ctx, {
+      entityId: attachmentId,
+    });
+    throw new AuthorizationError();
+  }
+  return attachment;
+}
+
+/**
+ * Member-submission lookup — same rule: the caller-supplied id is an
+ * untrusted selector; the submission's own organizationId decides which
+ * grant must exist.
+ */
+export async function requireOrgAdminForMemberSubmission(
+  ctx: AuthContext,
+  submissionId: string,
+) {
+  const submission = await prisma.memberSubmission.findUnique({
+    where: { id: submissionId },
+    include: { member: { select: { displayName: true } } },
+  });
+  if (!submission || !isOrgAdmin(ctx, submission.organizationId)) {
+    logDenial("authz.submission_scope_denied", ctx, {
+      entityId: submissionId,
+    });
+    throw new AuthorizationError();
+  }
+  return submission;
+}
+
 export async function requireOrgAdminForOrganizationDocument(
   ctx: AuthContext,
   documentId: string,
@@ -631,6 +705,8 @@ export async function requireOrgAdminForAttachmentTarget(
       return await requireOrgAdminForIncidentNote(ctx, entityId);
     case "MEMBER_QUALIFICATION":
       return await requireOrgAdminForQualification(ctx, entityId);
+    case "MEMBER_SUBMISSION":
+      return await requireOrgAdminForMemberSubmission(ctx, entityId);
     case "TRAINING_EVENT":
       return await requireOrgAdminForTrainingEvent(ctx, entityId);
     case "ASSET":

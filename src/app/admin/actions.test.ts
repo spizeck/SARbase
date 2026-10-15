@@ -14,6 +14,11 @@ const {
   memberUnitCreateManyMock,
   authIdentityFindManyMock,
   organizationAccessUpsertMock,
+  memberSubmissionFindUniqueMock,
+  submissionQueryRawMock,
+  submissionUpdateMock,
+  memberQualificationCreateMock,
+  memberQualificationAttachmentCreateManyMock,
 } = vi.hoisted(() => ({
   getAuthContextMock: vi.fn(),
   redirectMock: vi.fn(() => {
@@ -30,6 +35,11 @@ const {
   memberUnitCreateManyMock: vi.fn(),
   authIdentityFindManyMock: vi.fn(),
   organizationAccessUpsertMock: vi.fn(),
+  memberSubmissionFindUniqueMock: vi.fn(),
+  submissionQueryRawMock: vi.fn(),
+  submissionUpdateMock: vi.fn(),
+  memberQualificationCreateMock: vi.fn(),
+  memberQualificationAttachmentCreateManyMock: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({ redirect: redirectMock }));
@@ -56,6 +66,9 @@ vi.mock("@/lib/prisma", () => ({
     },
     authIdentity: { findMany: authIdentityFindManyMock },
     organizationAccess: { upsert: organizationAccessUpsertMock },
+    memberSubmission: {
+      findUnique: memberSubmissionFindUniqueMock,
+    },
     $transaction: vi.fn(async (arg) => {
       if (Array.isArray(arg)) return Promise.all(arg);
       return arg({
@@ -64,8 +77,20 @@ vi.mock("@/lib/prisma", () => ({
           createMany: memberUnitCreateManyMock,
         },
         unit: { findMany: vi.fn().mockResolvedValue([]) },
-        member: { update: memberUpdateMock },
+        member: {
+          update: memberUpdateMock,
+          findUniqueOrThrow: memberFindUniqueMock,
+        },
         organizationAccess: { upsert: organizationAccessUpsertMock },
+        $queryRaw: submissionQueryRawMock,
+        memberSubmission: {
+          findUniqueOrThrow: memberSubmissionFindUniqueMock,
+          update: submissionUpdateMock,
+        },
+        memberQualification: { create: memberQualificationCreateMock },
+        memberQualificationAttachment: {
+          createMany: memberQualificationAttachmentCreateManyMock,
+        },
       });
     }),
   },
@@ -80,6 +105,7 @@ import {
   createMemberAction,
   createUnitAction,
   linkIdentityToMemberAction,
+  reviewMemberSubmissionAction,
   setMemberStatusAction,
   setMemberUnitsAction,
   unlinkIdentityFromMemberAction,
@@ -356,6 +382,118 @@ describe("in-scope admin operations", () => {
     expect(memberUpdateMock).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ phone: "+12462260000" }),
+      }),
+    );
+  });
+});
+
+describe("member submission review (issue #71)", () => {
+  const PENDING_CLAIM = {
+    id: "sub-a",
+    organizationId: ORG_A,
+    memberId: "member-a",
+    kind: "QUALIFICATION_CLAIM",
+    status: "PENDING",
+    qualificationDefinitionId: "def-a",
+    issuedOn: null,
+    expiresOn: null,
+    issuer: null,
+    reference: null,
+    details: "claim details",
+    attachments: [],
+    member: { displayName: "Person" },
+  };
+
+  beforeEach(() => {
+    getAuthContextMock.mockResolvedValue(actor("ADMIN", ORG_A));
+    memberSubmissionFindUniqueMock.mockResolvedValue(PENDING_CLAIM);
+    // The row lock returns the id; the reload returns the pending row.
+    submissionQueryRawMock.mockResolvedValue([{ id: "sub-a" }]);
+    memberQualificationCreateMock.mockResolvedValue({ id: "mq-new" });
+    submissionUpdateMock.mockResolvedValue({
+      ...PENDING_CLAIM,
+      status: "APPROVED",
+    });
+  });
+
+  it("a foreign-org admin gets the same opaque not-found", async () => {
+    memberSubmissionFindUniqueMock.mockResolvedValue({
+      ...PENDING_CLAIM,
+      organizationId: ORG_B,
+    });
+    const result = await reviewMemberSubmissionAction(
+      "sub-a",
+      {},
+      formData({ decision: "APPROVED" }),
+    );
+    expect(result).toEqual({ message: "Not found." });
+    expect(submissionUpdateMock).not.toHaveBeenCalled();
+  });
+
+  it("a missing submission is indistinguishable from a foreign one", async () => {
+    memberSubmissionFindUniqueMock.mockResolvedValue(null);
+    const result = await reviewMemberSubmissionAction(
+      "missing",
+      {},
+      formData({ decision: "APPROVED" }),
+    );
+    expect(result).toEqual({ message: "Not found." });
+  });
+
+  it("a non-admin member of the org cannot review", async () => {
+    getAuthContextMock.mockResolvedValue(actor("MEMBER", ORG_A));
+    const result = await reviewMemberSubmissionAction(
+      "sub-a",
+      {},
+      formData({ decision: "APPROVED" }),
+    );
+    expect(result).toEqual({ message: "Not found." });
+    expect(submissionUpdateMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid decision value before touching the row", async () => {
+    const result = await reviewMemberSubmissionAction(
+      "sub-a",
+      {},
+      formData({ decision: "MAYBE" }),
+    );
+    expect(result.fieldErrors?.decision).toBeDefined();
+    expect(submissionQueryRawMock).not.toHaveBeenCalled();
+  });
+
+  it("rejection without a note surfaces the domain error", async () => {
+    const result = await reviewMemberSubmissionAction(
+      "sub-a",
+      {},
+      formData({ decision: "REJECTED" }),
+    );
+    // The schema itself requires a note on REJECTED.
+    expect(result.fieldErrors?.note).toBeDefined();
+    expect(submissionUpdateMock).not.toHaveBeenCalled();
+  });
+
+  it("approval creates the verified qualification inside the transaction", async () => {
+    const result = await reviewMemberSubmissionAction(
+      "sub-a",
+      {},
+      formData({ decision: "APPROVED", note: "looks good" }),
+    );
+    expect(result).toEqual({});
+    expect(memberQualificationCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          organizationId: ORG_A,
+          memberId: "member-a",
+          definitionId: "def-a",
+        }),
+      }),
+    );
+    expect(submissionUpdateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: "APPROVED",
+          reviewedByAuthIdentityId: "ident-actor",
+        }),
       }),
     );
   });

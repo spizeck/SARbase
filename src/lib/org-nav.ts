@@ -46,6 +46,7 @@ export function orgNavGroups(orgId: string, isAdmin: boolean): OrgNavGroup[] {
       label: "People",
       items: [
         { href: admin("/members"), label: "Members" },
+        { href: admin("/reviews"), label: "Submissions" },
         { href: admin("/units"), label: "Units" },
         { href: admin("/qualifications"), label: "Qualifications" },
         { href: admin("/expiring"), label: "Expiring certifications" },

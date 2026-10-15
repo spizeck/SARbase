@@ -59,6 +59,7 @@ import {
   attachmentUploadSchema,
   attachmentMutationSchema,
   memberInvitationInputSchema,
+  submissionReviewSchema,
   organizationDocumentInputSchema,
   documentVersionSchema,
   vendorInputSchema,
@@ -89,6 +90,7 @@ import {
   requireOrgAdminForAssetMeter,
   requireOrgAdminForNotification,
   requireOrgAdminForMemberInvitation,
+  requireOrgAdminForMemberSubmission,
   requireOrgAdminForCallout,
   requireOrgAdminForCalloutInvitation,
   requireOrgAdminForIncident,
@@ -201,6 +203,13 @@ import {
   InvitationMemberLinkedError,
   InvitationStateError,
 } from "@/lib/domain/invitations";
+import {
+  reviewMemberSubmission,
+  SubmissionNotFoundError,
+  SubmissionReviewNoteRequiredError,
+  SubmissionStateError,
+  SubmissionTargetError,
+} from "@/lib/domain/submissions";
 import { StorageConfigError, StorageError } from "@/lib/storage/provider";
 import { getFileStorageProvider } from "@/lib/storage/resolve";
 import {
@@ -288,6 +297,11 @@ export interface ActionState {
    * form remounts on these values while the warning is displayed.
    */
   submitted?: Record<string, string>;
+  /**
+   * Id of a newly created member submission (issue #71) — the account
+   * form switches to evidence-upload mode for this submission.
+   */
+  submissionId?: string;
 }
 
 function zodErrors(error: {
@@ -459,6 +473,18 @@ function mapDomainError(error: unknown): ActionState {
     // Own-org lifecycle facts — safe to surface.
     return { message: error.message };
   }
+  if (error instanceof SubmissionNotFoundError) {
+    // Opaque — a submission outside this org must not leak existence.
+    return { message: "Not found." };
+  }
+  if (
+    error instanceof SubmissionStateError ||
+    error instanceof SubmissionReviewNoteRequiredError ||
+    error instanceof SubmissionTargetError
+  ) {
+    // Own-org lifecycle facts — safe to surface.
+    return { message: error.message };
+  }
   if (error instanceof StorageConfigError) {
     // Env var names are fine for operators; values never surface.
     return {
@@ -613,6 +639,9 @@ export async function createMemberAction(
     email: formData.get("email"),
     phone: formData.get("phone"),
     phoneRegion: formData.get("phoneRegion"),
+    emergencyContactName: formData.get("emergencyContactName"),
+    emergencyContactPhone: formData.get("emergencyContactPhone"),
+    emergencyContactPhoneRegion: formData.get("emergencyContactPhoneRegion"),
   });
   if (!parsed.success) return zodErrors(parsed.error);
 
@@ -640,11 +669,19 @@ export async function updateMemberAction(
     email: formData.get("email"),
     phone: formData.get("phone"),
     phoneRegion: formData.get("phoneRegion"),
+    emergencyContactName: formData.get("emergencyContactName"),
+    emergencyContactPhone: formData.get("emergencyContactPhone"),
+    emergencyContactPhoneRegion: formData.get("emergencyContactPhoneRegion"),
   });
   if (!parsed.success) return zodErrors(parsed.error);
 
   try {
-    await updateMember(memberId, parsed.data);
+    // Admin edits are audited on the same MemberContactChange trail as
+    // member self-edits (selfReported=false marks the distinction).
+    await updateMember(memberId, parsed.data, {
+      actorAuthIdentityId: ctx.identity.id,
+      selfReported: false,
+    });
   } catch (error) {
     return mapDomainError(error);
   }
@@ -941,6 +978,50 @@ export async function revokeMemberInvitationAction(
 
   revalidatePath(
     `/admin/organizations/${invitation.organizationId}/members/${invitation.memberId}`,
+  );
+  return {};
+}
+
+/* ------------------------------------------------------------------ */
+/* Member submission review (issue #71). The submissionId is an        */
+/* untrusted selector — requireOrgAdminForMemberSubmission derives the */
+/* real organization from the row. Review is the ONLY path that turns  */
+/* a member claim into a verified record.                              */
+/* ------------------------------------------------------------------ */
+
+export async function reviewMemberSubmissionAction(
+  submissionId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let submission;
+  try {
+    submission = await requireOrgAdminForMemberSubmission(ctx, submissionId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = submissionReviewSchema.safeParse({
+    decision: formData.get("decision"),
+    note: formData.get("note"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    await reviewMemberSubmission(
+      submission.id,
+      parsed.data.decision,
+      parsed.data.note ?? null,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  revalidatePath(`/admin/organizations/${submission.organizationId}/reviews`);
+  revalidatePath(
+    `/admin/organizations/${submission.organizationId}/members/${submission.memberId}`,
   );
   return {};
 }
@@ -2962,6 +3043,9 @@ function revalidateAttachmentTarget(
       revalidatePath(
         `/admin/organizations/${orgId}/members/${String(target.memberId)}`,
       );
+      break;
+    case "MEMBER_SUBMISSION":
+      revalidatePath(`/admin/organizations/${orgId}/reviews`);
       break;
     case "TRAINING_EVENT":
       revalidatePath(`/admin/organizations/${orgId}/training/${entityId}`);
