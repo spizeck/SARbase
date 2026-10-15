@@ -15,6 +15,7 @@ export default defineConfig({
       "src/**/*.test.{ts,tsx}",
       "scripts/**/*.test.ts",
       "prisma/**/*.test.ts",
+      "infra/**/*.test.ts",
     ],
     exclude: ["src/**/*.db.test.ts", "tests/db/**"],
   },

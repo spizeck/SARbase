@@ -65,7 +65,7 @@ Deploy the CloudFormation stack from `infra/guardduty-scan-events.yaml`:
 
 ```
 aws cloudformation deploy \
-  --stack-name sarbase-prod-guardduty-scan-events \
+  --stack-name sarbase-prod-guardduty-scan \
   --region us-east-1 \
   --parameter-overrides \
     EnvironmentName=prod \
@@ -76,16 +76,47 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-Verify:
+`WebhookBearerToken` is the **raw token — no `Bearer ` prefix**; the
+template adds the scheme itself. It must equal the Vercel
+`MALWARE_SCAN_WEBHOOK_TOKEN` exactly.
+
+### If the stack fails or rolls back
+
+CloudFormation deletes what it created — a rolled-back stack leaves no
+half-provisioned pipeline. Recovery:
+
+1. `aws cloudformation describe-stack-events --stack-name <name>` —
+   the first `CREATE_FAILED` status reason names the property AWS
+   rejected. Fix the template, then re-run `deploy` (safe to rerun —
+   `deploy` is a change-set operation).
+2. `ROLLBACK_COMPLETE` is clean and re-deployable under the same stack
+   name. A stack stuck in `ROLLBACK_FAILED` needs
+   `aws cloudformation delete-stack` first; nothing it created is worth
+   preserving.
+3. CI lints the template (`Infra` job, cfn-lint) and the unit suite
+   asserts the security-critical wiring — never bypass a red CI to
+   retry a deploy. A lint-clean template can still fail AWS-side
+   validation (quotas, name collisions, account settings): static
+   checks are a pre-filter, not deployment proof.
+
+### Verify the delivery path
 
 - Rule `sarbase-prod-guardduty-scan-result` is ENABLED on the default
   bus, pattern bucket `sarbase-documents-prod-983902695382`, key prefix
-  `organizations/`.
-- API destination targets `https://<domain>/api/internal/guardduty-scan-result`.
+  `organizations/`:
+  `aws events describe-rule --name sarbase-prod-guardduty-scan-result`
+- The target wiring carries the invoke role, retry policy, and DLQ:
+  `aws events list-targets-by-rule --rule sarbase-prod-guardduty-scan-result`
+- API destination is AUTHORIZED and targets the ingest endpoint:
+  `aws events describe-api-destination --name sarbase-prod-scan-ingest`
+  (expect `ConnectionState: AUTHORIZED`,
+  `InvocationEndpoint: https://<domain>/api/internal/guardduty-scan-result`)
+- The connection is AUTHORIZED with API_KEY auth:
+  `aws events describe-connection --name sarbase-prod-scan-webhook`
 - DLQ `sarbase-prod-guardduty-scan-dlq` exists; alarm
-  `sarbase-prod-guardduty-scan-dlq` is configured.
-- The Events-managed Secrets Manager secret for the connection exists.
-  You never need to read it — EventBridge manages rotation storage.
+  `sarbase-prod-guardduty-scan-dlq` is configured. The Events-managed
+  Secrets Manager secret for the connection exists — never read it;
+  EventBridge manages it.
 
 **Smoke the endpoint contract** (before the app build has the env
 vars, the endpoint answers 503 — that still proves reachability):
