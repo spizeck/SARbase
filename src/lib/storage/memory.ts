@@ -149,9 +149,14 @@ export class InMemoryFileStorageProvider implements FileStorageProvider {
 
   // No tag store — scan reconciliation reports "no tag" unless a test
   // subclass provides one.
-  async getObjectTag(key: string, tagKey: string): Promise<string | null> {
+  async getObjectTag(
+    key: string,
+    tagKey: string,
+    versionId?: string | null,
+  ): Promise<string | null> {
     void key;
     void tagKey;
+    void versionId;
     return null;
   }
 }

@@ -187,7 +187,13 @@ export interface FileStorageProvider {
    * OPTIONAL capability — read a single object tag (S3
    * `GetObjectTagging`, e.g. `GuardDutyMalwareScanStatus`). Used only by
    * scan reconciliation; `null` when the tag is absent or the provider
-   * does not support tags.
+   * does not support tags. `versionId` pins the read to a specific
+   * object version where the store supports it — the current object's
+   * tags describe bytes that may differ from the recorded version.
    */
-  getObjectTag?(key: string, tagKey: string): Promise<string | null>;
+  getObjectTag?(
+    key: string,
+    tagKey: string,
+    versionId?: string | null,
+  ): Promise<string | null>;
 }

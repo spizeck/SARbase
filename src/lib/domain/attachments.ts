@@ -719,6 +719,31 @@ export function newAttachmentStorageKey(organizationId: string): string {
  * the recorded object version. Other providers have no scan pipeline
  * and record UNKNOWN (the download gate only applies to "s3").
  */
+/**
+ * Apply scan events that beat the row commit — best-effort only. The
+ * attachment row is already committed at this point; a failure here
+ * must never reach the create-path catch, which compensates by
+ * deleting the stored object. A missed pickup simply leaves the row
+ * PENDING (tag reconciliation and download-time retry still recover).
+ */
+async function applyPreArrivedScanEventsSafely(
+  attachment: Parameters<typeof applyPreArrivedScanEvents>[0],
+): Promise<void> {
+  try {
+    await applyPreArrivedScanEvents(attachment);
+  } catch (error) {
+    log({
+      event: "attachment.scan_preapply_failed",
+      subsystem: "attachments",
+      entityType: "Attachment",
+      entityId: attachment.id,
+      level: "error",
+      outcome: "operational_failure",
+      errorName: error instanceof Error ? error.name : "unknown",
+    });
+  }
+}
+
 export function scanInitFields(
   storageProvider: string,
   version: { versionId: string | null; etag: string | null },
@@ -832,7 +857,7 @@ export async function uploadAttachment(
       sizeBytes: attachment.sizeBytes,
     });
     // A scan event may have beaten the commit — apply it now.
-    await applyPreArrivedScanEvents(attachment);
+    await applyPreArrivedScanEventsSafely(attachment);
     return attachment;
   } catch (error) {
     // Compensation: the object exists but the metadata never committed —
@@ -1288,7 +1313,7 @@ export async function finalizeAttachmentUpload(
       sizeBytes: attachment.sizeBytes,
     });
     // A scan event may have beaten the finalize — apply it now.
-    await applyPreArrivedScanEvents(attachment);
+    await applyPreArrivedScanEventsSafely(attachment);
     return attachment;
   } catch (error) {
     try {
@@ -1805,7 +1830,7 @@ export async function createOrganizationDocument(
     });
     // A scan event may have beaten the commit — apply it now.
     if (createdAttachment) {
-      await applyPreArrivedScanEvents(createdAttachment);
+      await applyPreArrivedScanEventsSafely(createdAttachment);
     }
     return document;
   } catch (error) {
@@ -1911,7 +1936,7 @@ export async function addOrganizationDocumentVersion(
     });
     // A scan event may have beaten the commit — apply it now.
     if (createdAttachment) {
-      await applyPreArrivedScanEvents(createdAttachment);
+      await applyPreArrivedScanEventsSafely(createdAttachment);
     }
     return version;
   } catch (error) {
@@ -2024,7 +2049,7 @@ export async function finalizeDocumentCreate(
     });
     // A scan event may have beaten the finalize — apply it now.
     if (createdAttachment) {
-      await applyPreArrivedScanEvents(createdAttachment);
+      await applyPreArrivedScanEventsSafely(createdAttachment);
     }
     return document;
   } catch (error) {
@@ -2139,7 +2164,7 @@ export async function finalizeDocumentVersion(
     });
     // A scan event may have beaten the finalize — apply it now.
     if (createdAttachment) {
-      await applyPreArrivedScanEvents(createdAttachment);
+      await applyPreArrivedScanEventsSafely(createdAttachment);
     }
     return version;
   } catch (error) {

@@ -239,11 +239,19 @@ export class S3FileStorageProvider implements FileStorageProvider {
    * application credentials — an AccessDenied surfaces as a provider
    * error, and a missing object/tag resolves to null.
    */
-  async getObjectTag(key: string, tagKey: string): Promise<string | null> {
+  async getObjectTag(
+    key: string,
+    tagKey: string,
+    versionId?: string | null,
+  ): Promise<string | null> {
     assertStorageKeyShape(key);
     try {
       const response = await this.client.send(
-        new GetObjectTaggingCommand({ Bucket: this.bucket, Key: key }),
+        new GetObjectTaggingCommand({
+          Bucket: this.bucket,
+          Key: key,
+          VersionId: versionId ?? undefined,
+        }),
       );
       return response.TagSet?.find((tag) => tag.Key === tagKey)?.Value ?? null;
     } catch (error) {
