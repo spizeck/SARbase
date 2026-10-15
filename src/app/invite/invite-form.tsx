@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { FirebaseError } from "firebase/app";
 import {
   createUserWithEmailAndPassword,
   sendEmailVerification,
@@ -11,6 +10,7 @@ import {
 } from "firebase/auth";
 
 import { getFirebaseClientAuth } from "@/lib/firebase/client";
+import { inviteAuthErrorView } from "@/lib/invitation-accept";
 
 import type { AcceptInvitationResult } from "./actions";
 
@@ -37,7 +37,10 @@ export function InviteAcceptForm({
   configured: boolean;
 }) {
   const router = useRouter();
-  const [mode, setMode] = useState<"sign_in" | "register">("sign_in");
+  // Most invitees have never held an account, so registration is the
+  // default tab; an existing account surfaces `email-already-in-use`
+  // and flips to sign-in with a clear message.
+  const [mode, setMode] = useState<"sign_in" | "register">("register");
   const [email, setEmail] = useState(invitedEmail);
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -108,20 +111,9 @@ export function InviteAcceptForm({
       const idToken = await credential.user.getIdToken();
       await acceptWith(idToken);
     } catch (err) {
-      if (err instanceof FirebaseError) {
-        if (err.code === "auth/email-already-in-use") {
-          setMode("sign_in");
-          setError("An account with this email already exists — sign in.");
-        } else if (err.code === "auth/weak-password") {
-          setError("Choose a password of at least 6 characters.");
-        } else if (err.code === "auth/too-many-requests") {
-          setError("Too many attempts. Please wait a moment and try again.");
-        } else {
-          setError("Invalid email or password.");
-        }
-      } else {
-        setError("Something went wrong. Please try again.");
-      }
+      const view = inviteAuthErrorView(err, mode);
+      if (view.switchMode) setMode(view.switchMode);
+      setError(view.message);
     } finally {
       setPending(false);
     }
@@ -137,22 +129,6 @@ export function InviteAcceptForm({
         <button
           type="button"
           role="tab"
-          aria-selected={mode === "sign_in"}
-          onClick={() => {
-            setMode("sign_in");
-            setError(null);
-          }}
-          className={
-            mode === "sign_in"
-              ? "font-medium text-neutral-900 underline underline-offset-4"
-              : "text-neutral-500 hover:text-neutral-800"
-          }
-        >
-          I have an account
-        </button>
-        <button
-          type="button"
-          role="tab"
           aria-selected={mode === "register"}
           onClick={() => {
             setMode("register");
@@ -165,6 +141,22 @@ export function InviteAcceptForm({
           }
         >
           Create an account
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "sign_in"}
+          onClick={() => {
+            setMode("sign_in");
+            setError(null);
+          }}
+          className={
+            mode === "sign_in"
+              ? "font-medium text-neutral-900 underline underline-offset-4"
+              : "text-neutral-500 hover:text-neutral-800"
+          }
+        >
+          I have an account
         </button>
       </div>
 

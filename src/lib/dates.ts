@@ -213,3 +213,17 @@ export function formatInstantInZone(
     timeZone,
   }).format(date);
 }
+
+/**
+ * Expiry display shared by the admin member page and the public /invite
+ * page: relative context plus the absolute instant in the
+ * organization's own zone, e.g.
+ * "in 7 days — Oct 22, 2027, 9:30 PM (America/Kralendijk)".
+ */
+export function instantExpiryLabel(
+  date: Date,
+  timeZone: string,
+  now: Date = new Date(),
+): string {
+  return `${relativeTimeLabel(date, now)} — ${formatInstantInZone(date, timeZone)} (${timeZone})`;
+}

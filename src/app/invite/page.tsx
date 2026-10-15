@@ -3,7 +3,7 @@ import {
   invitationDisplayState,
 } from "@/lib/domain/invitations";
 import { tryParseFirebaseClientEnvironment } from "@/lib/env";
-import { relativeTimeLabel } from "@/lib/dates";
+import { instantExpiryLabel } from "@/lib/dates";
 
 import { acceptMemberInvitationAction } from "./actions";
 import { InviteAcceptForm } from "./invite-form";
@@ -100,8 +100,12 @@ export default async function InvitePage({
       <p className="mt-2 text-sm text-neutral-600">
         This invitation was sent to{" "}
         <span className="font-medium text-neutral-900">{invitation.email}</span>{" "}
-        and expires {relativeTimeLabel(invitation.expiresAt)}. Sign in — or
-        create an account — with that email address to accept it.
+        and expires{" "}
+        {instantExpiryLabel(
+          invitation.expiresAt,
+          invitation.organization.timezone,
+        )}
+        . Sign in — or create an account — with that email address to accept it.
       </p>
 
       <div className="mt-5">

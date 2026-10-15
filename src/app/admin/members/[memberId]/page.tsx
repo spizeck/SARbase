@@ -27,7 +27,7 @@ import {
   listMemberAvailabilityHistory,
   AVAILABILITY_STATUS_LABELS,
 } from "@/lib/domain/availability";
-import { formatInstantInZone, relativeTimeLabel } from "@/lib/dates";
+import { instantExpiryLabel, relativeTimeLabel } from "@/lib/dates";
 
 import {
   updateMemberAction,
@@ -557,12 +557,10 @@ export default async function MemberPage({
               <div>
                 <dt className="text-xs text-neutral-500">Expires</dt>
                 <dd>
-                  {relativeTimeLabel(invitation.expiresAt)} —{" "}
-                  {formatInstantInZone(
+                  {instantExpiryLabel(
                     invitation.expiresAt,
                     member.organization.timezone,
-                  )}{" "}
-                  ({member.organization.timezone})
+                  )}
                 </dd>
               </div>
               {invitation.notification && (

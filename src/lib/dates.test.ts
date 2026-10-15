@@ -5,6 +5,7 @@ import {
   daysBetween,
   formatDateOnly,
   formatInstantInZone,
+  instantExpiryLabel,
   instantInZone,
   isValidTimeZone,
   localDateTimeString,
@@ -189,6 +190,62 @@ describe("relativeTimeLabel", () => {
     expect(relativeTimeLabel(INSTANT("2028-03-01T12:00:00.000Z"), now)).toBe(
       "2028-03-01",
     );
+  });
+});
+
+describe("instantExpiryLabel", () => {
+  // Shared by the admin member page and the public /invite page.
+  const now = INSTANT("2027-11-14T12:00:00.000Z");
+
+  it("newly issued invitation: relative + absolute org-zone expiry", () => {
+    // 7 days out, the PR66 invitation lifetime.
+    expect(
+      instantExpiryLabel(
+        INSTANT("2027-11-21T12:00:00.000Z"),
+        "America/Kralendijk",
+        now,
+      ),
+    ).toBe("in 7 days — Nov 21, 2027, 8:00 AM (America/Kralendijk)");
+  });
+
+  it("nearly expired still reads as upcoming with the absolute time", () => {
+    expect(
+      instantExpiryLabel(
+        INSTANT("2027-11-14T12:15:00.000Z"),
+        "America/Kralendijk",
+        now,
+      ),
+    ).toBe("in 15 minutes — Nov 14, 2027, 8:15 AM (America/Kralendijk)");
+  });
+
+  it("an expired instant is past-relative, never 'just now'", () => {
+    const label = instantExpiryLabel(
+      INSTANT("2027-11-13T12:00:00.000Z"),
+      "America/Kralendijk",
+      now,
+    );
+    expect(label).toContain("ago");
+    expect(label).not.toContain("just now");
+    expect(label).toContain("America/Kralendijk");
+  });
+
+  it("renders the absolute instant in the organization's own zone", () => {
+    // 00:30 UTC Nov 21 is still Nov 20 evening in Kralendijk (UTC-4).
+    expect(
+      instantExpiryLabel(
+        INSTANT("2027-11-21T00:30:00.000Z"),
+        "America/Kralendijk",
+        now,
+      ),
+    ).toContain("Nov 20, 2027, 8:30 PM");
+    // The same instant is Nov 21 in a zone east of UTC.
+    expect(
+      instantExpiryLabel(
+        INSTANT("2027-11-21T00:30:00.000Z"),
+        "Pacific/Auckland",
+        now,
+      ),
+    ).toContain("Nov 21, 2027, 1:30 PM");
   });
 });
 

@@ -184,7 +184,7 @@ export async function getInvitationForToken(presentedToken: string) {
           authIdentityId: true,
         },
       },
-      organization: { select: { name: true } },
+      organization: { select: { name: true, timezone: true } },
     },
   });
   if (!invitation) return null;
