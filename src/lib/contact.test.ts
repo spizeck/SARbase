@@ -9,6 +9,7 @@ import {
   phoneRegionOf,
   phoneRegionOptions,
   PhoneNumberInvalidError,
+  splitPhoneForDisplay,
 } from "./contact";
 
 /**
@@ -104,6 +105,62 @@ describe("phoneRegionOf", () => {
   });
 });
 
+describe("splitPhoneForDisplay", () => {
+  it("splits a Caribbean Netherlands number for edit-form initialization", () => {
+    expect(splitPhoneForDisplay("+5994166039")).toEqual({
+      region: "BQ",
+      national: "416 6039",
+    });
+  });
+
+  it("splits US and Netherlands numbers", () => {
+    expect(splitPhoneForDisplay("+12025550123")).toEqual({
+      region: "US",
+      national: "(202) 555-0123",
+    });
+    expect(splitPhoneForDisplay("+31612345678")).toEqual({
+      region: "NL",
+      national: "06 12345678",
+    });
+  });
+
+  it("resolves shared calling codes by the actual digits", () => {
+    // +1 246 is Barbados, not an arbitrary NANP region.
+    expect(splitPhoneForDisplay("+12462260000")).toMatchObject({
+      region: "BB",
+    });
+    // +39 resolves IT vs VA from the subscriber prefix.
+    expect(splitPhoneForDisplay("+390212345678")?.region).toBe("IT");
+    expect(splitPhoneForDisplay("+390669820000")?.region).toBe("VA");
+    // +47 resolves NO vs SJ.
+    expect(splitPhoneForDisplay("+4779070800")?.region).toBe("SJ");
+    expect(splitPhoneForDisplay("+4791444455")?.region).toBe("NO");
+  });
+
+  it("round-trips: national + region renormalizes to the same E.164", () => {
+    for (const e164 of [
+      "+5994166039",
+      "+12025550123",
+      "+31612345678",
+      "+442071234567",
+      "+390212345678",
+      "+12462260000",
+      "+525512345678",
+    ]) {
+      const parts = splitPhoneForDisplay(e164);
+      expect(parts, e164).not.toBeNull();
+      expect(normalizePhoneNumber(parts!.national, parts!.region)).toBe(e164);
+    }
+  });
+
+  it("returns null for unparseable or non-geographic input", () => {
+    expect(splitPhoneForDisplay("not a number")).toBeNull();
+    expect(splitPhoneForDisplay("+++")).toBeNull();
+    // +800 international toll-free has no region — callers keep the raw value.
+    expect(splitPhoneForDisplay("+80012345678")).toBeNull();
+  });
+});
+
 describe("phoneRegionOptions", () => {
   it("covers the calling-code regions and includes the default", () => {
     const options = phoneRegionOptions();
@@ -111,6 +168,9 @@ describe("phoneRegionOptions", () => {
     const bq = options.find((o) => o.region === DEFAULT_PHONE_REGION);
     expect(bq).toMatchObject({ region: "BQ", callingCode: "599" });
     expect(bq?.name.toLowerCase()).toContain("caribbean netherlands");
+    // National-format example for placeholders — present for common regions.
+    expect(bq?.example).toBeTruthy();
+    expect(options.find((o) => o.region === "NL")?.example).toBeTruthy();
     // Sorted by human-readable name for scanning.
     const names = options.map((o) => o.name);
     expect([...names].sort((a, b) => a.localeCompare(b))).toEqual(names);

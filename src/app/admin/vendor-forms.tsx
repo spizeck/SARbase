@@ -2,11 +2,7 @@
 
 import { useActionState } from "react";
 
-import {
-  formatPhoneNumber,
-  phoneRegionOf,
-  type PhoneRegionOption,
-} from "@/lib/contact";
+import type { PhoneRegionOption } from "@/lib/contact";
 
 import type { ActionState } from "./actions";
 import { PhoneFields } from "./phone-fields";
@@ -140,12 +136,7 @@ export function VendorForm({
       <PhoneFields
         idPrefix={idPrefix}
         regions={regions}
-        defaultPhone={
-          defaults.phone ? formatPhoneNumber(defaults.phone) : undefined
-        }
-        defaultRegion={
-          defaults.phone ? phoneRegionOf(defaults.phone) : undefined
-        }
+        defaultPhone={defaults.phone}
         errors={state.fieldErrors?.phone}
       />
       <div>
