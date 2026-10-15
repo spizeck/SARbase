@@ -238,9 +238,11 @@ export function PhoneFields({
                       role="option"
                       aria-selected={option.region === field.region}
                       onMouseDown={(e) => {
+                        // Keep focus in the search box; selection happens
+                        // on click so assistive-tech activation also works.
                         e.preventDefault();
-                        chooseRegion(option);
                       }}
+                      onClick={() => chooseRegion(option)}
                       onMouseEnter={() => setHighlight(index)}
                       className={`cursor-pointer px-3 py-2 ${
                         index === highlight ? "bg-neutral-100" : "bg-white"
