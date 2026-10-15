@@ -572,7 +572,7 @@ export default async function MemberPage({
                     {invitation.notification.status === "ACCEPTED"
                       ? "Accepted by email provider"
                       : invitation.notification.status === "FAILED"
-                        ? "Delivery failed"
+                        ? "Send failed"
                         : invitation.notification.status === "SUPPRESSED"
                           ? "Not sent"
                           : "Sending"}

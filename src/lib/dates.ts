@@ -71,7 +71,11 @@ export function formatDateOnly(d: Date | null | undefined): string | null {
  */
 export function relativeTimeLabel(date: Date, now: Date = new Date()): string {
   const elapsedSeconds = Math.round((now.getTime() - date.getTime()) / 1000);
-  if (Math.abs(elapsedSeconds) < 60) return "just now";
+  if (Math.abs(elapsedSeconds) < 60) {
+    // A sub-minute FUTURE instant still differs from "just now" — an
+    // expiry reading "just now" looks already-expired.
+    return elapsedSeconds < 0 ? "in a few seconds" : "just now";
+  }
   const future = elapsedSeconds < 0;
   const suffix = (n: number, unit: string) =>
     future

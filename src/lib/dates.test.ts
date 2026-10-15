@@ -165,8 +165,10 @@ describe("relativeTimeLabel", () => {
     // The original defect: a freshly issued invitation expiry (7 days
     // out) rendered "just now" because future dates fell through to the
     // sub-minute branch.
+    // Sub-minute future reads as upcoming, not "just now" — an expiry
+    // displaying "just now" looked already-expired.
     expect(relativeTimeLabel(INSTANT("2027-11-14T12:00:30.000Z"), now)).toBe(
-      "just now",
+      "in a few seconds",
     );
     expect(relativeTimeLabel(INSTANT("2027-11-14T12:15:00.000Z"), now)).toBe(
       "in 15 minutes",

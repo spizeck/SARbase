@@ -708,20 +708,23 @@ describe.skipIf(!hasDb)("member invitations", () => {
 
   it("keeps a nearly-expired invitation pending until the exact instant, then expires it", () => {
     // One second to go — still pending; the boundary itself is expired
-    // (expiry is inclusive: expiresAt <= now).
-    const oneSecondOut = new Date(Date.now() + 1_000);
-    const now = new Date();
-    const boundary = new Date(now.getTime());
+    // (expiry is inclusive: expiresAt <= now). A fixed injected clock
+    // keeps this deterministic.
+    const now = new Date("2027-10-15T12:00:00.000Z");
+    const oneSecondOut = new Date(now.getTime() + 1_000);
     expect(
-      invitationDisplayState({ status: "PENDING", expiresAt: oneSecondOut }),
+      invitationDisplayState(
+        { status: "PENDING", expiresAt: oneSecondOut },
+        now,
+      ),
     ).toBe("pending");
     expect(
-      invitationDisplayState({ status: "PENDING", expiresAt: boundary }),
+      invitationDisplayState({ status: "PENDING", expiresAt: now }, now),
     ).toBe("expired");
     // A fresh invitation's full 7-day window is far from the boundary.
-    const fresh = new Date(Date.now() + MEMBER_INVITATION_TTL_MS);
+    const fresh = new Date(now.getTime() + MEMBER_INVITATION_TTL_MS);
     expect(
-      invitationDisplayState({ status: "PENDING", expiresAt: fresh }),
+      invitationDisplayState({ status: "PENDING", expiresAt: fresh }, now),
     ).toBe("pending");
   });
 
