@@ -15,6 +15,11 @@ import {
   CALLOUT_RESPONSE_URL_PLACEHOLDER,
   deriveInvitationResponseToken,
 } from "@/lib/domain/calloutTokens";
+import {
+  MEMBER_INVITATION_TEMPLATE,
+  MEMBER_INVITATION_URL_PLACEHOLDER,
+  deriveMemberInvitationToken,
+} from "@/lib/domain/invitationTokens";
 import { resolveSiteUrl } from "@/lib/site";
 import type {
   NotificationChannelName,
@@ -322,7 +327,11 @@ async function resolveDispatchBodyText(
   notification: Notification,
 ): Promise<string | null> {
   const text = notification.bodyText;
-  if (text == null || !text.includes(CALLOUT_RESPONSE_URL_PLACEHOLDER)) {
+  if (
+    text == null ||
+    (!text.includes(CALLOUT_RESPONSE_URL_PLACEHOLDER) &&
+      !text.includes(MEMBER_INVITATION_URL_PLACEHOLDER))
+  ) {
     return text;
   }
   const metadata = (notification.metadata ?? null) as {
@@ -354,6 +363,43 @@ async function resolveDispatchBodyText(
     return text.replaceAll(
       CALLOUT_RESPONSE_URL_PLACEHOLDER,
       `${resolveSiteUrl()}/respond?t=${encodeURIComponent(token)}`,
+    );
+  }
+  // Member invitations: the emailed link derives from the invitation's
+  // CURRENT tokenVersion, so a send after a resend carries the live link
+  // and the stored hash stays aligned with what actually went out.
+  if (
+    notification.template === MEMBER_INVITATION_TEMPLATE &&
+    metadata?.invitationId
+  ) {
+    const invitation = await prisma.memberInvitation.findUnique({
+      where: {
+        id: metadata.invitationId,
+        organizationId: notification.organizationId,
+      },
+      select: { id: true, tokenVersion: true },
+    });
+    if (!invitation) {
+      throw new Error(
+        `Notification ${notification.id} references a member invitation that does not exist.`,
+      );
+    }
+    const token = deriveMemberInvitationToken(
+      invitation.id,
+      invitation.tokenVersion,
+    );
+    await prisma.memberInvitation.updateMany({
+      where: {
+        id: invitation.id,
+        organizationId: notification.organizationId,
+      },
+      data: {
+        tokenHash: createHash("sha256").update(token).digest("hex"),
+      },
+    });
+    return text.replaceAll(
+      MEMBER_INVITATION_URL_PLACEHOLDER,
+      `${resolveSiteUrl()}/invite?t=${encodeURIComponent(token)}`,
     );
   }
   throw new Error(

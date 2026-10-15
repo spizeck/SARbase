@@ -1,8 +1,20 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState, useTransition } from "react";
+
+import {
+  formatPhoneNumber,
+  phoneRegionOf,
+  type PhoneRegionOption,
+} from "@/lib/contact";
 
 import type { ActionState } from "./actions";
+import { PhoneFields } from "./phone-fields";
+import { TimezoneSelect } from "./timezone-select";
+import {
+  DEFAULT_ORGANIZATION_TIMEZONE,
+  type TimeZoneOption,
+} from "@/lib/timezones";
 
 /**
  * Minimal accessible form components for the admin surface. Each maps a
@@ -35,11 +47,14 @@ export function OrganizationForm({
   defaultName,
   defaultTimeZone,
   submitLabel,
+  timeZoneOptions,
 }: {
   action: BoundAction;
   defaultName?: string;
   defaultTimeZone?: string;
   submitLabel: string;
+  /** Server-computed IANA option list for the timezone picker. */
+  timeZoneOptions: TimeZoneOption[];
 }) {
   const [state, formAction, pending] = useActionState(action, {});
   return (
@@ -65,21 +80,14 @@ export function OrganizationForm({
         <label htmlFor="org-timezone" className={labelClass}>
           Timezone
         </label>
-        <input
-          id="org-timezone"
-          name="timezone"
-          type="text"
-          required
-          maxLength={64}
-          defaultValue={defaultTimeZone ?? "UTC"}
-          placeholder="America/Puerto_Rico"
-          aria-invalid={Boolean(state.fieldErrors?.timezone)}
-          aria-describedby="org-timezone-error org-timezone-hint"
-          className={inputClass}
+        <TimezoneSelect
+          options={timeZoneOptions}
+          defaultValue={defaultTimeZone ?? DEFAULT_ORGANIZATION_TIMEZONE}
+          invalid={Boolean(state.fieldErrors?.timezone)}
         />
         <p id="org-timezone-hint" className="mt-1 text-xs text-neutral-500">
-          IANA timezone name (e.g. America/Puerto_Rico, Europe/Amsterdam).
-          Qualification expiry dates are evaluated against this zone.
+          Search by city, region, or UTC offset. Qualification expiry dates are
+          evaluated against this zone.
         </p>
         <FieldError
           id="org-timezone-error"
@@ -176,6 +184,7 @@ export function MemberForm({
   action,
   defaults,
   submitLabel,
+  regions,
 }: {
   action: BoundAction;
   defaults?: {
@@ -184,6 +193,8 @@ export function MemberForm({
     phone: string | null;
   };
   submitLabel: string;
+  /** Server-computed region list for the phone country selector. */
+  regions: PhoneRegionOption[];
 }) {
   const [state, formAction, pending] = useActionState(action, {});
   return (
@@ -224,21 +235,17 @@ export function MemberForm({
         />
         <FieldError id="member-email-error" errors={state.fieldErrors?.email} />
       </div>
-      <div>
-        <label htmlFor="member-phone" className={labelClass}>
-          Phone <span className="font-normal text-neutral-500">(optional)</span>
-        </label>
-        <input
-          id="member-phone"
-          name="phone"
-          type="tel"
-          defaultValue={defaults?.phone ?? undefined}
-          aria-invalid={Boolean(state.fieldErrors?.phone)}
-          aria-describedby="member-phone-error"
-          className={inputClass}
-        />
-        <FieldError id="member-phone-error" errors={state.fieldErrors?.phone} />
-      </div>
+      <PhoneFields
+        idPrefix="member"
+        regions={regions}
+        defaultPhone={
+          defaults?.phone ? formatPhoneNumber(defaults.phone) : undefined
+        }
+        defaultRegion={
+          defaults?.phone ? phoneRegionOf(defaults.phone) : undefined
+        }
+        errors={state.fieldErrors?.phone}
+      />
       {state.message && (
         <p className={errorClass} role="alert">
           {state.message}
@@ -251,11 +258,33 @@ export function MemberForm({
   );
 }
 
-export function LinkIdentityForm({ action }: { action: BoundAction }) {
-  const [state, formAction, pending] = useActionState(action, {});
+export function LinkIdentityForm({
+  action,
+  defaultEmail,
+}: {
+  action: BoundAction;
+  defaultEmail?: string | null;
+}) {
+  // Server errors describe the last SUBMITTED value — `state` is set
+  // only from a real response, so an untouched or being-edited input
+  // never carries one. Editing clears the previous response.
+  const [state, setState] = useState<ActionState>({});
+  const [email, setEmail] = useState(defaultEmail ?? "");
+  const [pending, startTransition] = useTransition();
 
   return (
-    <form action={formAction} className="space-y-4">
+    <form
+      action={(formData) =>
+        startTransition(async () => {
+          const result = await action({}, formData);
+          setState(result);
+          if (!result.fieldErrors && !result.message) {
+            setEmail("");
+          }
+        })
+      }
+      className="space-y-4"
+    >
       <div>
         <label htmlFor="identity-email" className={labelClass}>
           Sign-in email
@@ -266,6 +295,11 @@ export function LinkIdentityForm({ action }: { action: BoundAction }) {
           type="email"
           required
           maxLength={254}
+          value={email}
+          onChange={(e) => {
+            setEmail(e.target.value);
+            setState({});
+          }}
           placeholder="name@example.org"
           className={inputClass}
           aria-describedby="identity-email-error"
@@ -285,6 +319,164 @@ export function LinkIdentityForm({ action }: { action: BoundAction }) {
         {pending ? "Linking…" : "Link identity"}
       </button>
     </form>
+  );
+}
+
+/**
+ * Primary onboarding action — email + organization role + (for ADMIN)
+ * an explicit elevated-access confirmation.
+ */
+export function InviteMemberForm({
+  action,
+  defaultEmail,
+  defaultRole = "MEMBER",
+}: {
+  action: BoundAction;
+  defaultEmail?: string | null;
+  defaultRole?: "MEMBER" | "ADMIN";
+}) {
+  const [state, formAction, pending] = useActionState(action, {});
+  const [role, setRole] = useState<"MEMBER" | "ADMIN">(defaultRole);
+  const [confirmedAdmin, setConfirmedAdmin] = useState(false);
+  const isAdmin = role === "ADMIN";
+
+  return (
+    <form action={formAction} className="space-y-4">
+      <div>
+        <label htmlFor="invite-email" className={labelClass}>
+          Invitation email
+        </label>
+        <input
+          id="invite-email"
+          name="email"
+          type="email"
+          required
+          maxLength={254}
+          defaultValue={defaultEmail ?? undefined}
+          placeholder="member@example.org"
+          className={inputClass}
+          aria-describedby="invite-email-error invite-email-hint"
+          aria-invalid={state.fieldErrors?.email ? "true" : undefined}
+        />
+        <p id="invite-email-hint" className="mt-1 text-xs text-neutral-500">
+          The recipient must sign in (or register) with this email address to
+          accept the invitation.
+        </p>
+        <FieldError id="invite-email-error" errors={state.fieldErrors?.email} />
+      </div>
+      <div>
+        <label htmlFor="invite-role" className={labelClass}>
+          Organization role
+        </label>
+        <select
+          id="invite-role"
+          name="role"
+          value={role}
+          onChange={(e) => {
+            setRole(e.target.value as "MEMBER" | "ADMIN");
+            if (e.target.value !== "ADMIN") setConfirmedAdmin(false);
+          }}
+          className={inputClass}
+          aria-describedby="invite-role-error"
+        >
+          <option value="MEMBER">Member</option>
+          <option value="ADMIN">Administrator</option>
+        </select>
+        <FieldError id="invite-role-error" errors={state.fieldErrors?.role} />
+      </div>
+      {isAdmin && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3">
+          <label className="flex items-start gap-2 text-sm text-neutral-800">
+            <input
+              type="checkbox"
+              checked={confirmedAdmin}
+              onChange={(e) => setConfirmedAdmin(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-neutral-300"
+            />
+            <span>
+              This invitation grants <strong>administrator</strong> access: full
+              control over members, settings, and records. Confirm that the
+              recipient should receive elevated access.
+            </span>
+          </label>
+        </div>
+      )}
+      {state.notice && (
+        <p
+          className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+          role="status"
+        >
+          {state.notice}
+        </p>
+      )}
+      {state.message && (
+        <p className={errorClass} role="alert">
+          {state.message}
+        </p>
+      )}
+      <button
+        type="submit"
+        disabled={pending || (isAdmin && !confirmedAdmin)}
+        className={buttonClass}
+      >
+        {pending ? "Sending…" : "Send invitation"}
+      </button>
+    </form>
+  );
+}
+
+/** Resend / revoke controls for an outstanding invitation. */
+export function InvitationActionButtons({
+  resendAction,
+  revokeAction,
+}: {
+  resendAction: () => Promise<ActionState>;
+  revokeAction: () => Promise<ActionState>;
+}) {
+  const [resendState, resendFormAction, resendPending] = useActionState(
+    () => resendAction(),
+    {},
+  );
+  const [revokeState, revokeFormAction, revokePending] = useActionState(
+    () => revokeAction(),
+    {},
+  );
+  const notice = resendState.notice ?? revokeState.notice;
+  const error = resendState.message ?? revokeState.message;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        <form action={resendFormAction}>
+          <button
+            type="submit"
+            disabled={resendPending || revokePending}
+            className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-800 hover:bg-neutral-100 disabled:opacity-50"
+          >
+            {resendPending ? "Resending…" : "Resend invitation"}
+          </button>
+        </form>
+        <form action={revokeFormAction}>
+          <button
+            type="submit"
+            disabled={resendPending || revokePending}
+            className="rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+          >
+            {revokePending ? "Revoking…" : "Revoke invitation"}
+          </button>
+        </form>
+      </div>
+      {notice && (
+        <p className="text-sm text-amber-800" role="status">
+          {notice}
+        </p>
+      )}
+      {error && (
+        <p className={errorClass} role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

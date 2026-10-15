@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { log } from "@/lib/logging";
+import { normalizePhoneField } from "@/lib/contact";
 
 import type { MemberInput, MemberStatusInput } from "./schemas";
 
@@ -66,7 +67,7 @@ export async function createMember(organizationId: string, input: MemberInput) {
       organizationId,
       displayName: input.displayName,
       email: input.email ?? null,
-      phone: input.phone ?? null,
+      phone: normalizePhoneField(input.phone, input.phoneRegion),
     },
   });
   log({
@@ -85,7 +86,7 @@ export async function updateMember(id: string, input: MemberInput) {
     data: {
       displayName: input.displayName,
       email: input.email ?? null,
-      phone: input.phone ?? null,
+      phone: normalizePhoneField(input.phone, input.phoneRegion),
     },
   });
   log({

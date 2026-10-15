@@ -2,7 +2,14 @@
 
 import { useActionState } from "react";
 
+import {
+  formatPhoneNumber,
+  phoneRegionOf,
+  type PhoneRegionOption,
+} from "@/lib/contact";
+
 import type { ActionState } from "./actions";
+import { PhoneFields } from "./phone-fields";
 
 /**
  * Forms for the admin vendor surface (issue #17). Vendors are simple
@@ -49,11 +56,14 @@ export function VendorForm({
   defaults = {},
   idPrefix = "vendor",
   submitLabel,
+  regions,
 }: {
   action: BoundAction;
   defaults?: VendorDefaults;
   idPrefix?: string;
   submitLabel: string;
+  /** Server-computed region list for the phone country selector. */
+  regions: PhoneRegionOption[];
 }) {
   const [state, formAction, pending] = useActionState(action, {});
   return (
@@ -126,26 +136,18 @@ export function VendorForm({
             errors={state.fieldErrors?.email}
           />
         </div>
-        <div>
-          <label htmlFor={`${idPrefix}-phone`} className={labelClass}>
-            Phone <span className="text-neutral-500">(optional)</span>
-          </label>
-          <input
-            id={`${idPrefix}-phone`}
-            name="phone"
-            type="text"
-            maxLength={40}
-            defaultValue={defaults.phone ?? undefined}
-            aria-invalid={Boolean(state.fieldErrors?.phone)}
-            aria-describedby={`${idPrefix}-phone-error`}
-            className={inputClass}
-          />
-          <FieldError
-            id={`${idPrefix}-phone-error`}
-            errors={state.fieldErrors?.phone}
-          />
-        </div>
       </div>
+      <PhoneFields
+        idPrefix={idPrefix}
+        regions={regions}
+        defaultPhone={
+          defaults.phone ? formatPhoneNumber(defaults.phone) : undefined
+        }
+        defaultRegion={
+          defaults.phone ? phoneRegionOf(defaults.phone) : undefined
+        }
+        errors={state.fieldErrors?.phone}
+      />
       <div>
         <label htmlFor={`${idPrefix}-website`} className={labelClass}>
           Website <span className="text-neutral-500">(optional)</span>

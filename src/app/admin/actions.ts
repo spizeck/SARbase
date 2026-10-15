@@ -57,6 +57,7 @@ import {
   incidentNoteCorrectionSchema,
   attachmentUploadSchema,
   attachmentMutationSchema,
+  memberInvitationInputSchema,
   organizationDocumentInputSchema,
   documentVersionSchema,
   vendorInputSchema,
@@ -86,6 +87,7 @@ import {
   requireOrgAdminForDefect,
   requireOrgAdminForAssetMeter,
   requireOrgAdminForNotification,
+  requireOrgAdminForMemberInvitation,
   requireOrgAdminForCallout,
   requireOrgAdminForCalloutInvitation,
   requireOrgAdminForIncident,
@@ -189,6 +191,13 @@ import {
   type AttachmentFileInput,
   type PreparedUpload,
 } from "@/lib/domain/attachments";
+import {
+  createMemberInvitation,
+  resendMemberInvitation,
+  revokeMemberInvitation,
+  InvitationMemberLinkedError,
+  InvitationStateError,
+} from "@/lib/domain/invitations";
 import { StorageConfigError, StorageError } from "@/lib/storage/provider";
 import {
   activateCallout,
@@ -260,6 +269,8 @@ import { log, logExpected } from "@/lib/logging";
 export interface ActionState {
   fieldErrors?: Record<string, string[]>;
   message?: string;
+  /** Non-error informational outcome — e.g. "recorded, email unsent". */
+  notice?: string;
 }
 
 function zodErrors(error: {
@@ -422,6 +433,13 @@ function mapDomainError(error: unknown): ActionState {
     error instanceof AttachmentUploadGrantError
   ) {
     // Upload policy and own-org lifecycle facts — safe to surface.
+    return { message: error.message };
+  }
+  if (
+    error instanceof InvitationMemberLinkedError ||
+    error instanceof InvitationStateError
+  ) {
+    // Own-org lifecycle facts — safe to surface.
     return { message: error.message };
   }
   if (error instanceof StorageConfigError) {
@@ -768,6 +786,106 @@ export async function unlinkIdentityFromMemberAction(
     organizationId: member.organizationId,
   });
   revalidatePath(`/admin/members/${memberId}`);
+}
+
+/**
+ * Issue (or re-issue) a member invitation — the primary onboarding
+ * path. ADMIN on the member's organization is required, and only an
+ * administrator can issue an ADMIN-role invitation (the same check).
+ * The invited email and role are the admin's explicit choices;
+ * acceptance binds a verified sign-in identity to them.
+ */
+export async function createMemberInvitationAction(
+  memberId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let member;
+  try {
+    member = await requireOrgAdminForMember(ctx, memberId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = memberInvitationInputSchema.safeParse({
+    email: formData.get("email"),
+    role: formData.get("role"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  let result;
+  try {
+    result = await createMemberInvitation(
+      member.id,
+      parsed.data,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  revalidatePath(`/admin/members/${memberId}`);
+  if (!result.delivered) {
+    // The invitation exists — delivery failed (provider unconfigured,
+    // rejected, or unavailable). Resend is the retry path.
+    return {
+      notice:
+        "The invitation was created but the email could not be sent — check delivery configuration, then resend.",
+    };
+  }
+  return {};
+}
+
+/** Resend a pending invitation — rotates the token; the old link dies. */
+export async function resendMemberInvitationAction(
+  invitationId: string,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let invitation;
+  try {
+    invitation = await requireOrgAdminForMemberInvitation(ctx, invitationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  let result;
+  try {
+    result = await resendMemberInvitation(invitation.id, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  revalidatePath(`/admin/members/${invitation.memberId}`);
+  if (!result.delivered) {
+    return {
+      notice:
+        "The invitation was resent and the previous link is now invalid, but the email could not be sent — check delivery configuration.",
+    };
+  }
+  return {};
+}
+
+/** Revoke a pending invitation — the outstanding link dies immediately. */
+export async function revokeMemberInvitationAction(
+  invitationId: string,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let invitation;
+  try {
+    invitation = await requireOrgAdminForMemberInvitation(ctx, invitationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  try {
+    await revokeMemberInvitation(invitation.id, ctx.identity.id);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  revalidatePath(`/admin/members/${invitation.memberId}`);
+  return {};
 }
 
 /* ------------------------------------------------------------------ */

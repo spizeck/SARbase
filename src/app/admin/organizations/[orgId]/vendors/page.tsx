@@ -13,6 +13,7 @@ import {
   setVendorStatusAction,
 } from "../../../actions";
 import { VendorForm, VendorStatusButton } from "../../../vendor-forms";
+import { formatPhoneNumber, phoneRegionOptions } from "@/lib/contact";
 
 export const metadata = { title: "Vendors" };
 
@@ -33,6 +34,7 @@ export default async function OrganizationVendorsPage({
     where: { id: orgId },
   });
   const vendors = await listOrganizationVendors(orgId);
+  const phoneRegions = phoneRegionOptions();
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-10">
@@ -101,7 +103,7 @@ export default async function OrganizationVendorsPage({
                 {[
                   vendor.contactName,
                   vendor.email,
-                  vendor.phone,
+                  vendor.phone ? formatPhoneNumber(vendor.phone) : null,
                   vendor.accountReference
                     ? `acct ${vendor.accountReference}`
                     : null,
@@ -145,6 +147,7 @@ export default async function OrganizationVendorsPage({
                     defaults={vendor}
                     idPrefix={`vendor-${vendor.id}`}
                     submitLabel="Save changes"
+                    regions={phoneRegions}
                   />
                 </div>
               </details>
@@ -171,6 +174,7 @@ export default async function OrganizationVendorsPage({
           <VendorForm
             action={createVendorAction.bind(null, orgId)}
             submitLabel="Add vendor"
+            regions={phoneRegions}
           />
         </div>
       </section>

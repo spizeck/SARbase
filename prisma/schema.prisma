@@ -51,15 +51,16 @@ enum QualificationDefinitionStatus {
 // The independent SAR organization that owns its records. Deliberately
 // minimal — no billing, federation, or regional hierarchy concepts.
 //
-// timezone is an IANA identifier (e.g. "America/Puerto_Rico") that
+// timezone is an IANA identifier (e.g. "America/Kralendijk") that
 // defines the organization's local calendar date. Qualification and
 // other date-only facts compare "today" against this zone — see
-// src/lib/dates.ts. Rows migrated before the column existed hold "UTC";
-// an org admin should set the real zone in organization settings.
+// src/lib/dates.ts. Existing rows keep their stored value; the default
+// applies only to newly created organizations (America/Kralendijk,
+// Saba SAR's zone, UTC−04:00 with no daylight saving).
 model Organization {
   id        String   @id @default(cuid())
   name      String
-  timezone  String   @default("UTC")
+  timezone  String   @default("America/Kralendijk")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -113,6 +114,9 @@ model Organization {
   defectAttachments              DefectAttachment[]
   organizationDocuments          OrganizationDocument[]
   organizationDocumentVersions   OrganizationDocumentVersion[]
+
+  memberInvitations      MemberInvitation[]
+  memberInvitationEvents MemberInvitationEvent[]
 
   vendors                   Vendor[]
   expenses                  Expense[]
@@ -227,6 +231,11 @@ model Member {
   authIdentityId String?
   authIdentity   AuthIdentity? @relation(fields: [authIdentityId], references: [id], onDelete: SetNull)
 
+  // The member's onboarding invitation (at most one — resends rotate the
+  // same row's token). Restrict: invitation history outlives membership
+  // changes.
+  memberInvitation MemberInvitation?
+
   // Composite-FK target so MemberUnit can enforce same-organization rows.
   @@unique([id, organizationId])
   // At most one linked Member per organization per AuthIdentity.
@@ -283,6 +292,106 @@ model OrganizationAccess {
 
   @@unique([authIdentityId, organizationId])
   @@index([organizationId])
+}
+
+// ---------------------------------------------------------------------------
+// Member invitations — the administrator-driven onboarding path that links
+// an existing Member record to a Firebase sign-in identity and grants it an
+// explicit OrganizationAccess role.
+//
+// One row per member (memberId unique): resend rotates the token in place;
+// revoke marks the same row; a fresh invite after revoke reuses it. The full
+// history lives in MemberInvitationEvent — the row itself only carries the
+// CURRENT state plus the latest delivery snapshot.
+//
+// Token discipline (mirrors calloutTokens.ts): the emailed link carries an
+// HMAC-derived bearer token
+//
+//   base64url(HMAC-SHA256(MEMBER_INVITATION_TOKEN_SECRET,
+//                          "member-invitation:<id>:<tokenVersion>"))
+//
+// — never stored. Only its SHA-256 hash persists for lookup. Resend bumps
+// tokenVersion, which supersedes the outstanding link; secret rotation
+// revokes every outstanding invitation link at once.
+//
+// email is the admin-chosen invitation destination snapshot — it is NOT the
+// member's contact email and NOT an authorization input. Acceptance requires
+// an authenticated identity whose VERIFIED sign-in email equals this value;
+// the granted role comes only from `role`, set by the inviting admin.
+enum MemberInvitationStatus {
+  // Awaiting acceptance. An expired PENDING row displays as "Expired" —
+  // expiry is derived from expiresAt at read time, never materialized.
+  PENDING
+  ACCEPTED
+  REVOKED
+}
+
+enum MemberInvitationAction {
+  // First issuance of the row, and re-issuance after REVOKED.
+  CREATED
+  // A subsequent send on the same row — new tokenVersion, new expiry;
+  // the superseded link stops resolving.
+  RESENT
+  REVOKED
+  ACCEPTED
+}
+
+model MemberInvitation {
+  id             String                  @id @default(cuid())
+  organizationId String
+  memberId       String                  @unique
+  // Invitation destination snapshot (normalized lowercase). Editable by the
+  // inviting administrator — deliberately independent of Member.email.
+  email          String
+  // The exact organization role granted at acceptance.
+  role           OrgRole                 @default(MEMBER)
+  tokenHash      String                  @unique
+  tokenVersion   Int                     @default(1)
+  status         MemberInvitationStatus  @default(PENDING)
+  expiresAt      DateTime
+  // Latest send's notification row (delivery history lives there); a fresh
+  // send replaces this pointer and appends its own Notification.
+  notificationId String?
+  // Plain scalar identity references — audit/history rows must survive
+  // identity deletion (same convention as actorAuthIdentityId elsewhere).
+  createdByAuthIdentityId   String?
+  acceptedByAuthIdentityId  String?
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+  acceptedAt     DateTime?
+  revokedAt      DateTime?
+
+  organization Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  member       Member                  @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  notification Notification?           @relation(fields: [notificationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  events       MemberInvitationEvent[]
+
+  // Composite-FK target so MemberInvitationEvent enforces same-org rows.
+  @@unique([id, organizationId])
+  // Composite-FK shape for the Member relation (memberId alone is already
+  // unique; Prisma requires the referenced pair declared here).
+  @@unique([memberId, organizationId])
+  @@index([organizationId, status])
+}
+
+// Append-only history for a member invitation — one row per action with its
+// actor (null = system). The raw token and destination email never appear
+// here: the destination snapshot lives on the invitation row and the token
+// is never persisted anywhere.
+model MemberInvitationEvent {
+  id                  String                 @id @default(cuid())
+  organizationId      String
+  invitationId        String
+  action              MemberInvitationAction
+  actorAuthIdentityId String?
+  detail              Json?
+  createdAt           DateTime               @default(now())
+
+  invitation  MemberInvitation @relation(fields: [invitationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@index([invitationId, createdAt])
+  @@index([organizationId, createdAt])
 }
 
 // An organization-defined qualification/certification type — the org's
@@ -1279,6 +1388,10 @@ model Notification {
   // Issue #14 — the callout invitation this request was dispatched for,
   // when applicable. Restrict: notification history is preserved.
   calloutInvitations CalloutInvitation[]
+
+  // The member invitation this request was dispatched for, when
+  // applicable. Restrict: notification history is preserved.
+  memberInvitations MemberInvitation[]
 
   // Application-level idempotency: one logical request per
   // (organization, key). A second request with the same key is either a

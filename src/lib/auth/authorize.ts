@@ -393,6 +393,27 @@ export async function requireOrgAdminForCallout(
   return callout;
 }
 
+/**
+ * Member-invitation lookup — same rule: the caller-supplied id is an
+ * untrusted selector; the invitation's own organizationId decides which
+ * grant must exist.
+ */
+export async function requireOrgAdminForMemberInvitation(
+  ctx: AuthContext,
+  invitationId: string,
+) {
+  const invitation = await prisma.memberInvitation.findUnique({
+    where: { id: invitationId },
+  });
+  if (!invitation || !isOrgAdmin(ctx, invitation.organizationId)) {
+    logDenial("authz.member_invitation_scope_denied", ctx, {
+      entityId: invitationId,
+    });
+    throw new AuthorizationError();
+  }
+  return invitation;
+}
+
 export async function requireOrgAdminForCalloutInvitation(
   ctx: AuthContext,
   invitationId: string,

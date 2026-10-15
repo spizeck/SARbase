@@ -20,6 +20,8 @@ import {
   relativeTimeLabel,
 } from "@/lib/dates";
 import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { phoneRegionOptions } from "@/lib/contact";
+import { timeZoneOptions } from "@/lib/timezones";
 
 import {
   updateOrganizationAction,
@@ -159,7 +161,7 @@ export default async function OrganizationPage({
         </span>
       </nav>
 
-      <section aria-labelledby="details-heading" className="mt-6">
+      <section id="settings" aria-labelledby="details-heading" className="mt-6">
         <h1
           id="details-heading"
           className="text-2xl font-semibold tracking-tight"
@@ -176,6 +178,7 @@ export default async function OrganizationPage({
               defaultName={organization.name}
               defaultTimeZone={organization.timezone}
               submitLabel="Save"
+              timeZoneOptions={timeZoneOptions()}
             />
           </div>
         </div>
@@ -253,7 +256,37 @@ export default async function OrganizationPage({
         </Link>
       </nav>
 
-      <section aria-labelledby="units-heading" className="mt-10">
+      {/* In-page navigation for the sections below — the page is long;
+          these anchors keep member management and settings discoverable
+          without restructuring the page. */}
+      <nav
+        aria-label="On this page"
+        className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-neutral-500"
+      >
+        <a href="#members" className="underline-offset-4 hover:underline">
+          Members
+        </a>
+        <a href="#units" className="underline-offset-4 hover:underline">
+          Units
+        </a>
+        <a
+          href="#qualifications"
+          className="underline-offset-4 hover:underline"
+        >
+          Qualifications
+        </a>
+        <a href="#expiring" className="underline-offset-4 hover:underline">
+          Expiring qualifications
+        </a>
+        <a href="#training" className="underline-offset-4 hover:underline">
+          Training
+        </a>
+        <a href="#settings" className="underline-offset-4 hover:underline">
+          Settings
+        </a>
+      </nav>
+
+      <section id="units" aria-labelledby="units-heading" className="mt-10">
         <h2 id="units-heading" className="text-lg font-medium">
           Units
         </h2>
@@ -282,7 +315,11 @@ export default async function OrganizationPage({
         </div>
       </section>
 
-      <section aria-labelledby="qualifications-heading" className="mt-10">
+      <section
+        id="qualifications"
+        aria-labelledby="qualifications-heading"
+        className="mt-10"
+      >
         <h2 id="qualifications-heading" className="text-lg font-medium">
           Qualifications
         </h2>
@@ -368,7 +405,11 @@ export default async function OrganizationPage({
         </div>
       </section>
 
-      <section aria-labelledby="expiring-heading" className="mt-10">
+      <section
+        id="expiring"
+        aria-labelledby="expiring-heading"
+        className="mt-10"
+      >
         <div className="flex items-baseline justify-between gap-4">
           <h2 id="expiring-heading" className="text-lg font-medium">
             Expiring certifications
@@ -426,7 +467,11 @@ export default async function OrganizationPage({
         )}
       </section>
 
-      <section aria-labelledby="training-heading" className="mt-10">
+      <section
+        id="training"
+        aria-labelledby="training-heading"
+        className="mt-10"
+      >
         <h2 id="training-heading" className="text-lg font-medium">
           Training
         </h2>
@@ -604,7 +649,7 @@ export default async function OrganizationPage({
         </details>
       </section>
 
-      <section aria-labelledby="members-heading" className="mt-10">
+      <section id="members" aria-labelledby="members-heading" className="mt-10">
         <div className="flex items-baseline justify-between gap-4">
           <h2 id="members-heading" className="text-lg font-medium">
             Members
@@ -745,6 +790,7 @@ export default async function OrganizationPage({
             <MemberForm
               action={createMemberAction.bind(null, orgId)}
               submitLabel="Add member"
+              regions={phoneRegionOptions()}
             />
           </div>
         </div>
