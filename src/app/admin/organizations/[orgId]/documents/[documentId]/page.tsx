@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { isOrgAdmin, requireAuth } from "@/lib/auth/authorize";
 import { getOrganizationDocument } from "@/lib/domain/attachments";
+import { attachmentScanLabel } from "@/lib/domain/malware-scan";
 import { resolveActorLabels } from "@/lib/domain/actors";
 import { prisma } from "@/lib/prisma";
 import { formatDateOnly, formatInstantInZone } from "@/lib/dates";
@@ -12,6 +13,7 @@ import {
   deleteAttachmentAction,
   finalizeDocumentVersionAction,
   prepareDocumentVersionAction,
+  recheckAttachmentScanAction,
   setOrganizationDocumentStatusAction,
   updateOrganizationDocumentAction,
 } from "../../../../actions";
@@ -20,6 +22,8 @@ import {
   DocumentStatusButton,
   DocumentVersionUploadForm,
   OrganizationDocumentEditForm,
+  RecheckScanForm,
+  ScanPendingRefresh,
 } from "../../../../attachment-forms";
 import { formatBytes } from "../../../../attachment-section";
 
@@ -171,10 +175,21 @@ export default async function OrganizationDocumentPage({
           The current file is the newest version. Earlier versions are preserved
           — replacing a document never overwrites history.
         </p>
+        {document.versions.some(
+          (v) =>
+            v.attachment.status === "ACTIVE" &&
+            v.attachment.storageProvider === "s3" &&
+            v.attachment.scanStatus === "PENDING",
+        ) && <ScanPendingRefresh />}
         <ul className="mt-3 space-y-2">
           {document.versions.map((version) => {
             const attachment = version.attachment;
             const deleted = attachment.status === "DELETED";
+            const scanLabel = attachmentScanLabel(attachment);
+            const scanCleared =
+              attachment.storageProvider !== "s3" ||
+              attachment.scanStatus === "CLEAN";
+            const downloadable = !deleted && scanCleared;
             const isCurrent =
               version.versionNumber === document.versions[0]?.versionNumber;
             return (
@@ -191,17 +206,23 @@ export default async function OrganizationDocumentPage({
                       </span>
                     )}
                   </span>
-                  {deleted ? (
-                    <span className="text-sm text-neutral-500 line-through">
-                      {attachment.displayFilename}
-                    </span>
-                  ) : (
+                  {downloadable ? (
                     <a
                       href={`/api/attachments/${attachment.id}/download`}
                       className="text-sm font-medium text-neutral-900 underline"
                     >
                       {attachment.displayFilename}
                     </a>
+                  ) : (
+                    <span
+                      className={`text-sm ${
+                        deleted
+                          ? "text-neutral-500 line-through"
+                          : "text-neutral-700"
+                      }`}
+                    >
+                      {attachment.displayFilename}
+                    </span>
                   )}
                   <span className="text-xs text-neutral-500">
                     {formatBytes(attachment.sizeBytes)}
@@ -211,6 +232,20 @@ export default async function OrganizationDocumentPage({
                       Deleted
                     </span>
                   )}
+                  {!deleted && scanLabel && (
+                    <span
+                      className={`text-xs font-medium ${
+                        attachment.scanStatus === "INFECTED" ||
+                        attachment.scanStatus === "SCAN_FAILED"
+                          ? "text-red-700"
+                          : attachment.scanStatus === "PENDING"
+                            ? "text-amber-700"
+                            : "text-neutral-500"
+                      }`}
+                    >
+                      {scanLabel}
+                    </span>
+                  )}
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-500">
                   <span>
@@ -218,6 +253,14 @@ export default async function OrganizationDocumentPage({
                     {actorName(version.createdByAuthIdentityId)}
                   </span>
                   {version.note && <span>— {version.note}</span>}
+                  {!deleted && !scanCleared && (
+                    <RecheckScanForm
+                      action={recheckAttachmentScanAction.bind(
+                        null,
+                        attachment.id,
+                      )}
+                    />
+                  )}
                   {!deleted && (
                     <DeleteAttachmentForm
                       action={deleteAttachmentAction.bind(null, attachment.id)}

@@ -498,3 +498,42 @@ export function parseStorageEnvironment(
 ): StorageEnvironment {
   return storageEnvironmentSchema.parse(values);
 }
+
+/**
+ * GuardDuty Malware Protection for S3 — scan-result ingest. The
+ * endpoint at POST /api/internal/guardduty-scan-result is reached only
+ * by the AWS-side delivery component (EventBridge → Lambda forwarder
+ * per docs/attachments.md); the bearer token is shared with that
+ * component and is a SECRET. Without the token the endpoint returns
+ * 503 — configured-but-absent credentials must fail closed, never
+ * permissive.
+ */
+export const malwareScanEnvironmentSchema = z.object({
+  MALWARE_SCAN_WEBHOOK_TOKEN: z.preprocess(
+    storageBlankToUndefined,
+    z.string().min(32).max(512).optional(),
+  ),
+  // AWS account id expected on every event — events naming another
+  // account are rejected before any database write.
+  MALWARE_SCAN_AWS_ACCOUNT_ID: z.preprocess(
+    storageBlankToUndefined,
+    z
+      .string()
+      .trim()
+      .regex(
+        /^\d{12}$/,
+        "MALWARE_SCAN_AWS_ACCOUNT_ID must be a 12-digit AWS account id",
+      )
+      .optional(),
+  ),
+});
+
+export type MalwareScanEnvironment = z.infer<
+  typeof malwareScanEnvironmentSchema
+>;
+
+export function parseMalwareScanEnvironment(
+  values: Record<string, string | undefined> = process.env,
+): MalwareScanEnvironment {
+  return malwareScanEnvironmentSchema.parse(values);
+}

@@ -212,9 +212,12 @@ The credential needs: `PutObject` on `staging/*` (the browser POST is
 signed by the server — the browser holds no credentials),
 `GetObject`/`DeleteObject` on `staging/*` and `organizations/*`,
 `PutObject` on `organizations/*` (proxied puts + promote copies), and
-`HeadObject` (covered by `GetObject`) on both. Scope all of it to the
-one bucket; a dedicated prefix or separate bucket per environment is
-required — **production and preview never share writable storage**.
+`HeadObject` (covered by `GetObject`) on both. When GuardDuty Malware
+Protection is enabled, add `s3:GetObjectTagging` (and
+`s3:GetObjectVersionTagging` on a versioned bucket) — reconciliation
+reads the `GuardDutyMalwareScanStatus` object tag. Scope all of it to
+the one bucket; a dedicated prefix or separate bucket per environment
+is required — **production and preview never share writable storage**.
 
 ## AWS S3 activation (operator runbook)
 
@@ -255,22 +258,21 @@ recommended.
 - **Default encryption:** SSE-S3 (AES-256) — the default. SSE-KMS is
   optional hardening but adds key-policy complexity; only adopt it if
   you need key-level audit.
-- **Versioning:** leave OFF. SARbase does its own record versioning,
-  and deletes are deliberate tombstones — S3 versioning would turn
-  every delete into a delete-marker pair and complicate lifecycle.
-  (If you want extra byte-level protection, rely on bucket backups or
-  replication instead.)
-- **If versioning was already enabled:** prefer **suspending** it
-  (bucket → Properties → Bucket versioning → Suspend). Existing
-  noncurrent versions persist until expired — the lifecycle rule below
-  covers only `staging/`; noncurrent versions under `organizations/`
-  need their own rule or a manual delete. Keeping versioning ON is
-  workable but weaker: `DeleteObject` then only writes a delete marker,
-  so a tombstoned attachment's bytes remain recoverable as a
-  noncurrent version (storage cost plus longer retention of content
-  the app considers deleted). If you keep it, add a second rule with
-  `NoncurrentVersionExpiration` covering `organizations/`, or deleted
-  files accumulate forever.
+- **Versioning:** REQUIRED when GuardDuty Malware Protection for S3 is
+  enabled (see [Malware scanning](#malware-scanning-guardduty-malware-protection-for-s3)).
+  Scan results carry the object's `versionId`; with versioning ON the
+  application binds each result to the exact bytes it scanned, so a
+  stale result can never clear replacement bytes. Without versioning
+  the binding falls back to the ETag — still fail-safe, but weaker.
+  The cost is tombstone semantics: `DeleteObject` writes a delete
+  marker and the bytes persist as a noncurrent version — add a
+  lifecycle rule with `NoncurrentVersionExpiration` covering both
+  `staging/` and `organizations/` so deleted content actually expires.
+- **If malware scanning is not configured** (no GuardDuty protection
+  plan on this bucket): versioning can be left OFF — SARbase does its
+  own record versioning, and deletes are deliberate tombstones. Turn it
+  ON when enabling the protection plan; existing objects keep working
+  (their `versionId` is simply absent, and scan results bind by ETag).
 
 ### 2. Lifecycle rule — expire abandoned staging objects
 
@@ -442,11 +444,175 @@ transaction across a network upload.
 2. `requireOrgAdmin` against that organization — foreign-org and nonexistent
    ids get the same opaque 404.
 3. `DELETED` attachments are not served.
-4. Stream via the **recorded** `storageProvider` (each row names its provider,
+4. Malware-scan gate: `s3` attachments must be `CLEAN` — anything else is
+   `423 SCAN_NOT_CLEARED` (PENDING first attempts one tag reconciliation —
+   see below).
+5. Stream via the **recorded** `storageProvider` (each row names its provider,
    so a migrated store keeps serving old objects).
-5. Headers: `Content-Type` from the row, `Content-Disposition: attachment`
+6. Headers: `Content-Type` from the row, `Content-Disposition: attachment`
    with an RFC 5987-encoded safe filename, `X-Content-Type-Options: nosniff`,
    private no-store cache control. Nothing renders uploaded content inline.
+
+## Malware scanning (GuardDuty Malware Protection for S3)
+
+S3-backed attachments are **download-blocked until a verified GuardDuty
+scan result clears them**. The gate is fail-closed at the single byte
+path (`openAttachmentDownload`): `PENDING`, `INFECTED`, `SCAN_FAILED`,
+and `UNKNOWN` all refuse bytes; only `CLEAN` serves.
+
+### Scan lifecycle states
+
+| `scanStatus`  | Meaning                                                          |
+| ------------- | ---------------------------------------------------------------- |
+| `PENDING`     | Uploaded; awaiting a verified scan result                        |
+| `CLEAN`       | `COMPLETED` + `NO_THREATS_FOUND` for the recorded object version |
+| `INFECTED`    | `COMPLETED` + `THREATS_FOUND`                                    |
+| `SCAN_FAILED` | `SKIPPED` (`UNSUPPORTED`/`ACCESS_DENIED`) or `FAILED`            |
+| `UNKNOWN`     | No trustworthy result — incl. rows predating the integration     |
+
+New S3 uploads start `PENDING` with the stored object's `versionId` /
+`ETag` recorded at finalize. Historical rows keep the `UNKNOWN` default —
+**they are never auto-cleaned**; see Backfill below.
+
+### Data flow
+
+```
+browser → presigned POST → S3 staging object
+        → finalize (server) → CopyObject to organizations/… (version pinned)
+        → Attachment row { scanStatus: PENDING, storageVersionId, storageETag }
+
+GuardDuty (protection plan on bucket) → EventBridge event
+"GuardDuty Malware Protection Object Scan Result"
+        → Lambda forwarder → POST /api/internal/guardduty-scan-result
+        → AttachmentScanEvent row (immutable ledger, awsEventId unique)
+        → Attachment.scanStatus updated IFF event versionId/ETag matches
+          the recorded object version
+```
+
+Every received event is stored in `AttachmentScanEvent` before any
+attachment mutation — the ledger is the audit trail: `outcome` records
+`APPLIED_*`, `NO_ATTACHMENT` (re-applied when the attachment finalizes),
+`STALE_VERSION`, `UNMAPPED_RESULT`, `DUPLICATE`, or `RECEIVED` (stored,
+not yet evaluated).
+
+### Endpoint authentication and validation
+
+`POST /api/internal/guardduty-scan-result`:
+
+- Requires `Authorization: Bearer $MALWARE_SCAN_WEBHOOK_TOKEN`
+  (constant-time compare). Unconfigured token → 503; wrong token → 401.
+- Validates the EventBridge envelope: `source === "aws.guardduty"`,
+  `detail-type === "GuardDuty Malware Protection Object Scan Result"`,
+  `account === MALWARE_SCAN_AWS_ACCOUNT_ID`, `region ===
+FILE_STORAGE_S3_REGION`, `detail.s3ObjectDetails.bucketName ===
+FILE_STORAGE_S3_BUCKET`, and `objectKey` matching
+  `organizations/<org>/attachments/<id>`. Any mismatch → 400, logged
+  with the event id only (bodies may carry attacker-controlled content
+  and are never logged).
+- Idempotent: `awsEventId` is unique; redelivery returns `DUPLICATE`
+  with no state change.
+- Ordered: an event whose `time` predates the recorded `scannedAt` cannot
+  downgrade a terminal state.
+- Version-bound: the event's `versionId` must equal the recorded
+  `storageVersionId` (ETag fallback on unversioned stores) — a result
+  for an overwritten object is recorded as `STALE_VERSION` and never
+  clears the new bytes.
+
+### Reconciliation (missed or delayed events)
+
+Two recovery paths cover a stuck `PENDING`:
+
+1. **Finalize-time pickup** — events that arrive between the S3 copy and
+   the row commit are stored `NO_ATTACHMENT`, then applied when the
+   attachment row is created.
+2. **Tag reconciliation** — with the GuardDuty _post-scan tagging_ option
+   enabled, `reconcileAttachmentScan` reads the
+   `GuardDutyMalwareScanStatus` object tag (S3 `GetObjectTagging`) after
+   verifying the tag belongs to the recorded object version. Triggered
+   lazily on a `PENDING` download attempt and by the admin "Recheck scan"
+   action. A tag for the wrong version is ignored.
+
+The app also needs `s3:GetObjectTagging` (and `s3:GetObjectVersionTagging`
+on versioned buckets) on the `organizations/*` prefix — see Minimal IAM
+posture above.
+
+### AWS setup (operator runbook)
+
+The production bucket is `sarbase-documents-prod-983902695382`
+(`us-east-1`). Steps — none of these are applied by code:
+
+1. **Enable GuardDuty Malware Protection for S3** — GuardDuty console →
+   Malware Protection for S3 → add the bucket. Enable **post-scan
+   object tagging** (`GuardDutyMalwareScanStatus`) so reconciliation can
+   read results without waiting on event delivery.
+2. **Enable bucket versioning** (bucket → Properties → Bucket
+   versioning → Enable) so every scan result pins to an object version;
+   add the `NoncurrentVersionExpiration` lifecycle rule noted in
+   [Create the bucket](#1-create-the-bucket).
+3. **EventBridge rule** — default event bus, pattern:
+   `source = aws.guardduty`, `detail-type = GuardDuty Malware Protection
+Object Scan Result`, `detail.s3ObjectDetails.bucketName = <bucket>`.
+4. **Lambda forwarder** — a minimal function (Python or Node) that POSTs
+   the raw event body to `https://<app>/api/internal/guardduty-scan-result`
+   with header `Authorization: Bearer <MALWARE_SCAN_WEBHOOK_TOKEN>`. Store
+   the token in the Lambda environment or Secrets Manager; the function
+   needs no other AWS permissions. Add a DLQ on the Lambda (or an
+   SQS between EventBridge and Lambda) so undelivered events are retained
+   for replay — a failed delivery must never silently leave a file
+   permanently pending.
+5. **Vercel env** — set `MALWARE_SCAN_WEBHOOK_TOKEN` (≥32 random chars,
+   matching the Lambda) and `MALWARE_SCAN_AWS_ACCOUNT_ID` (`983902695382`
+   for the production account). The bucket and region come from the
+   existing `FILE_STORAGE_S3_*` variables.
+6. **IAM** — extend the app credential per Minimal IAM posture with
+   `s3:GetObjectTagging` + `s3:GetObjectVersionTagging` on
+   `arn:aws:s3:::<bucket>/organizations/*`.
+
+### End-to-end verification
+
+- Clean file: upload any allowed file; confirm the row starts `PENDING`,
+  transitions to `CLEAN` when the event arrives, and the download works.
+- EICAR: upload a `.txt` containing the standard EICAR antivirus test
+  string (`X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*`).
+  GuardDuty should report `THREATS_FOUND`; the file must stay blocked
+  and show "File blocked — security threat detected". No real malware is
+  involved — EICAR is an industry-standard inert test string.
+
+### Historical attachments (backfill)
+
+Rows created before this migration carry `scanStatus = UNKNOWN` and are
+download-blocked on `s3`. Options, in order of preference:
+
+1. **Rescan** — copy each object in place (`aws s3api copy-object` with
+   the same key, or GuardDuty's on-demand scan if available) so a fresh
+   scan event clears it. The copy produces a new version — update
+   `storageVersionId`/`storageETag` from the copy response, or the new
+   event will be recorded `STALE_VERSION`.
+2. **Tag reconciliation** — if the protection plan scanned the objects
+   already, the admin "Recheck scan" action applies the tag when the
+   recorded version still matches.
+3. **Temporary operator review** — for objects that cannot be scanned,
+   keep them `UNKNOWN`/blocked; do not bulk-mark `CLEAN`.
+
+### Monitoring
+
+- `attachment.scan_event_rejected` log events — identity/shape failures.
+- `attachment.scan_reconcile_failed` — tag-read failures.
+- `attachment.scan_result` — every applied outcome; alert on
+  `APPLIED_INFECTED` (possible live malware in the org's files) and on a
+  sustained `PENDING` count (query `Attachment` where `scanStatus =
+PENDING` older than ~10 minutes — indicates delivery failure).
+- `AttachmentScanEvent` rows stuck at `RECEIVED` indicate a crash
+  between ledger write and application — investigate, the attachment
+  remains blocked.
+
+### Rollback
+
+Application rollback is safe: restore the previous deployment. Attachments
+keep their last scan state — reverting removes the download gate (the
+columns remain, inert). Forward-only mitigation: do NOT drop the
+`AttachmentScanEvent` table or scan columns; the migration is pure
+additive and can stay.
 
 ## Policy
 
@@ -502,9 +668,12 @@ silent.
   org's attachment even with a guessed id.
 - Logs carry attachment/org ids, provider name, size, and outcome — never
   file bodies, raw filenames, signed URLs, credentials, or descriptions.
-- **No malware scanning exists.** Treat every stored file as hostile: the
-  allowlist, magic-byte checks, `attachment` disposition, and `nosniff` are
-  the mitigation. A scanning seam can slot into the upload flow later.
+- **Malware scanning gates downloads.** S3-backed attachments are
+  download-blocked until a verified GuardDuty scan result clears the
+  exact object version — see
+  [Malware scanning](#malware-scanning-guardduty-malware-protection-for-s3).
+  The allowlist, magic-byte checks, `attachment` disposition, and
+  `nosniff` remain as layered mitigations on top.
 - Callout response tokens and `/respond` paths have no attachment access.
 
 ## Backup and restore

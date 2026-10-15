@@ -60,6 +60,7 @@ export class LocalFileStorageProvider implements FileStorageProvider {
     } catch (error) {
       throw mapLocalFsError(error, "write");
     }
+    return { versionId: null, etag: null };
   }
 
   async openRead(key: string): Promise<StorageObjectStream> {

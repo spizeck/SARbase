@@ -4,16 +4,21 @@ import {
 } from "@/lib/domain/attachments";
 import { resolveActorLabels } from "@/lib/domain/actors";
 
+import { attachmentScanLabel } from "@/lib/domain/malware-scan";
+
 import {
   deleteAttachmentAction,
   finalizeAttachmentUploadAction,
   prepareAttachmentUploadAction,
+  recheckAttachmentScanAction,
   unlinkAttachmentAction,
   uploadAttachmentAction,
 } from "./actions";
 import {
   AttachmentUploadForm,
   DeleteAttachmentForm,
+  RecheckScanForm,
+  ScanPendingRefresh,
   UnlinkAttachmentForm,
 } from "./attachment-forms";
 
@@ -60,12 +65,19 @@ export async function AttachmentSection({
 
   const uploadAction = uploadAttachmentAction.bind(null, entityType, entityId);
   const sectionId = `attachments-${entityType.toLowerCase()}-${entityId}`;
+  const anyScanPending = rows.some(
+    (r) =>
+      r.attachment.status === "ACTIVE" &&
+      r.attachment.storageProvider === "s3" &&
+      r.attachment.scanStatus === "PENDING",
+  );
 
   return (
     <section
       aria-labelledby={`${sectionId}-heading`}
       className={compact ? "mt-3" : "mt-10"}
     >
+      {anyScanPending && <ScanPendingRefresh />}
       <h3
         id={`${sectionId}-heading`}
         className={compact ? "text-sm font-medium" : "text-lg font-medium"}
@@ -79,23 +91,36 @@ export async function AttachmentSection({
           {rows.map((row) => {
             const attachment = row.attachment;
             const deleted = attachment.status === "DELETED";
+            const scanLabel = attachmentScanLabel(attachment);
+            // Fail closed — a file is a download link only after a
+            // verified clean scan (or on providers with no scanning).
+            const scanCleared =
+              attachment.storageProvider !== "s3" ||
+              attachment.scanStatus === "CLEAN";
+            const downloadable = !deleted && scanCleared;
             return (
               <li
                 key={row.linkId}
                 className="rounded-md border border-neutral-200 px-3 py-2"
               >
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  {deleted ? (
-                    <span className="text-sm text-neutral-500 line-through">
-                      {attachment.displayFilename}
-                    </span>
-                  ) : (
+                  {downloadable ? (
                     <a
                       href={`/api/attachments/${attachment.id}/download`}
                       className="text-sm font-medium text-neutral-900 underline"
                     >
                       {attachment.displayFilename}
                     </a>
+                  ) : (
+                    <span
+                      className={`text-sm ${
+                        deleted
+                          ? "text-neutral-500 line-through"
+                          : "text-neutral-700"
+                      }`}
+                    >
+                      {attachment.displayFilename}
+                    </span>
                   )}
                   <span className="text-xs text-neutral-500">
                     {formatBytes(attachment.sizeBytes)}
@@ -103,6 +128,20 @@ export async function AttachmentSection({
                   {deleted && (
                     <span className="text-xs font-medium text-red-700">
                       Deleted
+                    </span>
+                  )}
+                  {!deleted && scanLabel && (
+                    <span
+                      className={`text-xs font-medium ${
+                        attachment.scanStatus === "INFECTED" ||
+                        attachment.scanStatus === "SCAN_FAILED"
+                          ? "text-red-700"
+                          : attachment.scanStatus === "PENDING"
+                            ? "text-amber-700"
+                            : "text-neutral-500"
+                      }`}
+                    >
+                      {scanLabel}
                     </span>
                   )}
                   {attachment.description && (
@@ -116,6 +155,14 @@ export async function AttachmentSection({
                     Uploaded {attachment.createdAt.toLocaleDateString("en-US")}{" "}
                     by {actorName(row.createdByAuthIdentityId)}
                   </span>
+                  {!deleted && !scanCleared && (
+                    <RecheckScanForm
+                      action={recheckAttachmentScanAction.bind(
+                        null,
+                        attachment.id,
+                      )}
+                    />
+                  )}
                   {!deleted && (
                     <>
                       <UnlinkAttachmentForm

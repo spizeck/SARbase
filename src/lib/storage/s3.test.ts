@@ -166,6 +166,11 @@ describe("S3FileStorageProvider — direct uploads", () => {
       secretAccessKey: "s",
       client: { send: partialSend } as never,
     });
-    await expect(q.promoteObject("a/b", "c/d")).resolves.toBeUndefined();
+    // Copy succeeded — the returned version identity may be nulls when
+    // the store reports neither field; the promote itself succeeded.
+    await expect(q.promoteObject("a/b", "c/d")).resolves.toEqual({
+      versionId: null,
+      etag: null,
+    });
   });
 });

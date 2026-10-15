@@ -21,7 +21,8 @@ import {
  * closed there.
  */
 export class InMemoryFileStorageProvider implements FileStorageProvider {
-  readonly providerName = "memory";
+  /** Widened to `string` so test subclasses can masquerade as "s3". */
+  readonly providerName: string = "memory";
 
   readonly objects = new Map<
     string,
@@ -44,15 +45,17 @@ export class InMemoryFileStorageProvider implements FileStorageProvider {
     }
   }
 
-  async put(key: string, body: Uint8Array, contentType: string): Promise<void> {
+  async put(key: string, body: Uint8Array, contentType: string) {
     this.maybeFail("put", key);
+    const etag = `mem-${createHash("sha256").update(body).digest("hex").slice(0, 16)}`;
     this.objects.set(key, {
       body: new Uint8Array(body),
       contentType,
       // A cheap content etag: re-uploading different bytes (the grant
       // replay CodeRabbit flagged) produces a different version token.
-      etag: `mem-${createHash("sha256").update(body).digest("hex").slice(0, 16)}`,
+      etag,
     });
+    return { versionId: null, etag };
   }
 
   async openRead(key: string): Promise<StorageObjectStream> {
@@ -124,7 +127,7 @@ export class InMemoryFileStorageProvider implements FileStorageProvider {
     stagingKey: string,
     finalKey: string,
     options?: { ifMatchEtag?: string },
-  ): Promise<void> {
+  ): Promise<{ versionId: string | null; etag: string | null }> {
     this.maybeFail("promoteObject", stagingKey);
     const object = this.objects.get(stagingKey);
     if (!object) {
@@ -141,5 +144,14 @@ export class InMemoryFileStorageProvider implements FileStorageProvider {
     }
     this.objects.set(finalKey, object);
     this.objects.delete(stagingKey);
+    return { versionId: null, etag: object.etag };
+  }
+
+  // No tag store — scan reconciliation reports "no tag" unless a test
+  // subclass provides one.
+  async getObjectTag(key: string, tagKey: string): Promise<string | null> {
+    void key;
+    void tagKey;
+    return null;
   }
 }

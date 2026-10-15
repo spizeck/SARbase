@@ -2,6 +2,7 @@ import {
   CopyObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
+  GetObjectTaggingCommand,
   HeadObjectCommand,
   NoSuchKey,
   NotFound,
@@ -75,7 +76,7 @@ export class S3FileStorageProvider implements FileStorageProvider {
   async put(key: string, body: Uint8Array, contentType: string) {
     assertStorageKeyShape(key);
     try {
-      await this.client.send(
+      const response = await this.client.send(
         new PutObjectCommand({
           Bucket: this.bucket,
           Key: key,
@@ -87,6 +88,10 @@ export class S3FileStorageProvider implements FileStorageProvider {
           // SARbase never constructs public object URLs.
         }),
       );
+      return {
+        versionId: response.VersionId ?? null,
+        etag: response.ETag ?? null,
+      };
     } catch (error) {
       throw mapS3Error(error, "write");
     }
@@ -124,6 +129,7 @@ export class S3FileStorageProvider implements FileStorageProvider {
         sizeBytes: response.ContentLength ?? 0,
         contentType: response.ContentType ?? null,
         etag: response.ETag ?? null,
+        versionId: response.VersionId ?? null,
       };
     } catch (error) {
       if (isS3NotFound(error)) {
@@ -197,8 +203,9 @@ export class S3FileStorageProvider implements FileStorageProvider {
   ) {
     assertStorageKeyShape(stagingKey);
     assertStorageKeyShape(finalKey);
+    let stored: { versionId: string | null; etag: string | null };
     try {
-      await this.client.send(
+      const copy = await this.client.send(
         new CopyObjectCommand({
           Bucket: this.bucket,
           Key: finalKey,
@@ -206,6 +213,12 @@ export class S3FileStorageProvider implements FileStorageProvider {
           CopySourceIfMatch: options?.ifMatchEtag,
         }),
       );
+      // The version identity of the NEW object — scan results bind to
+      // this, not to the staging object that was verified.
+      stored = {
+        versionId: copy.VersionId ?? null,
+        etag: copy.CopyObjectResult?.ETag ?? null,
+      };
     } catch (error) {
       throw mapS3Error(error, "write");
     }
@@ -216,6 +229,28 @@ export class S3FileStorageProvider implements FileStorageProvider {
     } catch {
       // Duplicate staging object — lifecycle expiry cleans it; a
       // failed cleanup delete must not fail a completed promote.
+    }
+    return stored;
+  }
+
+  /**
+   * Read one object tag (used by scan reconciliation for
+   * `GuardDutyMalwareScanStatus`). Requires `s3:GetObjectTagging` on the
+   * application credentials — an AccessDenied surfaces as a provider
+   * error, and a missing object/tag resolves to null.
+   */
+  async getObjectTag(key: string, tagKey: string): Promise<string | null> {
+    assertStorageKeyShape(key);
+    try {
+      const response = await this.client.send(
+        new GetObjectTaggingCommand({ Bucket: this.bucket, Key: key }),
+      );
+      return response.TagSet?.find((tag) => tag.Key === tagKey)?.Value ?? null;
+    } catch (error) {
+      if (isS3NotFound(error)) {
+        return null;
+      }
+      throw mapS3Error(error, "read");
     }
   }
 }

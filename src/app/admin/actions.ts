@@ -193,6 +193,7 @@ import {
   type AttachmentFileInput,
   type PreparedUpload,
 } from "@/lib/domain/attachments";
+import { reconcileAttachmentScan } from "@/lib/domain/malware-scan";
 import {
   createMemberInvitation,
   resendMemberInvitation,
@@ -201,6 +202,7 @@ import {
   InvitationStateError,
 } from "@/lib/domain/invitations";
 import { StorageConfigError, StorageError } from "@/lib/storage/provider";
+import { getFileStorageProvider } from "@/lib/storage/resolve";
 import {
   activateCallout,
   closeCallout,
@@ -3349,6 +3351,61 @@ export async function deleteAttachmentAction(
   // admin section's data cache rather than guess which lists contain it.
   revalidatePath("/admin", "layout");
   return {};
+}
+
+/**
+ * Re-check a non-clean attachment against the GuardDuty object tag —
+ * recovery when the EventBridge scan-result event was missed or
+ * delayed. Never downgrades a terminal state, never clears an object
+ * whose recorded version changed.
+ */
+export async function recheckAttachmentScanAction(
+  attachmentId: string,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let attachment;
+  try {
+    attachment = await requireOrgAdminForAttachment(ctx, attachmentId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  try {
+    const result = await reconcileAttachmentScan(
+      attachment,
+      getFileStorageProvider(),
+    );
+    revalidatePath("/admin", "layout");
+    switch (result.outcome) {
+      case "APPLIED_CLEAN":
+        return {
+          message: "Security scan complete — the file is now available.",
+        };
+      case "APPLIED_INFECTED":
+        return {
+          message:
+            "The file was flagged by the malware scan and remains blocked.",
+        };
+      case "APPLIED_SCAN_FAILED":
+        return {
+          message:
+            "The security scan could not complete. The file remains unavailable.",
+        };
+      case "ALREADY_TERMINAL":
+        return { message: "The scan state is already final." };
+      case "NO_TAG":
+        return {
+          message: "No scan result is available yet. The file remains pending.",
+        };
+      default:
+        return {
+          message:
+            "Scan status could not be refreshed. The file remains unavailable.",
+        };
+    }
+  } catch (error) {
+    return mapDomainError(error);
+  }
 }
 
 /* -------- Organization documents -------- */

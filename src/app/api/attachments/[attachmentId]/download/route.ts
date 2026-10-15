@@ -6,7 +6,13 @@ import {
   attachmentContentDisposition,
   openAttachmentDownload,
 } from "@/lib/domain/attachments";
+import {
+  AttachmentScanBlockedError,
+  reconcileAttachmentScan,
+} from "@/lib/domain/malware-scan";
 import { logExpected } from "@/lib/logging";
+import { prisma } from "@/lib/prisma";
+import { getFileStorageProvider } from "@/lib/storage/resolve";
 import { StorageError } from "@/lib/storage/provider";
 
 /**
@@ -26,6 +32,19 @@ import { StorageError } from "@/lib/storage/provider";
 
 interface RouteContext {
   params: Promise<{ attachmentId: string }>;
+}
+
+/** Factual user-facing message for a blocked download, by scan state. */
+function scanBlockedMessage(scanStatus: string): string {
+  switch (scanStatus) {
+    case "PENDING":
+      return "This file is still being scanned for malware. Please try again shortly.";
+    case "INFECTED":
+      return "This file was blocked by a malware scan.";
+    default:
+      // SCAN_FAILED, UNKNOWN, or a migrated/unscanned state — fail closed.
+      return "This file is unavailable: security scan did not complete.";
+  }
 }
 
 async function handleGet(_request: Request, context: RouteContext) {
@@ -51,6 +70,48 @@ async function handleGet(_request: Request, context: RouteContext) {
   } catch (error) {
     if (error instanceof AttachmentDeletedError) {
       throw new ApiError("NOT_FOUND", 404, "Not found.");
+    }
+    if (error instanceof AttachmentScanBlockedError) {
+      if (error.scanStatus === "PENDING") {
+        // Missed-event recovery: the EventBridge delivery may have
+        // failed. Read the GuardDuty object tag once — if the object
+        // version we recorded is already tagged clean, apply that
+        // result and serve the download now. A reconciliation failure
+        // never unblocks the file — it degrades to the same 423.
+        try {
+          const reconciled = await reconcileAttachmentScan(
+            attachment,
+            getFileStorageProvider(),
+          );
+          if (reconciled.outcome === "APPLIED_CLEAN") {
+            const current = await prisma.attachment.findUniqueOrThrow({
+              where: { id: attachment.id },
+            });
+            download = await openAttachmentDownload(current);
+            return respondWithDownload(download);
+          }
+        } catch (reconcileError) {
+          logExpected({
+            event: "attachment.scan_reconcile_failed",
+            subsystem: "attachments",
+            entityType: "Attachment",
+            entityId: attachment.id,
+            errorName:
+              reconcileError instanceof Error ? reconcileError.name : "unknown",
+          });
+        }
+        throw new ApiError(
+          "SCAN_NOT_CLEARED",
+          423,
+          scanBlockedMessage("PENDING"),
+          { retryAfterSeconds: 10 },
+        );
+      }
+      throw new ApiError(
+        "SCAN_NOT_CLEARED",
+        423,
+        scanBlockedMessage(error.scanStatus),
+      );
     }
     if (error instanceof StorageError) {
       if (error.code === "object_not_found") {
@@ -86,6 +147,12 @@ async function handleGet(_request: Request, context: RouteContext) {
     throw error;
   }
 
+  return respondWithDownload(download);
+}
+
+function respondWithDownload(
+  download: Awaited<ReturnType<typeof openAttachmentDownload>>,
+) {
   return new Response(download.stream, {
     status: 200,
     headers: {

@@ -1,6 +1,7 @@
 "use client";
 
-import { useActionState, useRef, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import type {
   ActionState,
@@ -459,6 +460,48 @@ export function DeleteAttachmentForm({
       </button>
       {state.message && (
         <span className="text-xs text-red-700" role="alert">
+          {state.message}
+        </span>
+      )}
+    </form>
+  );
+}
+
+/**
+ * Poll the page while a malware scan is pending — GuardDuty results
+ * arrive asynchronously, so the list refreshes on an interval until no
+ * PENDING rows remain (the server stops rendering this component then).
+ */
+export function ScanPendingRefresh() {
+  const router = useRouter();
+  useEffect(() => {
+    const timer = setInterval(() => router.refresh(), 5000);
+    return () => clearInterval(timer);
+  }, [router]);
+  return null;
+}
+
+/**
+ * Ask the server to re-check the object store for a scan result — used
+ * when an event may have been missed and the file is still blocked.
+ */
+export function RecheckScanForm({
+  action,
+}: {
+  action: () => Promise<ActionState>;
+}) {
+  const [state, formAction, pending] = useActionState(() => action(), {});
+  return (
+    <form action={formAction} className="inline-flex items-center gap-2">
+      <button
+        type="submit"
+        disabled={pending}
+        className="text-xs font-medium text-neutral-500 underline hover:text-neutral-800 disabled:opacity-50"
+      >
+        {pending ? "Checking…" : "Recheck scan"}
+      </button>
+      {state.message && (
+        <span className="text-xs text-neutral-600" role="status">
           {state.message}
         </span>
       )}

@@ -1971,6 +1971,28 @@ enum AttachmentEventAction {
   DELETED
 }
 
+// Malware-scan lifecycle for objects stored by the "s3" provider and
+// covered by GuardDuty Malware Protection for S3. The gate is
+// fail-closed: anything that is not a verified CLEAN result for the
+// EXACT recorded object version keeps the bytes unservable.
+//
+//   PENDING     — uploaded; a scan result is expected but not yet
+//                 verified for this object version.
+//   CLEAN       — an authenticated GuardDuty NO_THREATS_FOUND result
+//                 applied to storageVersionId.
+//   INFECTED    — GuardDuty reported THREATS_FOUND.
+//   SCAN_FAILED — GuardDuty reported UNSUPPORTED, ACCESS_DENIED, or
+//                 FAILED (see scanStatusReason for the raw value).
+//   UNKNOWN     — no trustworthy scan result exists (pre-integration
+//                 records, non-S3 providers, lost events).
+enum AttachmentScanStatus {
+  PENDING
+  CLEAN
+  INFECTED
+  SCAN_FAILED
+  UNKNOWN
+}
+
 // Administrative lifecycle for an organization-level document record.
 // ARCHIVED preserves the document and all its versions; it stops
 // presenting the document as current organizational reference material.
@@ -1993,7 +2015,7 @@ enum OrganizationDocumentStatus {
 // input). `description` is optional human context, indexed later by
 // search (issue #18).
 model Attachment {
-  id                       String           @id @default(cuid())
+  id                       String               @id @default(cuid())
   organizationId           String
   displayFilename          String
   mediaType                String
@@ -2002,15 +2024,33 @@ model Attachment {
   storageKey               String
   checksumSha256           String
   description              String?
-  status                   AttachmentStatus @default(ACTIVE)
+  status                   AttachmentStatus     @default(ACTIVE)
   deletedAt                DateTime?
   deletedByAuthIdentityId  String?
   uploadedByAuthIdentityId String
-  createdAt                DateTime         @default(now())
-  updatedAt                DateTime         @updatedAt
+  // Malware-scan lifecycle (S3-backed objects only). Rows predating the
+  // integration keep the UNKNOWN default — they are never auto-clean.
+  scanStatus               AttachmentScanStatus @default(UNKNOWN)
+  // Raw GuardDuty scanResultStatus that produced scanStatus
+  // (e.g. NO_THREATS_FOUND, UNSUPPORTED) and the SKIPPED statusReasons
+  // summary, for audit and operator review.
+  scanResultStatus         String?
+  scanStatusReason         String?
+  scannedAt                DateTime?
+  // EventBridge event id of the result that set the current scanStatus —
+  // joins the audit ledger in AttachmentScanEvent.
+  scanEventId              String?
+  // Object-version identity recorded at finalize: an event's versionId
+  // must equal these before it may clear this attachment, so a stale
+  // result can never bless replacement bytes.
+  storageVersionId         String?
+  storageETag              String?
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
 
-  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   events       AttachmentEvent[]
+  scanEvents   AttachmentScanEvent[]
 
   incidentLinks      IncidentAttachment[]
   incidentNoteLinks  IncidentNoteAttachment[]
@@ -2061,6 +2101,47 @@ model AttachmentEvent {
 
   @@index([attachmentId, createdAt])
   @@index([organizationId, createdAt])
+}
+
+// Append-only ledger of GuardDuty Malware Protection for S3 scan-result
+// events (delivered via EventBridge) and tag-based reconciliation
+// outcomes. Every received event is stored once — awsEventId unique —
+// before any attachment update, so the decision to clear, block, or
+// ignore an object is always auditable end-to-end.
+//
+// `outcome` records the disposition: RECEIVED when stored but not yet
+// evaluated (updated in-place before processing returns);
+// APPLIED_CLEAN / APPLIED_INFECTED / APPLIED_SCAN_FAILED for state
+// transitions; NO_ATTACHMENT when no row matches the key yet (the event
+// is re-applied when the attachment is finalized); STALE_VERSION when
+// the event's object version does not match the recorded one;
+// UNMAPPED_RESULT for unrecognized GuardDuty values; DUPLICATE for a
+// re-delivered or superseded event.
+model AttachmentScanEvent {
+  id               String   @id @default(cuid())
+  // EventBridge `id`; reconciliation entries use a synthetic
+  // `reconcile:<attachmentId>` key — uniqueness dedupes redelivery.
+  awsEventId       String   @unique
+  bucket           String
+  objectKey        String
+  objectVersionId  String?
+  objectETag       String?
+  // Raw GuardDuty values, stored verbatim for audit.
+  scanStatus       String
+  scanResultStatus String?
+  statusReasons    String[]
+  threats          Json?
+  attachmentId     String?
+  outcome          String
+  // The EventBridge `time` field — authoritative for ordering scan
+  // results; reconciliation rows carry their own observation time.
+  eventTime        DateTime
+  receivedAt       DateTime @default(now())
+
+  attachment Attachment? @relation(fields: [attachmentId], references: [id], onDelete: SetNull)
+
+  @@index([objectKey])
+  @@index([attachmentId])
 }
 
 // A general organizational record — an SOP, manual, insurance

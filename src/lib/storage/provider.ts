@@ -73,6 +73,24 @@ export interface StorageObjectStat {
    * could be re-uploaded between verification and promote.
    */
   etag?: string | null;
+  /**
+   * Provider's object-version identifier when the store versions
+   * objects (S3 `VersionId` on a versioned bucket). `null`/`undefined`
+   * on unversioned stores. Recorded on the Attachment so a scan result
+   * can be bound to the exact bytes it evaluated.
+   */
+  versionId?: string | null;
+}
+
+/**
+ * Identity of the object version a write produced — returned by `put`
+ * and `promoteObject` so the domain can bind scan results to the exact
+ * stored bytes. `null` values mean the store does not version or did
+ * not report it.
+ */
+export interface StoredObjectVersion {
+  versionId: string | null;
+  etag: string | null;
 }
 
 /**
@@ -104,7 +122,15 @@ export interface FileStorageProvider {
    * provider owns durability semantics; a resolved promise means the
    * object is stored.
    */
-  put(key: string, body: Uint8Array, contentType: string): Promise<void>;
+  /**
+   * Returns the stored object's version identity (versioned stores) —
+   * `null` fields when the store cannot provide one.
+   */
+  put(
+    key: string,
+    body: Uint8Array,
+    contentType: string,
+  ): Promise<StoredObjectVersion>;
 
   /**
    * Open the object for streaming reads. Throws StorageError
@@ -155,5 +181,13 @@ export interface FileStorageProvider {
     stagingKey: string,
     finalKey: string,
     options?: { ifMatchEtag?: string },
-  ): Promise<void>;
+  ): Promise<StoredObjectVersion>;
+
+  /**
+   * OPTIONAL capability — read a single object tag (S3
+   * `GetObjectTagging`, e.g. `GuardDutyMalwareScanStatus`). Used only by
+   * scan reconciliation; `null` when the tag is absent or the provider
+   * does not support tags.
+   */
+  getObjectTag?(key: string, tagKey: string): Promise<string | null>;
 }
