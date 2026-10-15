@@ -70,13 +70,16 @@ export function formatDateOnly(d: Date | null | undefined): string | null {
  * absolute date is clearer than a large day count.
  */
 export function relativeTimeLabel(date: Date, now: Date = new Date()): string {
-  const elapsedSeconds = Math.round((now.getTime() - date.getTime()) / 1000);
+  const elapsedMs = now.getTime() - date.getTime();
+  // Check the raw diff, not the rounded seconds: Math.round can produce
+  // -0 for a sub-500ms future instant, and -0 < 0 is false.
+  const future = elapsedMs < 0;
+  const elapsedSeconds = Math.round(elapsedMs / 1000);
   if (Math.abs(elapsedSeconds) < 60) {
     // A sub-minute FUTURE instant still differs from "just now" — an
     // expiry reading "just now" looks already-expired.
-    return elapsedSeconds < 0 ? "in a few seconds" : "just now";
+    return future ? "in a few seconds" : "just now";
   }
-  const future = elapsedSeconds < 0;
   const suffix = (n: number, unit: string) =>
     future
       ? `in ${n} ${unit}${n === 1 ? "" : "s"}`

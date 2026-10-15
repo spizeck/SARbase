@@ -171,6 +171,11 @@ describe("relativeTimeLabel", () => {
     expect(relativeTimeLabel(INSTANT("2027-11-14T12:00:30.000Z"), now)).toBe(
       "in a few seconds",
     );
+    // Sub-500ms future rounds to -0 seconds, and -0 < 0 is false — the
+    // raw diff must decide the direction.
+    expect(relativeTimeLabel(INSTANT("2027-11-14T12:00:00.300Z"), now)).toBe(
+      "in a few seconds",
+    );
     expect(relativeTimeLabel(INSTANT("2027-11-14T12:15:00.000Z"), now)).toBe(
       "in 15 minutes",
     );

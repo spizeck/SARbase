@@ -42,7 +42,23 @@ export function inviteAuthErrorView(
             ? "Couldn't sign you in — either the password is wrong or no account exists for this email yet. If you haven't created an account, choose “Create an account” above."
             : "Invalid email or password.",
       };
+    case "auth/user-disabled":
+      return {
+        message: "This account has been disabled. Contact the administrator.",
+      };
+    case "auth/network-request-failed":
+      return {
+        message:
+          "Couldn't reach the sign-in service. Check your connection and try again.",
+      };
+    case "auth/operation-not-allowed":
+      return {
+        message:
+          "Email sign-in isn't enabled for this deployment. Contact the administrator.",
+      };
     default:
-      return { message: "Invalid email or password." };
+      // An unlisted Firebase code is not necessarily a credential
+      // problem — don't misdiagnose it.
+      return { message: "Sign-in failed. Please try again." };
   }
 }
