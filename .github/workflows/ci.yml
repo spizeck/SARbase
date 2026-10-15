@@ -206,9 +206,11 @@ jobs:
         run: pipx install cfn-lint
       - name: Lint CloudFormation templates
         run: |
-          templates=$(find infra -name '*.yaml' -o -name '*.yml')
-          [ -n "$templates" ] || { echo "No infra templates found"; exit 1; }
-          cfn-lint $templates
+          # NUL-delimited so template paths containing spaces survive.
+          find infra \( -name '*.yaml' -o -name '*.yml' \) -print0 |
+            xargs -0 -r cfn-lint
+          find infra \( -name '*.yaml' -o -name '*.yml' \) | grep -q . \
+            || { echo "No infra templates found"; exit 1; }
 
   # Database gates against the docker-compose Postgres: replay every
   # migration onto an empty database, diff migration history against
