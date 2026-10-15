@@ -473,6 +473,7 @@ export function listAssets(
   } = {},
 ) {
   const query = options.query?.trim();
+  const category = options.category?.trim();
   return prisma.asset.findMany({
     where: {
       organizationId,
@@ -496,10 +497,10 @@ export function listAssets(
             ],
           }
         : {}),
-      ...(options.category?.trim()
+      ...(category
         ? {
             category: {
-              equals: options.category.trim(),
+              equals: category,
               mode: "insensitive",
             },
           }
@@ -508,6 +509,23 @@ export function listAssets(
     orderBy: { name: "asc" },
     include: assetInclude,
   });
+}
+
+/**
+ * DISTINCT is case-sensitive in Postgres, so "Radio" and "radio" would
+ * both appear in suggestion lists. Keep the first spelling seen.
+ */
+function distinctCaseInsensitive(values: (string | null)[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of values) {
+    if (v === null) continue;
+    const key = v.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+  }
+  return out;
 }
 
 /**
@@ -522,7 +540,7 @@ export async function listAssetCategories(organizationId: string) {
     distinct: ["category"],
     orderBy: { category: "asc" },
   });
-  return rows.map((r) => r.category!);
+  return distinctCaseInsensitive(rows.map((r) => r.category));
 }
 
 /**
@@ -537,7 +555,7 @@ export async function listAssetVendorNames(organizationId: string) {
     distinct: ["vendor"],
     orderBy: { vendor: "asc" },
   });
-  return rows.map((r) => r.vendor!);
+  return distinctCaseInsensitive(rows.map((r) => r.vendor));
 }
 
 /**
@@ -746,7 +764,7 @@ export async function listInventoryCategories(organizationId: string) {
     distinct: ["category"],
     orderBy: { category: "asc" },
   });
-  return rows.map((r) => r.category!);
+  return distinctCaseInsensitive(rows.map((r) => r.category));
 }
 
 /** Distinct vendor strings already recorded on inventory items. */
@@ -757,7 +775,7 @@ export async function listInventoryVendorNames(organizationId: string) {
     distinct: ["vendor"],
     orderBy: { vendor: "asc" },
   });
-  return rows.map((r) => r.vendor!);
+  return distinctCaseInsensitive(rows.map((r) => r.vendor));
 }
 
 export async function createInventoryItem(

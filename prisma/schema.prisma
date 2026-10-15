@@ -65,6 +65,11 @@ model Organization {
   // admin hides it; it is guidance, never a gate — every item is
   // optional and nothing in the application requires completing it.
   setupChecklistDismissedAt DateTime?
+  // When the settings form was last saved. Set only by the settings
+  // update path — NOT derivable from updatedAt, which @updatedAt bumps
+  // on every write (including the checklist dismissal above) and would
+  // falsely mark settings as reviewed.
+  settingsReviewedAt        DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

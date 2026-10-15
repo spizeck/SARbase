@@ -35,19 +35,10 @@ export interface OrganizationSetup {
   items: SetupChecklistItem[];
 }
 
-/**
- * "Settings reviewed" is not a field — the honest signal available is
- * that an admin saved the settings form at least once after the row was
- * provisioned. Provisioning writes createdAt/updatedAt in the same
- * insert, so a later update leaves a real gap; a small epsilon absorbs
- * clock precision differences between the two generated timestamps.
- */
-const SETTINGS_REVIEWED_EPSILON_MS = 1_000;
-
 export function computeSetupChecklist(input: {
   organizationId: string;
-  createdAt: Date;
-  updatedAt: Date;
+  /** Stamped by an actual settings save — see Organization.settingsReviewedAt. */
+  settingsReviewedAt: Date | null;
   dismissedAt: Date | null;
   units: number;
   members: number;
@@ -62,9 +53,7 @@ export function computeSetupChecklist(input: {
       id: "settings",
       label: "Review organization settings — name and timezone",
       href: `${org}#details-heading`,
-      done:
-        input.updatedAt.getTime() - input.createdAt.getTime() >
-        SETTINGS_REVIEWED_EPSILON_MS,
+      done: input.settingsReviewedAt !== null,
       optional: false,
     },
     {
@@ -126,8 +115,7 @@ export async function getOrganizationSetup(
   const organization = await prisma.organization.findUnique({
     where: { id: organizationId },
     select: {
-      createdAt: true,
-      updatedAt: true,
+      settingsReviewedAt: true,
       setupChecklistDismissedAt: true,
       _count: {
         select: {
@@ -144,8 +132,7 @@ export async function getOrganizationSetup(
   if (!organization) return null;
   return computeSetupChecklist({
     organizationId,
-    createdAt: organization.createdAt,
-    updatedAt: organization.updatedAt,
+    settingsReviewedAt: organization.settingsReviewedAt,
     dismissedAt: organization.setupChecklistDismissedAt,
     units: organization._count.units,
     members: organization._count.members,

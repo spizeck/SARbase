@@ -221,8 +221,17 @@ export function AssetForm({
 }) {
   const [state, formAction, pending] = useActionState(action, {});
   const id = (f: string) => `asset-${f}`;
+  // React resets uncontrolled inputs when a form action completes, so
+  // the duplicate warning would erase everything entered. The action
+  // echoes the submitted values; remounting on them restores the user's
+  // work (and reverts the confirm checkbox to unchecked).
+  const submitted = state.duplicates?.length ? state.submitted : undefined;
   return (
-    <form action={formAction} className="space-y-3">
+    <form
+      key={submitted ? "dup-warning" : "base"}
+      action={formAction}
+      className="space-y-3"
+    >
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div>
           <label htmlFor={id("name")} className={labelClass}>
@@ -234,7 +243,7 @@ export function AssetForm({
             type="text"
             required
             maxLength={120}
-            defaultValue={defaults?.name}
+            defaultValue={submitted?.name ?? defaults?.name}
             placeholder="e.g. Rescue Boat 1"
             aria-invalid={Boolean(state.fieldErrors?.name)}
             aria-describedby={id("name-error")}
@@ -251,7 +260,9 @@ export function AssetForm({
             name="category"
             type="text"
             maxLength={60}
-            defaultValue={defaults?.category ?? undefined}
+            defaultValue={
+              submitted?.category ?? defaults?.category ?? undefined
+            }
             placeholder="e.g. Vessel, Radio, Medical"
             list={id("category-suggestions")}
             aria-invalid={Boolean(state.fieldErrors?.category)}
@@ -279,7 +290,9 @@ export function AssetForm({
             name="manufacturer"
             type="text"
             maxLength={120}
-            defaultValue={defaults?.manufacturer ?? undefined}
+            defaultValue={
+              submitted?.manufacturer ?? defaults?.manufacturer ?? undefined
+            }
             className={inputClass}
           />
         </div>
@@ -292,7 +305,7 @@ export function AssetForm({
             name="model"
             type="text"
             maxLength={120}
-            defaultValue={defaults?.model ?? undefined}
+            defaultValue={submitted?.model ?? defaults?.model ?? undefined}
             className={inputClass}
           />
         </div>
@@ -305,7 +318,9 @@ export function AssetForm({
             name="serialNumber"
             type="text"
             maxLength={120}
-            defaultValue={defaults?.serialNumber ?? undefined}
+            defaultValue={
+              submitted?.serialNumber ?? defaults?.serialNumber ?? undefined
+            }
             className={inputClass}
           />
         </div>
@@ -320,7 +335,9 @@ export function AssetForm({
             name="assetTag"
             type="text"
             maxLength={60}
-            defaultValue={defaults?.assetTag ?? undefined}
+            defaultValue={
+              submitted?.assetTag ?? defaults?.assetTag ?? undefined
+            }
             placeholder="e.g. SAR-0042"
             aria-invalid={Boolean(state.fieldErrors?.assetTag)}
             aria-describedby={id("tag-error")}
@@ -339,7 +356,9 @@ export function AssetForm({
             id={id("purchased")}
             name="purchaseDate"
             type="date"
-            defaultValue={defaults?.purchaseDate ?? undefined}
+            defaultValue={
+              submitted?.purchaseDate ?? defaults?.purchaseDate ?? undefined
+            }
             aria-invalid={Boolean(state.fieldErrors?.purchaseDate)}
             aria-describedby={id("purchased-error")}
             className={inputClass}
@@ -358,7 +377,7 @@ export function AssetForm({
             name="vendor"
             type="text"
             maxLength={120}
-            defaultValue={defaults?.vendor ?? undefined}
+            defaultValue={submitted?.vendor ?? defaults?.vendor ?? undefined}
             placeholder="Where it was bought, if useful"
             list={id("vendor-suggestions")}
             className={inputClass}
@@ -391,7 +410,7 @@ export function AssetForm({
           <select
             id={id("unit")}
             name="unitId"
-            defaultValue={defaults?.unitId ?? ""}
+            defaultValue={submitted?.unitId ?? defaults?.unitId ?? ""}
             className={inputClass}
           >
             <option value="">Organization-wide</option>
@@ -423,7 +442,9 @@ export function AssetForm({
           <select
             id={id("location")}
             name="storageLocationId"
-            defaultValue={defaults?.storageLocationId ?? ""}
+            defaultValue={
+              submitted?.storageLocationId ?? defaults?.storageLocationId ?? ""
+            }
             aria-invalid={Boolean(state.fieldErrors?.storageLocationId)}
             aria-describedby={id("location-error")}
             className={inputClass}
@@ -461,7 +482,9 @@ export function AssetForm({
           <select
             id={id("parent")}
             name="parentAssetId"
-            defaultValue={defaults?.parentAssetId ?? ""}
+            defaultValue={
+              submitted?.parentAssetId ?? defaults?.parentAssetId ?? ""
+            }
             aria-invalid={Boolean(state.fieldErrors?.parentAssetId)}
             aria-describedby={id("parent-error")}
             className={inputClass}
@@ -491,7 +514,9 @@ export function AssetForm({
           <select
             id={id("condition")}
             name="condition"
-            defaultValue={defaults?.condition ?? "UNKNOWN"}
+            defaultValue={
+              submitted?.condition ?? defaults?.condition ?? "UNKNOWN"
+            }
             className={inputClass}
           >
             <option value="UNKNOWN">Unknown</option>
@@ -507,7 +532,7 @@ export function AssetForm({
           <select
             id={id("status")}
             name="status"
-            defaultValue={defaults?.status ?? "ACTIVE"}
+            defaultValue={submitted?.status ?? defaults?.status ?? "ACTIVE"}
             className={inputClass}
           >
             <option value="ACTIVE">Active</option>
@@ -530,7 +555,7 @@ export function AssetForm({
           name="notes"
           rows={2}
           maxLength={2000}
-          defaultValue={defaults?.notes ?? undefined}
+          defaultValue={submitted?.notes ?? defaults?.notes ?? undefined}
           className={inputClass}
         />
       </div>

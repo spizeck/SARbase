@@ -4,8 +4,7 @@ import { computeSetupChecklist } from "./setup";
 
 const base = {
   organizationId: "org_1",
-  createdAt: new Date("2026-10-01T00:00:00.000Z"),
-  updatedAt: new Date("2026-10-01T00:00:00.000Z"),
+  settingsReviewedAt: null as Date | null,
   dismissedAt: null as Date | null,
   units: 0,
   members: 0,
@@ -24,20 +23,17 @@ describe("computeSetupChecklist", () => {
     expect(setup.totalCount).toBe(setup.items.length);
   });
 
-  it("treats a settings save after provisioning as settings reviewed", () => {
-    const setup = computeSetupChecklist({
+  it("marks settings reviewed only after an explicit settings save", () => {
+    // The checklist dismissal write bumps updatedAt — it must NOT be
+    // readable as "settings reviewed"; only the dedicated column is.
+    const saved = computeSetupChecklist({
       ...base,
-      updatedAt: new Date("2026-10-01T00:02:00.000Z"),
+      settingsReviewedAt: new Date("2026-10-01T00:02:00.000Z"),
     });
-    expect(setup.items.find((i) => i.id === "settings")?.done).toBe(true);
-  });
-
-  it("does not read sub-second timestamp jitter as a settings save", () => {
-    const setup = computeSetupChecklist({
-      ...base,
-      updatedAt: new Date(base.createdAt.getTime() + 500),
-    });
-    expect(setup.items.find((i) => i.id === "settings")?.done).toBe(false);
+    expect(saved.items.find((i) => i.id === "settings")?.done).toBe(true);
+    expect(
+      computeSetupChecklist(base).items.find((i) => i.id === "settings")?.done,
+    ).toBe(false);
   });
 
   it("marks record-dependent items done from counts", () => {
@@ -70,7 +66,7 @@ describe("computeSetupChecklist", () => {
 
     const complete = computeSetupChecklist({
       ...base,
-      updatedAt: new Date("2026-10-01T01:00:00.000Z"),
+      settingsReviewedAt: new Date("2026-10-01T01:00:00.000Z"),
       units: 1,
       members: 5,
       storageLocations: 1,

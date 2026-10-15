@@ -268,6 +268,13 @@ export interface ActionState {
    * Advisory only: duplicates are allowed, just surfaced.
    */
   duplicates?: { id: string; label: string; href: string }[];
+  /**
+   * Echo of the submitted field values alongside `duplicates`. React
+   * resets uncontrolled form inputs after a form action completes, so
+   * the warning would otherwise wipe everything the user typed — the
+   * form remounts on these values while the warning is displayed.
+   */
+  submitted?: Record<string, string>;
 }
 
 function zodErrors(error: {
@@ -1183,6 +1190,23 @@ function mapAssetError(error: unknown): ActionState {
   return mapDomainError(error);
 }
 
+const ASSET_FORM_FIELDS = [
+  "name",
+  "category",
+  "manufacturer",
+  "model",
+  "serialNumber",
+  "assetTag",
+  "purchaseDate",
+  "vendor",
+  "unitId",
+  "storageLocationId",
+  "parentAssetId",
+  "condition",
+  "status",
+  "notes",
+] as const;
+
 /**
  * Advisory duplicate gate: an identical name, serial, or tag is often a
  * double-entry mistake, but can also be legitimate (two identical
@@ -1207,6 +1231,12 @@ async function assetDuplicateWarning(
   });
   if (duplicates.length === 0) return null;
   return {
+    // The form remounts on these so the warning doesn't cost the user
+    // everything they typed (uncontrolled inputs reset on action
+    // completion).
+    submitted: Object.fromEntries(
+      ASSET_FORM_FIELDS.map((f) => [f, String(formData.get(f) ?? "")]),
+    ),
     duplicates: duplicates.map((d) => ({
       id: d.id,
       label: [
