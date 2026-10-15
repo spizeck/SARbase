@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  SARbase — GuardDuty Malware Protection for S3 scan-result delivery.
+
+  GuardDuty emits "GuardDuty Malware Protection Object Scan Result"
+  events on the default EventBridge bus. This stack routes the events
+  for ONE bucket and ONE key prefix straight to the SARbase scan-ingest
+  endpoint via an EventBridge API destination — no compute code.
+
+    GuardDuty → EventBridge rule → API destination
+                                   (Connection: Authorization:
+                                    Bearer <token>, stored in an
+                                    EventBridge-managed Secrets
+                                    Manager secret)
+                                 → POST {AppBaseUrl}/api/internal/
+                                    guardduty-scan-result
+
+  Terminal delivery failures land in the SQS dead-letter queue and a
+  CloudWatch alarm fires on any visible DLQ message — a failed delivery
+  never silently leaves an attachment stuck at PENDING.
+
+  Deploy ONE stack per environment (preview stacks must use a distinct
+  EnvironmentName, bucket, and token — never share the production
+  endpoint secret across environments).
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    AllowedValues: [prod, preview]
+    Description: Deployment environment — names all created resources.
+  AppBaseUrl:
+    Type: String
+    Description: >
+      Public base URL of the SARbase deployment, no trailing slash —
+      e.g. https://sarbase.example.com. The endpoint path is appended
+      by the template.
+    AllowedPattern: "^https://[^/]+$"
+    ConstraintDescription: Must be an https:// origin with no path.
+  S3BucketName:
+    Type: String
+    Description: >
+      The bucket protected by the GuardDuty Malware Protection plan —
+      only scan results for this bucket are forwarded.
+  WebhookBearerToken:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    MaxLength: 512
+    Description: >
+      Shared bearer token — must equal the Vercel
+      MALWARE_SCAN_WEBHOOK_TOKEN for the same environment. Stored only
+      in the EventBridge-managed Secrets Manager secret; never logged.
+  AlarmTopicArn:
+    Type: String
+    Default: ""
+    Description: >
+      Optional SNS topic ARN for the DLQ alarm. Leave empty to create
+      the alarm without notifications (still visible in CloudWatch).
+
+Conditions:
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, ""]]
+
+Resources:
+  ScanEventDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "sarbase-${EnvironmentName}-guardduty-scan-dlq"
+      # Fourteen days: long enough to notice an outage and replay.
+      MessageRetentionPeriod: 1209600
+      SqsManagedSSEEnabled: true
+
+  ScanEventDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref ScanEventDLQ]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowEventBridgeDeadLetter
+            Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt ScanEventDLQ.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt GuardDutyScanResultRule.Arn
+
+  ScanWebhookConnection:
+    Type: AWS::Events::Connection
+    Properties:
+      Name: !Sub "sarbase-${EnvironmentName}-scan-webhook"
+      AuthorizationType: API_KEY
+      AuthParameters:
+        ApiKeyAuthParameters:
+          # The endpoint contract is `Authorization: Bearer <token>`;
+          # API-key auth with this header name/value pair satisfies it.
+          ApiKeyName: Authorization
+          ApiKeyValue: !Sub "Bearer ${WebhookBearerToken}"
+      Description: SARbase scan-ingest bearer credential.
+
+  ScanWebhookApiDestination:
+    Type: AWS::Events::ApiDestination
+    Properties:
+      Name: !Sub "sarbase-${EnvironmentName}-scan-ingest"
+      ConnectionArn: !GetAtt ScanWebhookConnection.Arn
+      InvocationEndpoint: !Sub "${AppBaseUrl}/api/internal/guardduty-scan-result"
+      HttpMethod: POST
+      # Scan volume is bounded by upload volume; cap defensively so a
+      # pathological event source cannot stampede the app.
+      InvocationRateLimitPerSecond: 30
+
+  ApiDestinationInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "sarbase-${EnvironmentName}-scan-event-invoke"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: invoke-scan-ingest
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: events:InvokeApiDestination
+                Resource: !GetAtt ScanWebhookApiDestination.Arn
+
+  GuardDutyScanResultRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "sarbase-${EnvironmentName}-guardduty-scan-result"
+      EventBusName: default
+      State: ENABLED
+      EventPattern:
+        source: ["aws.guardduty"]
+        detail-type: ["GuardDuty Malware Protection Object Scan Result"]
+        detail:
+          s3ObjectDetails:
+            bucketName: [!Ref S3BucketName]
+            # GuardDuty also scans staging/ uploads; the endpoint only
+            # accepts organizations/<org>/attachments/<id> keys, so
+            # pre-filtering keeps staging rejections out of the DLQ.
+            objectKey: [{ prefix: "organizations/" }]
+      Targets:
+        - Id: sarbase-scan-ingest
+          Arn: !GetAtt ScanWebhookApiDestination.Arn
+          RoleArn: !GetAtt ApiDestinationInvokeRole.Arn
+          # Bounded retries: a 503 (unconfigured app) or 5xx recovers;
+          # a permanently rejected event burns ten attempts then lands
+          # in the DLQ instead of retrying for 24 hours.
+          RetryPolicy:
+            MaximumRetryAttempts: 10
+            MaximumEventAgeInSeconds: 3600
+          DeadLetterConfig:
+            Arn: !GetAtt ScanEventDLQ.Arn
+
+  ScanEventDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "sarbase-${EnvironmentName}-guardduty-scan-dlq"
+      AlarmDescription: >
+        GuardDuty scan-result delivery failed permanently — events are
+        parked in the SQS DLQ. Affected attachments stay PENDING
+        (download-blocked) until the events are replayed or reconciled.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !Ref ScanEventDLQ
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], []]
+
+Outputs:
+  ScanResultRuleName:
+    Value: !Ref GuardDutyScanResultRule
+  ApiDestinationEndpoint:
+    Value: !GetAtt ScanWebhookApiDestination.InvocationEndpoint
+  DeadLetterQueueUrl:
+    Value: !Ref ScanEventDLQ
+  DeadLetterQueueArn:
+    Value: !GetAtt ScanEventDLQ.Arn

@@ -334,10 +334,39 @@ attached policy scoped to one bucket and two prefixes — replace
         "arn:aws:s3:::<BUCKET>/staging/*",
         "arn:aws:s3:::<BUCKET>/organizations/*"
       ]
+    },
+    {
+      "Sid": "SarbaseAttachmentTags",
+      "Effect": "Allow",
+      "Action": ["s3:GetObjectTagging", "s3:GetObjectVersionTagging"],
+      "Resource": [
+        "arn:aws:s3:::<BUCKET>/staging/*",
+        "arn:aws:s3:::<BUCKET>/organizations/*"
+      ]
+    },
+    {
+      "Sid": "SarbaseAttachmentTagWrites",
+      "Effect": "Allow",
+      "Action": ["s3:PutObjectTagging"],
+      "Resource": "arn:aws:s3:::<BUCKET>/organizations/*"
     }
   ]
 }
 ```
+
+The tagging statements are REQUIRED once the GuardDuty protection
+plan's post-scan tagging option is enabled, for two reasons:
+
+- `reconcileAttachmentScan` reads `GuardDutyMalwareScanStatus` via
+  `GetObjectTagging` (with `VersionId` → `GetObjectVersionTagging`
+  must also be allowed on versioned buckets).
+- `promoteObject`'s `CopyObject` uses the default `TaggingDirective:
+COPY`. A staging object GuardDuty already tagged cannot be copied
+  unless the credential can `GetObjectTagging` on `staging/*` (read
+  the source tags) and `PutObjectTagging` on `organizations/*` (write
+  them on the copy). Missing either permission fails the finalize —
+  this is why staging events carry no security weight: the copied tag
+  is ignored; only an event matching the final version counts.
 
 Then create an access key pair for that user ("Application running
 outside AWS" use case). That pair feeds the `FILE_STORAGE_S3_*` Vercel
@@ -483,7 +512,9 @@ browser → presigned POST → S3 staging object
 
 GuardDuty (protection plan on bucket) → EventBridge event
 "GuardDuty Malware Protection Object Scan Result"
-        → Lambda forwarder → POST /api/internal/guardduty-scan-result
+        → EventBridge API destination (Connection holds the bearer
+          token in a managed Secrets Manager secret; SQS DLQ + alarm
+          on the rule target) → POST /api/internal/guardduty-scan-result
         → AttachmentScanEvent row (immutable ledger, awsEventId unique)
         → Attachment.scanStatus updated IFF event versionId/ETag matches
           the recorded object version
@@ -541,32 +572,41 @@ posture above.
 The production bucket is `sarbase-documents-prod-983902695382`
 (`us-east-1`). Steps — none of these are applied by code:
 
-1. **Enable GuardDuty Malware Protection for S3** — GuardDuty console →
-   Malware Protection for S3 → add the bucket. Enable **post-scan
-   object tagging** (`GuardDutyMalwareScanStatus`) so reconciliation can
-   read results without waiting on event delivery.
-2. **Enable bucket versioning** (bucket → Properties → Bucket
-   versioning → Enable) so every scan result pins to an object version;
-   add the `NoncurrentVersionExpiration` lifecycle rule noted in
-   [Create the bucket](#1-create-the-bucket).
-3. **EventBridge rule** — default event bus, pattern:
-   `source = aws.guardduty`, `detail-type = GuardDuty Malware Protection
-Object Scan Result`, `detail.s3ObjectDetails.bucketName = <bucket>`.
-4. **Lambda forwarder** — a minimal function (Python or Node) that POSTs
-   the raw event body to `https://<app>/api/internal/guardduty-scan-result`
-   with header `Authorization: Bearer <MALWARE_SCAN_WEBHOOK_TOKEN>`. Store
-   the token in the Lambda environment or Secrets Manager; the function
-   needs no other AWS permissions. Add a DLQ on the Lambda (or an
-   SQS between EventBridge and Lambda) so undelivered events are retained
-   for replay — a failed delivery must never silently leave a file
-   permanently pending.
+1. **GuardDuty Malware Protection for S3** — confirmed enabled for the
+   production bucket by the owner.
+2. **Post-scan object tagging** — GuardDuty console → Malware
+   Protection for S3 → the bucket's protection plan → Edit → enable
+   **"Add the scan result status as tags"** (the tag key is
+   `GuardDutyMalwareScanStatus`). This powers tag reconciliation —
+   without it a missed event leaves the file blocked until an admin
+   investigates. Verify the option's current state in the console; it
+   is not enabled merely because the protection plan is.
+3. **Bucket versioning** — confirmed enabled. Add the
+   `NoncurrentVersionExpiration` lifecycle rule noted in
+   [Create the bucket](#1-create-the-bucket) so deleted content
+   actually expires.
+4. **Event delivery** — deploy `infra/guardduty-scan-events.yaml`
+   (CloudFormation). It creates the bucket/prefix-filtered EventBridge
+   rule, an API destination that POSTs the raw event to
+   `/api/internal/guardduty-scan-result` (the Connection stores the
+   `Authorization: Bearer` credential in an EventBridge-managed
+   Secrets Manager secret), an SQS dead-letter queue, and a CloudWatch
+   alarm on DLQ depth. One stack per environment — see
+   `runbooks/guardduty-scan-activation.md` for the ordered procedure.
+
+   Alternative (if API destinations are unavailable in the region): a
+   minimal Lambda that POSTs the raw event with the same bearer header
+   — the endpoint contract is identical either way.
+
 5. **Vercel env** — set `MALWARE_SCAN_WEBHOOK_TOKEN` (≥32 random chars,
-   matching the Lambda) and `MALWARE_SCAN_AWS_ACCOUNT_ID` (`983902695382`
-   for the production account). The bucket and region come from the
-   existing `FILE_STORAGE_S3_*` variables.
-6. **IAM** — extend the app credential per Minimal IAM posture with
-   `s3:GetObjectTagging` + `s3:GetObjectVersionTagging` on
-   `arn:aws:s3:::<bucket>/organizations/*`.
+   matching the stack's `WebhookBearerToken` parameter) and
+   `MALWARE_SCAN_AWS_ACCOUNT_ID` (`983902695382`). The bucket and
+   region come from the existing `FILE_STORAGE_S3_*` variables.
+6. **IAM** — extend the app credential per
+   [IAM policy](#4-iam-policy-and-credentials): `s3:GetObjectTagging` +
+   `s3:GetObjectVersionTagging` on `staging/*` and `organizations/*`,
+   `s3:PutObjectTagging` on `organizations/*` (CopyObject carries the
+   staging object's tags into the final key).
 
 ### End-to-end verification
 
@@ -581,7 +621,16 @@ Object Scan Result`, `detail.s3ObjectDetails.bucketName = <bucket>`.
 ### Historical attachments (backfill)
 
 Rows created before this migration carry `scanStatus = UNKNOWN` and are
-download-blocked on `s3`. Options, in order of preference:
+download-blocked on `s3`. **Run the inventory first** — it is read-only
+and reports exactly what enforcement will block:
+
+```
+npm run attachments:scan-inventory
+```
+
+It prints blocked counts per organization, the oldest blocked row, rows
+with no bindable object identity, and the event-ledger posture. Nothing
+is modified. Options for the blocked rows, in order of preference:
 
 1. **Rescan** — copy each object in place (`aws s3api copy-object` with
    the same key, or GuardDuty's on-demand scan if available) so a fresh
@@ -601,7 +650,11 @@ download-blocked on `s3`. Options, in order of preference:
 - `attachment.scan_result` — every applied outcome; alert on
   `APPLIED_INFECTED` (possible live malware in the org's files) and on a
   sustained `PENDING` count (query `Attachment` where `scanStatus =
-PENDING` older than ~10 minutes — indicates delivery failure).
+PENDING` older than ~10 minutes — indicates delivery failure; the
+  `attachments:scan-inventory` script reports the same count).
+- **DLQ alarm** — `sarbase-<env>-guardduty-scan-dlq` (CloudWatch alarm
+  created by the infra stack) firing means events failed every retry;
+  attachments stay blocked until the queue is drained/replayed.
 - `AttachmentScanEvent` rows stuck at `RECEIVED` indicate a crash
   between ledger write and application — investigate, the attachment
   remains blocked.

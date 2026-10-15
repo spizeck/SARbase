@@ -502,9 +502,9 @@ export function parseStorageEnvironment(
 /**
  * GuardDuty Malware Protection for S3 — scan-result ingest. The
  * endpoint at POST /api/internal/guardduty-scan-result is reached only
- * by the AWS-side delivery component (EventBridge → Lambda forwarder
- * per docs/attachments.md); the bearer token is shared with that
- * component and is a SECRET. Without the token the endpoint returns
+ * by the AWS-side delivery component (EventBridge API destination per
+ * infra/guardduty-scan-events.yaml); the bearer token is shared with
+ * that component and is a SECRET. Without the token the endpoint returns
  * 503 — configured-but-absent credentials must fail closed, never
  * permissive.
  */

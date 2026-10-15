@@ -15,9 +15,9 @@ import { logExpected } from "@/lib/logging";
  * GuardDuty Malware Protection for S3 — scan-result ingest.
  *
  * Delivery path (docs/attachments.md): EventBridge rule matching
- * "GuardDuty Malware Protection Object Scan Result" → small Lambda
- * forwarder → this endpoint. The Lambda holds the shared bearer token;
- * nothing else may call this route.
+ * "GuardDuty Malware Protection Object Scan Result" → API destination
+ * → this endpoint. The EventBridge connection holds the shared bearer
+ * token; nothing else may call this route.
  *
  * Fail-closed posture:
  * - 503 until MALWARE_SCAN_WEBHOOK_TOKEN / MALWARE_SCAN_AWS_ACCOUNT_ID
