@@ -146,6 +146,7 @@ Column order is the declared order in `datasets.ts`.
 | `member-units`                                              | Membership rows                             | —                                                                              |
 | `member-availability`                                       | Append-only availability statements         | `from`/`to`                                                                    |
 | `member-notification-preferences`                           | Channel opt-ins per member                  | —                                                                              |
+| `member-invitations` / `member-invitation-events`           | Onboarding invitations / lifecycle history  | `from`/`to`                                                                    |
 | `qualification-definitions`                                 | Qualification types                         | —                                                                              |
 | `member-qualifications`                                     | Certificate records                         | —                                                                              |
 | `training-events`                                           | Events incl. status + duration              | `from`/`to`, `unit`                                                            |
@@ -197,10 +198,11 @@ conversion exists anywhere; mixed currencies stay separate.
 ### Sensitive-column posture
 
 Never exported: attachment `storageKey`, provider internals, signed
-URLs, storage credentials, and callout `responseTokenHash` (a bearer
-secret). `attachments` exports include tombstoned (`DELETED`) rows —
-metadata history is honest; deletion removes the object, not the
-record of it.
+URLs, storage credentials, callout `responseTokenHash`, and
+member-invitation `tokenHash`/`tokenVersion` (bearer-material
+internals). `attachments` exports include tombstoned (`DELETED`)
+rows — metadata history is honest; deletion removes the object, not
+the record of it.
 
 ## Retrieving the actual files
 

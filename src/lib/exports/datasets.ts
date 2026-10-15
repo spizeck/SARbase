@@ -259,6 +259,91 @@ const memberNotificationPreferencesDataset: DatasetDef = {
   }),
 };
 
+const memberInvitationsDataset: DatasetDef = {
+  key: "member-invitations",
+  group: "Organization & people",
+  label: "Member invitations",
+  description:
+    "Onboarding invitations with lifecycle state and expiry. Token hashes and token versions are never exported — they are bearer-material internals.",
+  filters: DATE_ONLY,
+  dateField: { name: "createdAt", kind: "instant" },
+  run: async (tx, organizationId, tz, f) => ({
+    columns: [
+      c.id("id"),
+      c.id("organizationId"),
+      c.id("memberId"),
+      c.t("email"),
+      c.en("role"),
+      c.en("status"),
+      c.ts("expiresAt"),
+      c.id("notificationId"),
+      c.id("createdByAuthIdentityId"),
+      c.id("acceptedByAuthIdentityId"),
+      c.ts("createdAt"),
+      c.ts("updatedAt"),
+      c.ts("acceptedAt"),
+      c.ts("revokedAt"),
+    ],
+    rows: await tx.memberInvitation.findMany({
+      where: {
+        organizationId,
+        ...instantRange("createdAt", f, tz),
+      },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        organizationId: true,
+        memberId: true,
+        email: true,
+        role: true,
+        status: true,
+        expiresAt: true,
+        notificationId: true,
+        createdByAuthIdentityId: true,
+        acceptedByAuthIdentityId: true,
+        createdAt: true,
+        updatedAt: true,
+        acceptedAt: true,
+        revokedAt: true,
+      },
+    }),
+  }),
+};
+
+const memberInvitationEventsDataset: DatasetDef = {
+  key: "member-invitation-events",
+  group: "Organization & people",
+  label: "Member invitation events",
+  description:
+    "Append-only invitation lifecycle history (create, resend, revoke, accept). `from`/`to` filter the event instant.",
+  filters: DATE_ONLY,
+  dateField: { name: "createdAt", kind: "instant" },
+  run: async (tx, organizationId, tz, f) => {
+    const rows = await tx.memberInvitationEvent.findMany({
+      where: {
+        organizationId,
+        ...instantRange("createdAt", f, tz),
+      },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    });
+    return {
+      columns: [
+        c.id("id"),
+        c.id("organizationId"),
+        c.id("invitationId"),
+        c.en("action"),
+        c.id("actorAuthIdentityId"),
+        c.t("detail"),
+        c.ts("createdAt"),
+      ],
+      rows: rows.map((r) => ({
+        ...r,
+        detail: r.detail === null ? null : JSON.stringify(r.detail),
+      })),
+    };
+  },
+};
+
 const qualificationDefinitionsDataset: DatasetDef = {
   key: "qualification-definitions",
   group: "Qualifications & training",
@@ -1578,6 +1663,8 @@ export const EXPORT_DATASETS: DatasetDef[] = [
   memberUnitsDataset,
   memberAvailabilityDataset,
   memberNotificationPreferencesDataset,
+  memberInvitationsDataset,
+  memberInvitationEventsDataset,
   qualificationDefinitionsDataset,
   memberQualificationsDataset,
   trainingEventsDataset,

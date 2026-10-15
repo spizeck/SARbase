@@ -8,7 +8,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider  = "postgresql"
   // Runtime queries use the pooled DATABASE_URL. Migrations and
   // introspection use DATABASE_URL_UNPOOLED via directUrl — PgBouncer
   // pooling breaks the session-level advisory lock migrate deploy
@@ -58,9 +58,9 @@ enum QualificationDefinitionStatus {
 // applies only to newly created organizations (America/Kralendijk,
 // Saba SAR's zone, UTC−04:00 with no daylight saving).
 model Organization {
-  id        String   @id @default(cuid())
-  name      String
-  timezone  String   @default("America/Kralendijk")
+  id                        String    @id @default(cuid())
+  name                      String
+  timezone                  String    @default("America/Kralendijk")
   // When an admin dismissed the new-organization setup checklist. NULL
   // means the checklist still shows until every item is complete or an
   // admin hides it; it is guidance, never a gate — every item is
@@ -71,8 +71,8 @@ model Organization {
   // on every write (including the checklist dismissal above) and would
   // falsely mark settings as reviewed.
   settingsReviewedAt        DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
 
   units   Unit[]
   members Member[]
@@ -350,29 +350,29 @@ enum MemberInvitationAction {
 }
 
 model MemberInvitation {
-  id             String                  @id @default(cuid())
-  organizationId String
-  memberId       String                  @unique
+  id                       String                 @id @default(cuid())
+  organizationId           String
+  memberId                 String                 @unique
   // Invitation destination snapshot (normalized lowercase). Editable by the
   // inviting administrator — deliberately independent of Member.email.
-  email          String
+  email                    String
   // The exact organization role granted at acceptance.
-  role           OrgRole                 @default(MEMBER)
-  tokenHash      String                  @unique
-  tokenVersion   Int                     @default(1)
-  status         MemberInvitationStatus  @default(PENDING)
-  expiresAt      DateTime
+  role                     OrgRole                @default(MEMBER)
+  tokenHash                String                 @unique
+  tokenVersion             Int                    @default(1)
+  status                   MemberInvitationStatus @default(PENDING)
+  expiresAt                DateTime
   // Latest send's notification row (delivery history lives there); a fresh
   // send replaces this pointer and appends its own Notification.
-  notificationId String?
+  notificationId           String?
   // Plain scalar identity references — audit/history rows must survive
   // identity deletion (same convention as actorAuthIdentityId elsewhere).
-  createdByAuthIdentityId   String?
-  acceptedByAuthIdentityId  String?
-  createdAt      DateTime                @default(now())
-  updatedAt      DateTime                @updatedAt
-  acceptedAt     DateTime?
-  revokedAt      DateTime?
+  createdByAuthIdentityId  String?
+  acceptedByAuthIdentityId String?
+  createdAt                DateTime               @default(now())
+  updatedAt                DateTime               @updatedAt
+  acceptedAt               DateTime?
+  revokedAt                DateTime?
 
   organization Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   member       Member                  @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
@@ -400,8 +400,8 @@ model MemberInvitationEvent {
   detail              Json?
   createdAt           DateTime               @default(now())
 
-  invitation  MemberInvitation @relation(fields: [invitationId, organizationId], references: [id, organizationId], onDelete: Restrict)
-  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  invitation   MemberInvitation @relation(fields: [invitationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
 
   @@index([invitationId, createdAt])
   @@index([organizationId, createdAt])

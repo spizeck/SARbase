@@ -649,6 +649,12 @@ describe.skipIf(!hasDb)("data exports", () => {
     await prisma.qualificationDefinition.deleteMany({
       where: { organizationId: org },
     });
+    await prisma.memberInvitationEvent.deleteMany({
+      where: { organizationId: org },
+    });
+    await prisma.memberInvitation.deleteMany({
+      where: { organizationId: org },
+    });
     await prisma.memberUnit.deleteMany({ where: { organizationId: org } });
     await prisma.member.deleteMany({ where: { organizationId: org } });
     await prisma.unit.deleteMany({ where: { organizationId: org } });
@@ -910,6 +916,52 @@ describe.skipIf(!hasDb)("data exports", () => {
       expect(result!.csv).toContain(ids.member);
       expect(result!.csv).not.toContain("tokenhash");
       expect(result!.csv).not.toContain("responseTokenHash");
+    });
+
+    it("exports member invitations and events without token material", async () => {
+      const member = await prisma.member.create({
+        data: { organizationId: orgA, displayName: `${PREFIX}invitee` },
+      });
+      const invitation = await prisma.memberInvitation.create({
+        data: {
+          organizationId: orgA,
+          memberId: member.id,
+          email: `${PREFIX}invitee@example.test`,
+          role: "MEMBER",
+          tokenHash: uniqueName("secret-token-hash"),
+          tokenVersion: 3,
+          expiresAt: new Date("2027-06-01T00:00:00.000Z"),
+          events: {
+            create: {
+              action: "CREATED",
+              detail: { marker: `${PREFIX}event-marker` },
+            },
+          },
+        },
+      });
+
+      const result = await runCsvExport(
+        ctxFor(orgA, "ADMIN"),
+        orgA,
+        "member-invitations",
+        emptyParams,
+      );
+      expect(result!.csv).toContain(invitation.id);
+      expect(result!.csv).toContain(`${PREFIX}invitee@example.test`);
+      // Bearer-material internals never leave the database.
+      expect(result!.csv).not.toContain("secret-token-hash");
+      expect(result!.csv).not.toContain("tokenHash");
+      expect(result!.csv).not.toContain("tokenVersion");
+
+      const events = await runCsvExport(
+        ctxFor(orgA, "ADMIN"),
+        orgA,
+        "member-invitation-events",
+        emptyParams,
+      );
+      expect(events!.csv).toContain(invitation.id);
+      expect(events!.csv).toContain("CREATED");
+      expect(events!.csv).toContain(`${PREFIX}event-marker`);
     });
 
     it("translates instant date filters through the organization timezone", async () => {
