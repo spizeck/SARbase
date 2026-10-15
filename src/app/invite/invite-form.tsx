@@ -62,7 +62,7 @@ export function InviteAcceptForm({
       setError(result.error ?? "The invitation could not be accepted.");
       return;
     }
-    router.push("/account");
+    router.push("/org");
     router.refresh();
   }
 

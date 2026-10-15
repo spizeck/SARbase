@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 export default async function LoginPage() {
   const ctx = await getAuthContext();
   if (ctx) {
-    redirect("/account");
+    redirect("/org");
   }
 
   // Resolved on the server and handed down as a prop: reading process.env

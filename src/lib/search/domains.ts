@@ -212,7 +212,7 @@ const searchMembers: DomainSearcher = async ({
         m.status === "INACTIVE" ? "Inactive" : null,
         ...m.memberUnits.map((mu) => mu.unit.name),
       ]),
-      href: `/admin/members/${m.id}`,
+      href: `/admin/organizations/${organizationId}/members/${m.id}`,
       searchable: [m.displayName, m.email],
     }),
     query,
@@ -362,7 +362,7 @@ const searchQualifications: DomainSearcher = async ({
           r.issuer ? `Issued by ${r.issuer}` : null,
           r.expiresOn ? `expires ${formatDateOnly(r.expiresOn)}` : null,
         ]),
-        href: `/admin/members/${r.member.id}`,
+        href: `/admin/organizations/${organizationId}/members/${r.member.id}`,
         searchable: [
           r.issuer,
           r.reference,
@@ -447,7 +447,7 @@ const searchTraining: DomainSearcher = async ({
         e.location,
         e.unit?.name,
       ]),
-      href: `/admin/training/${e.id}`,
+      href: `/admin/organizations/${organizationId}/training/${e.id}`,
       searchable: [
         e.title,
         e.location,
@@ -523,7 +523,7 @@ const searchAssets: DomainSearcher = async ({
           : null,
         a.storageLocation ? `at ${a.storageLocation.name}` : null,
       ]),
-      href: `/admin/assets/${a.id}`,
+      href: `/admin/organizations/${organizationId}/assets/${a.id}`,
       searchable: [
         a.name,
         a.category,
@@ -1428,19 +1428,19 @@ const searchAttachments: DomainSearcher = async ({
   for (const l of qualificationLinks) {
     put(
       l.attachmentId,
-      `/admin/members/${l.memberQualification.memberId}`,
+      `${org}/members/${l.memberQualification.memberId}`,
       "Qualification file",
     );
   }
   for (const l of trainingLinks) {
     put(
       l.attachmentId,
-      `/admin/training/${l.trainingEventId}`,
+      `${org}/training/${l.trainingEventId}`,
       "Training file",
     );
   }
   for (const l of assetLinks) {
-    put(l.attachmentId, `/admin/assets/${l.assetId}`, "Asset file");
+    put(l.attachmentId, `${org}/assets/${l.assetId}`, "Asset file");
   }
   const maintenanceHref = `${org}/maintenance`;
   for (const l of inspectionLinks) {

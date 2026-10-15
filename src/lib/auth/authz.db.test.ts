@@ -119,8 +119,8 @@ import {
   updateMyAvailabilityAction,
   updateMyContactPreferencesAction,
 } from "@/app/account/actions";
-import TrainingEventPage from "@/app/admin/training/[eventId]/page";
-import AssetPage from "@/app/admin/assets/[assetId]/page";
+import TrainingEventPage from "@/app/admin/organizations/[orgId]/training/[eventId]/page";
+import AssetPage from "@/app/admin/organizations/[orgId]/assets/[assetId]/page";
 
 const hasDb = Boolean(process.env.DATABASE_URL);
 const PREFIX = "authztest-";
@@ -1608,16 +1608,24 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       signInAs(adminAUid);
       await expect(
         TrainingEventPage({
-          params: Promise.resolve({ eventId: eventB.id }),
+          params: Promise.resolve({ orgId: orgB.id, eventId: eventB.id }),
         }),
       ).rejects.toThrow("NEXT_NOT_FOUND");
 
       // The org-B admin renders it — including the audit section.
       signInAs(adminBUid);
       const page = await TrainingEventPage({
-        params: Promise.resolve({ eventId: eventB.id }),
+        params: Promise.resolve({ orgId: orgB.id, eventId: eventB.id }),
       });
       expect(page).toBeTruthy();
+
+      // A mismatched org/event pair is equally opaque — the URL org id
+      // cannot substitute for the record's real organization.
+      await expect(
+        TrainingEventPage({
+          params: Promise.resolve({ orgId: orgA.id, eventId: eventB.id }),
+        }),
+      ).rejects.toThrow("NEXT_NOT_FOUND");
     });
   });
 
@@ -1633,7 +1641,7 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       ).toEqual({});
       await expect(
         createAssetAction(orgA.id, {}, form({ name: uniq("asset") })),
-      ).rejects.toThrow("NEXT_REDIRECT /admin/assets/");
+      ).rejects.toThrow("NEXT_REDIRECT /admin/organizations/");
       expect(
         await createInventoryItemAction(
           orgA.id,
@@ -1716,7 +1724,9 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
 
       // Page-level: the asset detail page is opaque to admin A.
       await expect(
-        AssetPage({ params: Promise.resolve({ assetId: assetB.id }) }),
+        AssetPage({
+          params: Promise.resolve({ orgId: orgB.id, assetId: assetB.id }),
+        }),
       ).rejects.toThrow("NEXT_NOT_FOUND");
 
       // Nothing was mutated.

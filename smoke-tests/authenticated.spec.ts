@@ -29,19 +29,18 @@ test.describe("authenticated session", () => {
   test("the session survives navigation — /admin does not bounce to login", async ({
     page,
   }) => {
+    // /admin redirects to the shared organization workspace at /org —
+    // either the chooser (multi-org) or straight through to the single
+    // accessible organization's dashboard.
     await page.goto("/admin");
     await expect(page).not.toHaveURL(/\/login/);
-    await expect(
-      page.getByRole("heading", { name: "Administration" }),
-    ).toBeVisible();
+    await expect(page).toHaveURL(/\/org(\/|$)/);
     // Either branch is a correct authed render — org grants depend on
     // what the operator provisioned for the smoke identity.
     await expect(
       page
-        .getByRole("link")
-        .filter({ hasText: /member/ })
-        .first()
-        .or(page.getByText(/do not administer any organizations/)),
+        .getByRole("heading", { name: "Your organizations" })
+        .or(page.getByRole("heading").first()),
     ).toBeVisible();
   });
 
@@ -51,22 +50,28 @@ test.describe("authenticated session", () => {
     await expect(page.getByText(process.env.SMOKE_TEST_EMAIL!)).toBeVisible();
   });
 
-  test("org admin pages resolve under the session", async ({ page }) => {
-    await page.goto("/admin");
-    // Follow the first organization link when one exists; without org
-    // grants this test verifies only that the empty state is honest.
-    const orgLink = page
-      .getByRole("link")
-      .filter({ hasText: /member/ })
-      .first();
-    if ((await orgLink.count()) === 0) {
-      await expect(
-        page.getByText(/do not administer any organizations/),
-      ).toBeVisible();
-      return;
+  test("organization workspaces resolve under the session", async ({
+    page,
+  }) => {
+    await page.goto("/org");
+    // A single-grant account is redirected straight to its dashboard;
+    // multi-grant accounts land on the chooser first.
+    if (!/\/org\/[a-z0-9]+$/i.test(page.url())) {
+      // On the chooser: follow the first organization link. Without org
+      // grants the empty state is the honest assertion.
+      const orgLink = page
+        .getByRole("link")
+        .filter({ hasText: /Admin|Member/ })
+        .first();
+      if ((await orgLink.count()) === 0) {
+        await expect(
+          page.getByText(/does not belong to an organization/),
+        ).toBeVisible();
+        return;
+      }
+      await orgLink.click();
+      await expect(page).toHaveURL(/\/org\/[a-z0-9]+$/i);
     }
-    await orgLink.click();
-    await expect(page).toHaveURL(/\/admin\/organizations\//);
     await expect(page).not.toHaveURL(/\/login/);
     await expect(page.getByRole("heading").first()).toBeVisible();
   });

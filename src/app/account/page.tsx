@@ -398,10 +398,10 @@ export default async function AccountPage() {
       {adminOrgs.length > 0 && (
         <p className="mt-8">
           <Link
-            href="/admin"
+            href="/org"
             className="text-sm font-medium text-neutral-900 underline underline-offset-4 hover:text-neutral-600"
           >
-            Go to administration
+            Go to your organizations
           </Link>
         </p>
       )}

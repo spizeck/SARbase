@@ -146,7 +146,7 @@ export function CalloutActivationForm({
               <span className="text-xs text-neutral-400">
                 — no units yet (
                 <a
-                  href={`/admin/organizations/${orgId}#units-heading`}
+                  href={`/admin/organizations/${orgId}/units`}
                   target="_blank"
                   rel="noreferrer"
                   className="underline hover:text-neutral-700"
@@ -240,7 +240,7 @@ export function CalloutActivationForm({
         <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
           This organization has no active members to invite.{" "}
           <a
-            href={`/admin/organizations/${orgId}#members-heading`}
+            href={`/admin/organizations/${orgId}/members`}
             target="_blank"
             rel="noreferrer"
             className="underline hover:text-amber-700"

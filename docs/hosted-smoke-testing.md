@@ -25,7 +25,8 @@ The hosted config splits the suite into two Playwright projects:
 - `authenticated` — `smoke-tests/authenticated.spec.ts` only. Drives a
   **real sign-in** (the login form → Firebase client → server session
   cookie) inside global setup, then asserts session-boundary behavior:
-  `/admin` renders instead of redirecting, `/account` shows the
+  `/admin` routes through to the organization workspace at `/org`,
+  `/account` shows the
   identity, org pages resolve, foreign attachment ids stay opaque.
   Skips cleanly when no smoke credentials are configured.
 

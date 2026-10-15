@@ -116,6 +116,21 @@ export async function requireOrgAdminOrNotFound(
 }
 
 /**
+ * Any-role variant for the shared organization dashboard — an org
+ * the caller cannot access is indistinguishable from a missing one.
+ */
+export async function requireOrgAccessOrNotFound(
+  organizationId: string,
+): Promise<AuthContext> {
+  const ctx = await requireAuth();
+  if (!hasOrgAccess(ctx, organizationId)) {
+    logDenial("authz.org_access_denied", ctx, { organizationId });
+    notFound();
+  }
+  return ctx;
+}
+
+/**
  * Resolve a Member by the caller-supplied id, derive its REAL
  * organizationId from the record, and require ADMIN access to that
  * org. The supplied organizationId (if any) is never consulted.

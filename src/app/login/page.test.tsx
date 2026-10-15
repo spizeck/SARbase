@@ -104,7 +104,7 @@ describe("LoginPage", () => {
     expect(html).not.toContain("<form");
   });
 
-  it("redirects an authenticated user to /account", async () => {
+  it("redirects an authenticated user to /org", async () => {
     getAuthContextMock.mockResolvedValue({
       identity: {},
       members: [],
@@ -113,7 +113,7 @@ describe("LoginPage", () => {
 
     await LoginPage();
 
-    expect(redirectMock).toHaveBeenCalledWith("/account");
+    expect(redirectMock).toHaveBeenCalledWith("/org");
   });
 });
 

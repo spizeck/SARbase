@@ -31,16 +31,13 @@ export default async function StorageLocationsPage({
   const assetOptions = assets.map((a) => ({ id: a.id, name: a.name }));
 
   return (
-    <main className="mx-auto max-w-2xl px-4 py-10">
+    <div className="mx-auto max-w-2xl px-4 py-6">
       <nav aria-label="Breadcrumb" className="text-sm text-neutral-500">
-        <Link href="/admin" className="hover:underline">
-          Administration
+        <Link href="/org" className="hover:underline">
+          Organizations
         </Link>
         <span aria-hidden="true"> / </span>
-        <Link
-          href={`/admin/organizations/${orgId}`}
-          className="hover:underline"
-        >
+        <Link href={`/org/${orgId}`} className="hover:underline">
           {organization.name}
         </Link>
         <span aria-hidden="true"> / </span>
@@ -142,6 +139,6 @@ export default async function StorageLocationsPage({
           </div>
         </details>
       </section>
-    </main>
+    </div>
   );
 }

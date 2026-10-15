@@ -596,7 +596,9 @@ describe.skipIf(!hasDb)("global organization search", () => {
       const attachments = resultsOf(att, "attachment");
       expect(attachments.map((r) => r.id)).toContain(ids.attachment);
       // The link resolves to the asset page the file is attached to.
-      expect(attachments[0]?.href).toBe(`/admin/assets/${ids.asset}`);
+      expect(attachments[0]?.href).toBe(
+        `/admin/organizations/${orgA}/assets/${ids.asset}`,
+      );
     });
 
     it("finds a vendor by name, contact, and account reference", async () => {

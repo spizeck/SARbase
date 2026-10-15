@@ -20,7 +20,7 @@ import { log } from "@/lib/logging";
 export interface SetupChecklistItem {
   id: string;
   label: string;
-  /** Where the work happens — an admin route or an anchor on this page. */
+  /** Where the work happens — the admin workspace that owns the records. */
   href: string;
   done: boolean;
   /** Optional structure — the org may legitimately never create these. */
@@ -52,14 +52,14 @@ export function computeSetupChecklist(input: {
     {
       id: "settings",
       label: "Review organization settings — name and timezone",
-      href: `${org}#details-heading`,
+      href: `${org}/settings`,
       done: input.settingsReviewedAt !== null,
       optional: false,
     },
     {
       id: "members",
       label: "Add member records",
-      href: `${org}#members-heading`,
+      href: `${org}/members`,
       done: input.members > 0,
       optional: false,
     },
@@ -80,7 +80,7 @@ export function computeSetupChecklist(input: {
     {
       id: "units",
       label: "Create units or teams",
-      href: `${org}#units-heading`,
+      href: `${org}/units`,
       done: input.units > 0,
       optional: true,
     },
@@ -94,7 +94,7 @@ export function computeSetupChecklist(input: {
     {
       id: "qualifications",
       label: "Define tracked qualifications",
-      href: `${org}#qualifications-heading`,
+      href: `${org}/qualifications`,
       done: input.qualificationDefinitions > 0,
       optional: true,
     },

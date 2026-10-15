@@ -63,9 +63,7 @@ export function LoginForm({ configured }: { configured: boolean }) {
 
       const next = searchParams.get("next");
       const target =
-        next && next.startsWith("/") && !next.startsWith("//")
-          ? next
-          : "/account";
+        next && next.startsWith("/") && !next.startsWith("//") ? next : "/org";
       router.push(target);
       router.refresh();
     } catch {

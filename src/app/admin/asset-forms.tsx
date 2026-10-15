@@ -424,7 +424,7 @@ export function AssetForm({
             <p className="mt-1 text-xs text-neutral-500">
               No units yet — optional. You can add them on the{" "}
               <Link
-                href={`/admin/organizations/${orgId}#units-heading`}
+                href={`/admin/organizations/${orgId}/units`}
                 target="_blank"
                 rel="noreferrer"
                 className="underline hover:text-neutral-800"
@@ -770,7 +770,7 @@ export function InventoryItemForm({
             <p className="mt-1 text-xs text-neutral-500">
               No units yet — optional. You can add them on the{" "}
               <Link
-                href={`/admin/organizations/${orgId}#units-heading`}
+                href={`/admin/organizations/${orgId}/units`}
                 target="_blank"
                 rel="noreferrer"
                 className="underline hover:text-neutral-800"

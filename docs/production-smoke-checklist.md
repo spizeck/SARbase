@@ -15,7 +15,8 @@ the first minutes of a new deployment.
 
 ## 1. Authentication and authorization
 
-- [ ] Sign in at `/login` as an org admin; `/admin` renders.
+- [ ] Sign in at `/login` as an org admin; the session lands on the
+      organization workspace (`/org` → the organization's dashboard).
 - [ ] Open an incognito window → `/admin` redirects to `/login`;
       `GET /api/attachments/<any-id>/download` returns `401`.
 - [ ] With an account that has access to a second organization (or a
