@@ -9,6 +9,9 @@ import {
   createInventoryItem,
   createStorageLocation,
   CrossOrganizationAssetError,
+  findPotentialAssetDuplicates,
+  listAssetCategories,
+  listAssets,
   listStorageLocations,
   updateAsset,
   updateInventoryItem,
@@ -695,6 +698,128 @@ describe.skipIf(!hasDb)("assets / inventory / locations", () => {
           })
         ).quantity.toString(),
       ).toBe("12");
+    });
+  });
+
+  describe("asset search, categories, and duplicates", () => {
+    it("matches the text query across identifying fields only", async () => {
+      const org = await createTestOrg("search");
+      const hit = await createAsset(org.id, {
+        name: uniqueName("zodiac"),
+        manufacturer: "Zodiac",
+        model: "MK3",
+        serialNumber: "ZD-777",
+        assetTag: "SAR-BOAT-1",
+        status: "ACTIVE",
+        condition: "UNKNOWN",
+      });
+      await createAsset(org.id, {
+        name: uniqueName("aed"),
+        status: "ACTIVE",
+        condition: "UNKNOWN",
+      });
+
+      for (const q of ["zodiac", "MK3", "zd-777", "sar-boat-1"]) {
+        const rows = await listAssets(org.id, { query: q });
+        expect(rows.map((r) => r.id)).toEqual([hit.id]);
+      }
+      expect((await listAssets(org.id, { query: "nonexistent" })).length).toBe(
+        0,
+      );
+      // Notes/category are not identifying fields — no accidental hits.
+      const tagged = await listAssets(org.id, {
+        query: hit.name.slice(-6),
+      });
+      expect(tagged.map((r) => r.id)).toContain(hit.id);
+    });
+
+    it("filters by category case-insensitively", async () => {
+      const org = await createTestOrg("catfilter");
+      const radio = await createAsset(org.id, {
+        name: uniqueName("radio"),
+        category: "Radio",
+        status: "ACTIVE",
+        condition: "UNKNOWN",
+      });
+      await createAsset(org.id, {
+        name: uniqueName("rope-bag"),
+        category: "Rope",
+        status: "ACTIVE",
+        condition: "UNKNOWN",
+      });
+      const rows = await listAssets(org.id, { category: "radio" });
+      expect(rows.map((r) => r.id)).toEqual([radio.id]);
+    });
+
+    it("lists the emergent category vocabulary per organization", async () => {
+      const org = await createTestOrg("cats");
+      await createAsset(org.id, {
+        name: uniqueName("a1"),
+        category: "Radio",
+        status: "ACTIVE",
+        condition: "UNKNOWN",
+      });
+      await createAsset(org.id, {
+        name: uniqueName("a2"),
+        category: "Vessel",
+        status: "ACTIVE",
+        condition: "UNKNOWN",
+      });
+      await createAsset(org.id, {
+        name: uniqueName("a3"),
+        status: "ACTIVE",
+        condition: "UNKNOWN",
+      });
+      const other = await createTestOrg("cats-other");
+      await createAsset(other.id, {
+        name: uniqueName("a4"),
+        category: "Foreign",
+        status: "ACTIVE",
+        condition: "UNKNOWN",
+      });
+      expect(await listAssetCategories(org.id)).toEqual(["Radio", "Vessel"]);
+    });
+
+    it("flags name/serial/tag matches within the same organization only", async () => {
+      const org = await createTestOrg("dups");
+      const existing = await createAsset(org.id, {
+        name: uniqueName("rescue-boat"),
+        serialNumber: "SN-999",
+        assetTag: "SAR-1",
+        status: "ACTIVE",
+        condition: "UNKNOWN",
+      });
+      const other = await createTestOrg("dups-other");
+      await createAsset(other.id, {
+        name: uniqueName("unrelated"),
+        serialNumber: "SN-999",
+        status: "ACTIVE",
+        condition: "UNKNOWN",
+      });
+
+      const name = existing.name.toUpperCase();
+      for (const input of [
+        { name },
+        { name: uniqueName("fresh"), serialNumber: "sn-999" },
+        { name: uniqueName("fresh"), assetTag: "sar-1" },
+      ]) {
+        const dups = await findPotentialAssetDuplicates(org.id, input);
+        expect(dups.map((d) => d.id)).toEqual([existing.id]);
+      }
+
+      // No match → no warning; excludeId removes self on updates.
+      expect(
+        await findPotentialAssetDuplicates(org.id, {
+          name: uniqueName("fresh"),
+        }),
+      ).toEqual([]);
+      expect(
+        await findPotentialAssetDuplicates(
+          org.id,
+          { name: existing.name },
+          { excludeId: existing.id },
+        ),
+      ).toEqual([]);
     });
   });
 });

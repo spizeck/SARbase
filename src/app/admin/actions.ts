@@ -6,6 +6,7 @@ import { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import { updateOrganization } from "@/lib/domain/organization";
+import { setSetupChecklistDismissed } from "@/lib/domain/setup";
 import { createUnit, updateUnit } from "@/lib/domain/unit";
 import {
   createMember,
@@ -116,6 +117,7 @@ import {
   updateAsset,
   createInventoryItem,
   updateInventoryItem,
+  findPotentialAssetDuplicates,
   CrossOrganizationAssetError,
   AssetHierarchyError,
 } from "@/lib/domain/assets";
@@ -271,6 +273,19 @@ export interface ActionState {
   message?: string;
   /** Non-error informational outcome — e.g. "recorded, email unsent". */
   notice?: string;
+  /**
+   * Advisory duplicate matches returned instead of writing — the form
+   * shows them and asks the user to confirm the save is intentional.
+   * Advisory only: duplicates are allowed, just surfaced.
+   */
+  duplicates?: { id: string; label: string; href: string }[];
+  /**
+   * Echo of the submitted field values alongside `duplicates`. React
+   * resets uncontrolled form inputs after a form action completes, so
+   * the warning would otherwise wipe everything the user typed — the
+   * form remounts on these values while the warning is displayed.
+   */
+  submitted?: Record<string, string>;
 }
 
 function zodErrors(error: {
@@ -493,6 +508,19 @@ export async function updateOrganizationAction(
   revalidatePath(`/admin/organizations/${organizationId}`);
   revalidatePath("/admin");
   return {};
+}
+
+export async function setSetupChecklistDismissedAction(
+  organizationId: string,
+  dismissed: boolean,
+): Promise<void> {
+  const ctx = await requireAuth();
+  // Propagates the opaque AuthorizationError — a void action has no
+  // error state to return.
+  requireOrgAdmin(ctx, organizationId);
+
+  await setSetupChecklistDismissed(organizationId, dismissed);
+  revalidatePath(`/admin/organizations/${organizationId}`);
 }
 
 export async function createUnitAction(
@@ -1280,6 +1308,67 @@ function mapAssetError(error: unknown): ActionState {
   return mapDomainError(error);
 }
 
+const ASSET_FORM_FIELDS = [
+  "name",
+  "category",
+  "manufacturer",
+  "model",
+  "serialNumber",
+  "assetTag",
+  "purchaseDate",
+  "vendor",
+  "unitId",
+  "storageLocationId",
+  "parentAssetId",
+  "condition",
+  "status",
+  "notes",
+] as const;
+
+/**
+ * Advisory duplicate gate: an identical name, serial, or tag is often a
+ * double-entry mistake, but can also be legitimate (two identical
+ * radios, an asset registered in two crews' paperwork). The first
+ * submission returns the matches; the form echoes them and offers an
+ * explicit "save anyway" confirmation which resubmits with
+ * confirmDuplicate=1 and skips this check.
+ */
+async function assetDuplicateWarning(
+  organizationId: string,
+  formData: FormData,
+  input: {
+    name: string;
+    serialNumber?: string | null;
+    assetTag?: string | null;
+  },
+  excludeId?: string,
+): Promise<ActionState | null> {
+  if (formData.get("confirmDuplicate") === "1") return null;
+  const duplicates = await findPotentialAssetDuplicates(organizationId, input, {
+    excludeId,
+  });
+  if (duplicates.length === 0) return null;
+  return {
+    // The form remounts on these so the warning doesn't cost the user
+    // everything they typed (uncontrolled inputs reset on action
+    // completion).
+    submitted: Object.fromEntries(
+      ASSET_FORM_FIELDS.map((f) => [f, String(formData.get(f) ?? "")]),
+    ),
+    duplicates: duplicates.map((d) => ({
+      id: d.id,
+      label: [
+        d.name,
+        d.assetTag && `tag ${d.assetTag}`,
+        d.serialNumber && `serial ${d.serialNumber}`,
+      ]
+        .filter(Boolean)
+        .join(" — "),
+      href: `/admin/assets/${d.id}`,
+    })),
+  };
+}
+
 export async function createAssetAction(
   organizationId: string,
   _prev: ActionState,
@@ -1294,6 +1383,13 @@ export async function createAssetAction(
 
   const parsed = parseAssetForm(formData);
   if (!parsed.success) return zodErrors(parsed.error);
+
+  const warning = await assetDuplicateWarning(
+    organizationId,
+    formData,
+    parsed.data,
+  );
+  if (warning) return warning;
 
   let asset;
   try {
@@ -1319,6 +1415,14 @@ export async function updateAssetAction(
 
   const parsed = parseAssetForm(formData);
   if (!parsed.success) return zodErrors(parsed.error);
+
+  const warning = await assetDuplicateWarning(
+    asset.organizationId,
+    formData,
+    parsed.data,
+    assetId,
+  );
+  if (warning) return warning;
 
   try {
     await updateAsset(assetId, parsed.data);

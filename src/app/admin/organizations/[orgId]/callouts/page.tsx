@@ -126,6 +126,7 @@ export default async function OrganizationCalloutsPage({
         <div className="mt-3">
           <CalloutActivationForm
             action={activateCalloutAction.bind(null, orgId)}
+            orgId={orgId}
             units={units}
             members={memberOptions}
             activationKey={crypto.randomUUID()}

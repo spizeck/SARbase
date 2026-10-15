@@ -5,7 +5,10 @@ import {
   getAsset,
   listStorageLocations,
   listAssets,
+  listAssetCategories,
+  listAssetVendorNames,
 } from "@/lib/domain/assets";
+import { listOrganizationVendors } from "@/lib/domain/expenses";
 import { getOrganization } from "@/lib/domain/organization";
 import { listUnits } from "@/lib/domain/unit";
 import { listMembers } from "@/lib/domain/member";
@@ -102,6 +105,9 @@ export default async function AssetPage({
     defects,
     meters,
     today,
+    assetCategories,
+    vendors,
+    assetVendorNames,
   ] = await Promise.all([
     getOrganization(orgId),
     listUnits(orgId),
@@ -115,8 +121,14 @@ export default async function AssetPage({
     listAssetDefects(assetId),
     listAssetMeters(assetId),
     organizationToday(orgId),
+    listAssetCategories(orgId),
+    listOrganizationVendors(orgId),
+    listAssetVendorNames(orgId),
   ]);
   if (!organization) notFound();
+  const vendorSuggestions = [
+    ...new Set([...vendors.map((v) => v.name), ...assetVendorNames]),
+  ].sort((a, b) => a.localeCompare(b));
 
   const memberOptions = members.map((m) => ({
     id: m.id,
@@ -1030,6 +1042,7 @@ export default async function AssetPage({
           <div className="mt-3">
             <AssetForm
               action={updateAssetAction.bind(null, asset.id)}
+              orgId={orgId}
               units={units}
               locationOptions={locations.map((l) => ({
                 id: l.id,
@@ -1038,6 +1051,8 @@ export default async function AssetPage({
               parentOptions={siblings
                 .filter((a) => a.id !== asset.id)
                 .map((a) => ({ id: a.id, name: a.name }))}
+              categorySuggestions={assetCategories}
+              vendorSuggestions={vendorSuggestions}
               defaults={{
                 name: asset.name,
                 category: asset.category,

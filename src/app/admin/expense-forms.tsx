@@ -68,6 +68,7 @@ const COMMON_CURRENCIES = [
 export function ExpenseFieldsForm({
   action,
   defaults = {},
+  orgId,
   vendors,
   members,
   categories = [],
@@ -77,6 +78,8 @@ export function ExpenseFieldsForm({
 }: {
   action: BoundAction;
   defaults?: ExpenseDefaults;
+  /** Enables the "add vendors" link when none exist yet. */
+  orgId: string;
   vendors: { id: string; name: string }[];
   members: { id: string; displayName: string }[];
   categories?: string[];
@@ -176,6 +179,20 @@ export function ExpenseFieldsForm({
               </option>
             ))}
           </select>
+          {vendors.length === 0 && (
+            <p className="mt-1 text-xs text-neutral-500">
+              No vendors recorded yet —{" "}
+              <a
+                href={`/admin/organizations/${orgId}/vendors`}
+                target="_blank"
+                rel="noreferrer"
+                className="underline hover:text-neutral-800"
+              >
+                add vendors
+              </a>{" "}
+              (opens a new tab), or leave blank.
+            </p>
+          )}
         </div>
         <div>
           <label htmlFor="expense-category" className={labelClass}>
