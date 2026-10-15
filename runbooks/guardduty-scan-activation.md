@@ -128,7 +128,7 @@ curl -i -X POST https://<domain>/api/internal/guardduty-scan-result \
 ```
 
 `503` or `400` (never a hang or a redirect) = the route is reachable.
-A `404` means the code is not deployed yet — expected until Phase 3.
+A `404` means the code is not deployed yet — expected until Phase 4.
 
 ## Phase 3 — enable GuardDuty post-scan tagging
 
