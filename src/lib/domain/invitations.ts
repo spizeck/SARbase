@@ -120,6 +120,19 @@ export const MEMBER_INVITATION_ACTION_LABELS: Record<string, string> = {
   ACCEPTED: "Invitation accepted",
 };
 
+/**
+ * Outstanding (still PENDING) invitations for an organization — the
+ * access screen lists them so an invited role is never mistaken for a
+ * granted one. Expiry stays read-time derived.
+ */
+export function listPendingMemberInvitations(organizationId: string) {
+  return prisma.memberInvitation.findMany({
+    where: { organizationId, status: "PENDING" },
+    include: { member: { select: { id: true, displayName: true } } },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
 export function invitationDisplayState(
   invitation: Pick<MemberInvitation, "status" | "expiresAt"> | null,
   now: Date = new Date(),

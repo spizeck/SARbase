@@ -145,12 +145,37 @@ with internal ids only — never emails or tokens.
 `MemberUnit` membership is **not** an authorization input: units are
 internal groupings, not security boundaries.
 
+## In-app role management (issue #74)
+
+Once an organization has its first ADMIN, further role changes happen
+in the app — no scripts or database edits. The **Access & roles**
+screen (`/admin/organizations/[orgId]/access`, ADMIN-only) lists every
+`OrganizationAccess` grant with the linked member record and account
+status, pending invitations, and the audited change history.
+
+- Changing MEMBER ↔ ADMIN requires an explicit confirmation that
+  summarizes the access being granted or removed, and is refused when
+  it would leave the organization without an ACTIVE administrator.
+  The guard is enforced under a per-organization
+  `pg_advisory_xact_lock`, so two concurrent demotions cannot both
+  slip past the check. A grant on a DISABLED identity is not an
+  active administrator.
+- Every applied change writes an `OrganizationAccessEvent` row in the
+  same transaction — organization, target identity, previous/new role,
+  actor, timestamp — so the history cannot exist without the change it
+  describes. Because authorization re-reads `OrganizationAccess` on
+  every request, a changed role takes effect immediately.
+- A pending invitation's role is never edited in place: revoke it and
+  re-invite with the intended role (both steps are already audited by
+  `MemberInvitationEvent`).
+
 ## Initial administrator bootstrap
 
-There is no in-app or self-registration path to ADMIN — and no in-app
-path to organization creation either. Creating an organization and
-granting its first ADMIN is a single explicit operator act via the CLI
-command (idempotent, no secrets in source):
+The FIRST ADMIN of an organization still comes from the CLI — there is
+no self-registration path to ADMIN and no in-app path to organization
+creation. Creating an organization and granting its first ADMIN is a
+single explicit operator act via the CLI command (idempotent, no
+secrets in source):
 
 ```bash
 # The person must exist in Firebase Authentication AND have signed in
@@ -242,8 +267,6 @@ none of these — `firebase-admin` initializes lazily at first use.
 
 ## Deferred
 
-- Durable audit-history records for role/access changes (today:
-  structured operational logs only — logs are not an audit trail).
 - Member self-service beyond `/account` readout; invitation emails and
   link-confirm UX flows.
 - Additional `OrgRole` values when their domains land; unit-level

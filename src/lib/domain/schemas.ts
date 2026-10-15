@@ -166,6 +166,14 @@ export type MemberInvitationInput = z.infer<typeof memberInvitationInputSchema>;
 export const memberStatusSchema = z.enum(["ACTIVE", "INACTIVE"]);
 export type MemberStatusInput = z.infer<typeof memberStatusSchema>;
 
+/**
+ * OrganizationAccess role assignment (issue #74) — the admin's explicit
+ * choice on the access-management screen. The value selects WHICH role
+ * an existing grant gets; the grant itself must already exist.
+ */
+export const organizationRoleSchema = z.enum(["MEMBER", "ADMIN"]);
+export type OrganizationRoleInput = z.infer<typeof organizationRoleSchema>;
+
 export const memberUnitsSchema = z.object({
   unitIds: z.array(z.string().min(1)).max(200),
 });

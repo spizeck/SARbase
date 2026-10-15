@@ -78,6 +78,7 @@ model Organization {
   members Member[]
 
   organizationAccesses     OrganizationAccess[]
+  organizationAccessEvents OrganizationAccessEvent[]
   qualificationDefinitions QualificationDefinition[]
   trainingEvents           TrainingEvent[]
   storageLocations         StorageLocation[]
@@ -305,6 +306,43 @@ model OrganizationAccess {
 
   @@unique([authIdentityId, organizationId])
   @@index([organizationId])
+}
+
+// Append-only lifecycle events on an OrganizationAccess grant. Only
+// ROLE_CHANGED exists today — grants are created by invitation
+// acceptance / identity linking / operator provisioning, each of which
+// keeps its own history (MemberInvitationEvent, operational logs).
+enum OrganizationAccessAction {
+  ROLE_CHANGED
+}
+
+// The durable who/what/when behind "role changes are auditable"
+// (issue #74). One row per applied change, written inside the same
+// transaction as the OrganizationAccess update it describes.
+//
+// actorAuthIdentityId and targetAuthIdentityId are deliberately PLAIN
+// scalars, not foreign keys — the same policy as
+// TrainingAttendanceChange.actorAuthIdentityId: an FK would either pin
+// identities forever (Restrict) or erase the actor/target on identity
+// removal (SetNull), and audit history that disappears with the
+// identity is not audit history. The stored ids remain stable forensic
+// references after the AuthIdentity is deleted; while they resolve the
+// UI renders friendly names and falls back to the raw id.
+model OrganizationAccessEvent {
+  id                   String                   @id @default(cuid())
+  organizationId       String
+  // The identity whose grant changed.
+  targetAuthIdentityId String
+  action               OrganizationAccessAction
+  previousRole         OrgRole
+  role                 OrgRole
+  actorAuthIdentityId  String?
+  createdAt            DateTime                 @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, createdAt])
+  @@index([targetAuthIdentityId, createdAt])
 }
 
 // ---------------------------------------------------------------------------

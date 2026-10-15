@@ -14,6 +14,7 @@ const {
   memberUnitCreateManyMock,
   authIdentityFindManyMock,
   organizationAccessUpsertMock,
+  setOrganizationAccessRoleMock,
 } = vi.hoisted(() => ({
   getAuthContextMock: vi.fn(),
   redirectMock: vi.fn(() => {
@@ -30,6 +31,7 @@ const {
   memberUnitCreateManyMock: vi.fn(),
   authIdentityFindManyMock: vi.fn(),
   organizationAccessUpsertMock: vi.fn(),
+  setOrganizationAccessRoleMock: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({ redirect: redirectMock }));
@@ -76,17 +78,30 @@ vi.mock("@/lib/auth/context", async (importOriginal) => ({
   getAuthContext: getAuthContextMock,
 }));
 
+// The access domain is covered by src/lib/domain/access.db.test.ts
+// against a real database; here it is mocked so the action tests only
+// the authorization + input-validation + error-mapping boundary.
+vi.mock("@/lib/domain/access", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/domain/access")>()),
+  setOrganizationAccessRole: setOrganizationAccessRoleMock,
+}));
+
 import {
   createMemberAction,
   createUnitAction,
   linkIdentityToMemberAction,
   setMemberStatusAction,
   setMemberUnitsAction,
+  setOrganizationAccessRoleAction,
   unlinkIdentityFromMemberAction,
   updateMemberAction,
   updateOrganizationAction,
   updateUnitAction,
 } from "./actions";
+import {
+  LastAdministratorError,
+  OrganizationAccessNotFoundError,
+} from "@/lib/domain/access";
 import type { AuthContext } from "@/lib/auth/context";
 
 const ORG_A = "org-a";
@@ -358,5 +373,106 @@ describe("in-scope admin operations", () => {
         data: expect.objectContaining({ phone: "+12462260000" }),
       }),
     );
+  });
+});
+
+describe("setOrganizationAccessRoleAction (issue #74)", () => {
+  it("redirects unauthenticated requests before any data access", async () => {
+    getAuthContextMock.mockResolvedValue(null);
+    await expect(
+      setOrganizationAccessRoleAction(
+        ORG_A,
+        "ident-target",
+        {},
+        formData({ role: "ADMIN" }),
+      ),
+    ).rejects.toThrow("NEXT_REDIRECT /login");
+    expect(setOrganizationAccessRoleMock).not.toHaveBeenCalled();
+  });
+
+  it("denies members and admins of other organizations identically", async () => {
+    getAuthContextMock.mockResolvedValue(actor("MEMBER", ORG_A));
+    expect(
+      await setOrganizationAccessRoleAction(
+        ORG_A,
+        "ident-target",
+        {},
+        formData({ role: "ADMIN" }),
+      ),
+    ).toEqual({ message: "Not found." });
+
+    // ADMIN on org B aiming at org A — the orgId only selects WHICH
+    // grant must exist; membership in another org buys nothing.
+    getAuthContextMock.mockResolvedValue(actor("ADMIN", ORG_B));
+    expect(
+      await setOrganizationAccessRoleAction(
+        ORG_A,
+        "ident-target",
+        {},
+        formData({ role: "ADMIN" }),
+      ),
+    ).toEqual({ message: "Not found." });
+    expect(setOrganizationAccessRoleMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed role without touching the domain layer", async () => {
+    getAuthContextMock.mockResolvedValue(actor("ADMIN", ORG_A));
+    const result = await setOrganizationAccessRoleAction(
+      ORG_A,
+      "ident-target",
+      {},
+      formData({ role: "SUPERUSER" }),
+    );
+    expect(result.fieldErrors?.role).toBeTruthy();
+    expect(setOrganizationAccessRoleMock).not.toHaveBeenCalled();
+  });
+
+  it("passes the actor identity through to the audited change", async () => {
+    getAuthContextMock.mockResolvedValue(actor("ADMIN", ORG_A));
+    setOrganizationAccessRoleMock.mockResolvedValue({
+      changed: true,
+      previousRole: "MEMBER",
+    });
+    const result = await setOrganizationAccessRoleAction(
+      ORG_A,
+      "ident-target",
+      {},
+      formData({ role: "ADMIN" }),
+    );
+    expect(result).toEqual({});
+    expect(setOrganizationAccessRoleMock).toHaveBeenCalledWith(
+      ORG_A,
+      "ident-target",
+      "ADMIN",
+      "ident-actor",
+    );
+  });
+
+  it("surfaces the last-administrator refusal as a form message", async () => {
+    getAuthContextMock.mockResolvedValue(actor("ADMIN", ORG_A));
+    setOrganizationAccessRoleMock.mockRejectedValue(
+      new LastAdministratorError(),
+    );
+    const result = await setOrganizationAccessRoleAction(
+      ORG_A,
+      "ident-target",
+      {},
+      formData({ role: "MEMBER" }),
+    );
+    expect(result.message).toContain("last active administrator");
+  });
+
+  it("maps an out-of-scope or missing grant to the opaque denial", async () => {
+    getAuthContextMock.mockResolvedValue(actor("ADMIN", ORG_A));
+    setOrganizationAccessRoleMock.mockRejectedValue(
+      new OrganizationAccessNotFoundError(),
+    );
+    const result = await setOrganizationAccessRoleAction(
+      ORG_A,
+      "ident-target",
+      {},
+      formData({ role: "MEMBER" }),
+    );
+    expect(result).toEqual({ message: "Not found." });
   });
 });

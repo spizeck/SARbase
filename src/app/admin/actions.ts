@@ -59,6 +59,7 @@ import {
   attachmentUploadSchema,
   attachmentMutationSchema,
   memberInvitationInputSchema,
+  organizationRoleSchema,
   organizationDocumentInputSchema,
   documentVersionSchema,
   vendorInputSchema,
@@ -201,6 +202,11 @@ import {
   InvitationMemberLinkedError,
   InvitationStateError,
 } from "@/lib/domain/invitations";
+import {
+  setOrganizationAccessRole,
+  LastAdministratorError,
+  OrganizationAccessNotFoundError,
+} from "@/lib/domain/access";
 import { StorageConfigError, StorageError } from "@/lib/storage/provider";
 import { getFileStorageProvider } from "@/lib/storage/resolve";
 import {
@@ -457,6 +463,14 @@ function mapDomainError(error: unknown): ActionState {
     error instanceof InvitationStateError
   ) {
     // Own-org lifecycle facts — safe to surface.
+    return { message: error.message };
+  }
+  if (error instanceof OrganizationAccessNotFoundError) {
+    // Opaque — an access row outside this org must not leak existence.
+    return { message: "Not found." };
+  }
+  if (error instanceof LastAdministratorError) {
+    // Own-org safety fact — safe to surface.
     return { message: error.message };
   }
   if (error instanceof StorageConfigError) {
@@ -942,6 +956,58 @@ export async function revokeMemberInvitationAction(
   revalidatePath(
     `/admin/organizations/${invitation.organizationId}/members/${invitation.memberId}`,
   );
+  return {};
+}
+
+/* ------------------------------------------------------------------ */
+/* Organization access (issue #74). The organizationId selects WHICH   */
+/* grant the caller's ADMIN must cover; targetAuthIdentityId selects   */
+/* the access row inside it. Both are untrusted selectors — the checks  */
+/* run against the caller's real OrganizationAccess rows, and the      */
+/* domain layer re-derives the org boundary inside its transaction.    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Change an existing access grant's role (MEMBER ↔ ADMIN). Requires
+ * ADMIN on the organization; the domain layer enforces the
+ * last-active-administrator invariant under a per-org advisory lock and
+ * writes the immutable OrganizationAccessEvent audit row atomically.
+ */
+export async function setOrganizationAccessRoleAction(
+  organizationId: string,
+  targetAuthIdentityId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = organizationRoleSchema.safeParse(formData.get("role"));
+  if (!parsed.success) {
+    return { fieldErrors: { role: ["Choose a role."] } };
+  }
+
+  let result;
+  try {
+    result = await setOrganizationAccessRole(
+      organizationId,
+      targetAuthIdentityId,
+      parsed.data,
+      ctx.identity.id,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  revalidatePath(`/admin/organizations/${organizationId}/access`);
+  revalidatePath(`/admin/organizations/${organizationId}/members`);
+  if (!result.changed) {
+    return { notice: "That account already has this role — nothing changed." };
+  }
   return {};
 }
 
