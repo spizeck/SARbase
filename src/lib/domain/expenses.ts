@@ -9,6 +9,7 @@ import type {
 import { prisma } from "@/lib/prisma";
 import { log } from "@/lib/logging";
 import { resolveActorLabels } from "./actors";
+import { normalizePhoneField } from "@/lib/contact";
 import { formatDateOnly } from "@/lib/dates";
 import { MoneyInputError, parseMoneyAmount } from "@/lib/money";
 import type {
@@ -311,7 +312,7 @@ export async function createVendor(
       name: input.name,
       contactName: input.contactName ?? null,
       email: input.email ?? null,
-      phone: input.phone ?? null,
+      phone: normalizePhoneField(input.phone, input.phoneRegion),
       website: input.website ?? null,
       accountReference: input.accountReference ?? null,
       notes: input.notes ?? null,
@@ -342,7 +343,7 @@ export async function updateVendor(
       name: input.name,
       contactName: input.contactName ?? null,
       email: input.email ?? null,
-      phone: input.phone ?? null,
+      phone: normalizePhoneField(input.phone, input.phoneRegion),
       website: input.website ?? null,
       accountReference: input.accountReference ?? null,
       notes: input.notes ?? null,

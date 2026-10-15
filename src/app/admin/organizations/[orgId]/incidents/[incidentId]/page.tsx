@@ -93,6 +93,11 @@ export default async function IncidentDetailPage({
         }),
   ]);
 
+  const unrecordedMembers = memberOptions.filter(
+    (m) => !participantIds.has(m.id),
+  );
+  const unrecordedAssets = assetOptions.filter((a) => !assetIds.has(a.id));
+
   const fieldDefaults = {
     title: incident.title,
     summary: incident.summary,
@@ -319,12 +324,20 @@ export default async function IncidentDetailPage({
             No participants recorded.
           </p>
         )}
-        <div className="mt-3 rounded-md border border-neutral-200 p-4">
-          <AddIncidentMemberForm
-            action={addIncidentMemberAction.bind(null, incident.id)}
-            members={memberOptions.filter((m) => !participantIds.has(m.id))}
-          />
-        </div>
+        {unrecordedMembers.length > 0 ? (
+          <div className="mt-3 rounded-md border border-neutral-200 p-4">
+            <AddIncidentMemberForm
+              action={addIncidentMemberAction.bind(null, incident.id)}
+              members={unrecordedMembers}
+            />
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-neutral-500">
+            {memberOptions.length === 0
+              ? "No active members yet — add members on the organization page first."
+              : "Every active member is already recorded as a participant."}
+          </p>
+        )}
       </section>
 
       <section aria-labelledby="assets-heading" className="mt-8">
@@ -340,7 +353,7 @@ export default async function IncidentDetailPage({
               >
                 <span>
                   <Link
-                    href={`/admin/organizations/${orgId}/assets/${p.asset.id}`}
+                    href={`/admin/assets/${p.asset.id}`}
                     className="font-medium text-neutral-900 hover:underline"
                   >
                     {p.asset.name}
@@ -362,12 +375,20 @@ export default async function IncidentDetailPage({
         ) : (
           <p className="mt-3 text-sm text-neutral-500">No assets recorded.</p>
         )}
-        <div className="mt-3 rounded-md border border-neutral-200 p-4">
-          <AddIncidentAssetForm
-            action={addIncidentAssetAction.bind(null, incident.id)}
-            assets={assetOptions.filter((a) => !assetIds.has(a.id))}
-          />
-        </div>
+        {unrecordedAssets.length > 0 ? (
+          <div className="mt-3 rounded-md border border-neutral-200 p-4">
+            <AddIncidentAssetForm
+              action={addIncidentAssetAction.bind(null, incident.id)}
+              assets={unrecordedAssets}
+            />
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-neutral-500">
+            {assetOptions.length === 0
+              ? "No assets recorded yet — record them on the assets page first."
+              : "Every asset is already recorded as participating."}
+          </p>
+        )}
       </section>
 
       {/* Issue #16 — documentary files on the incident record itself.

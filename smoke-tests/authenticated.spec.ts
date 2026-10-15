@@ -1,0 +1,86 @@
+import { test, expect } from "@playwright/test";
+
+/**
+ * Authenticated hosted smoke coverage (workstream: hosted app testing).
+ *
+ * These specs run ONLY in the hosted config's `authenticated` project
+ * (playwright.hosted.config.ts) — never in the local CI suite, which
+ * cannot provision Firebase sessions. global-setup signs in through the
+ * real login journey with SMOKE_TEST_EMAIL/SMOKE_TEST_PASSWORD and
+ * stores the session cookie; without those variables every spec here
+ * skips cleanly.
+ *
+ * The test identity is provisioned out-of-band (preview Firebase user +
+ * `admin:provision` grant on the seeded preview organization — see
+ * docs/hosted-smoke-testing.md). Specs assert authenticated contract,
+ * not seeded row contents: org membership varies with what the operator
+ * granted the smoke identity.
+ */
+const hasCredentials = Boolean(
+  process.env.SMOKE_TEST_EMAIL && process.env.SMOKE_TEST_PASSWORD,
+);
+
+test.describe("authenticated session", () => {
+  test.skip(
+    !hasCredentials,
+    "SMOKE_TEST_EMAIL/SMOKE_TEST_PASSWORD not configured — authenticated hosted coverage requires a provisioned smoke identity (docs/hosted-smoke-testing.md)",
+  );
+
+  test("the session survives navigation — /admin does not bounce to login", async ({
+    page,
+  }) => {
+    await page.goto("/admin");
+    await expect(page).not.toHaveURL(/\/login/);
+    await expect(
+      page.getByRole("heading", { name: "Administration" }),
+    ).toBeVisible();
+    // Either branch is a correct authed render — org grants depend on
+    // what the operator provisioned for the smoke identity.
+    await expect(
+      page
+        .getByRole("link")
+        .filter({ hasText: /member/ })
+        .first()
+        .or(page.getByText(/do not administer any organizations/)),
+    ).toBeVisible();
+  });
+
+  test("/account renders the signed-in identity", async ({ page }) => {
+    await page.goto("/account");
+    await expect(page).not.toHaveURL(/\/login/);
+    await expect(page.getByText(process.env.SMOKE_TEST_EMAIL!)).toBeVisible();
+  });
+
+  test("org admin pages resolve under the session", async ({ page }) => {
+    await page.goto("/admin");
+    // Follow the first organization link when one exists; without org
+    // grants this test verifies only that the empty state is honest.
+    const orgLink = page
+      .getByRole("link")
+      .filter({ hasText: /member/ })
+      .first();
+    if ((await orgLink.count()) === 0) {
+      await expect(
+        page.getByText(/do not administer any organizations/),
+      ).toBeVisible();
+      return;
+    }
+    await orgLink.click();
+    await expect(page).toHaveURL(/\/admin\/organizations\//);
+    await expect(page).not.toHaveURL(/\/login/);
+    await expect(page.getByRole("heading").first()).toBeVisible();
+  });
+
+  test("attachment downloads remain authorized under the session", async ({
+    request,
+  }) => {
+    // A fabricated id still fails opaquely — the session authorizes the
+    // route, it does not reveal record existence across organizations.
+    const response = await request.get(
+      "/api/attachments/att-nonexistent/download",
+    );
+    expect([404, 401, 403]).toContain(response.status());
+    const body = await response.text();
+    expect(body.length).toBeLessThan(4096);
+  });
+});

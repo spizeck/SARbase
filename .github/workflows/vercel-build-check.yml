@@ -1,0 +1,63 @@
+name: Vercel build-command check
+
+# Verifies the EFFECTIVE Vercel build command for `sar-base` still runs
+# `npm run build:vercel` (→ scripts/vercel-build.ts) — the wrapper that
+# performs database identity checks and applies committed migrations on
+# every deployment.
+#
+# Why a remote check: the Vercel project's Build Command setting
+# overrides vercel.json, and neither a repo test nor a review can see
+# it. PR #49's lifecycle validation caught the project running plain
+# `npm run build`, which deployed successfully while silently skipping
+# migrations. This job reads the setting back through the Vercel API
+# (single GET, read-only) daily, on pushes to the default branch, and
+# on demand.
+#
+# Outcomes are distinct, never silently conflated: OK / confirmed
+# MISMATCH / UNVERIFIABLE (missing config, API error, or insufficient
+# permissions — still a failure, but labeled differently so it cannot
+# be mistaken for a clean verdict).
+#
+# Repo-side drift (vercel.json / package.json) is covered on every PR
+# by the unit test in scripts/vercel-build-check.test.ts — no secrets
+# needed — so this workflow deliberately does not run on pull_request
+# (fork PRs could not read the secret anyway).
+#
+# Trust boundary: the job always checks out the repository DEFAULT
+# branch — the check script and `npm ci` run trusted code only.
+
+on:
+  schedule:
+    - cron: "23 5 * * *" # daily, ~05:23 UTC
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vercel-build-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Verify effective build command
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Check the effective Vercel build command
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+        run: npx tsx scripts/vercel-build-check.ts

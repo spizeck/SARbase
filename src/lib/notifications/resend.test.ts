@@ -224,6 +224,45 @@ describe("resolveNotificationProvider", () => {
     expect(provider.providerName).toBe("fake");
   });
 
+  it("preview: a leaked RESEND_API_KEY alone does NOT select real delivery", () => {
+    const provider = resolveNotificationProvider("EMAIL", {
+      VERCEL_ENV: "preview",
+      RESEND_API_KEY: "re_x",
+      NOTIFICATION_EMAIL_FROM: "SARbase <notify@example.org>",
+    });
+    expect(provider.providerName).toBe("fake");
+  });
+
+  it("preview: explicit resend selection still requires the preview opt-in flag", () => {
+    expect(() =>
+      resolveNotificationProvider("EMAIL", {
+        VERCEL_ENV: "preview",
+        NOTIFICATION_PROVIDER: "resend",
+        RESEND_API_KEY: "re_x",
+        NOTIFICATION_EMAIL_FROM: "SARbase <notify@example.org>",
+      }),
+    ).toThrow(NotificationConfigError);
+  });
+
+  it("preview: resend works with the deliberate double opt-in", () => {
+    const provider = resolveNotificationProvider("EMAIL", {
+      VERCEL_ENV: "preview",
+      NOTIFICATION_PROVIDER: "resend",
+      RESEND_API_KEY: "re_x",
+      NOTIFICATION_EMAIL_FROM: "SARbase <notify@example.org>",
+      ALLOW_RESEND_IN_PREVIEW: "true",
+    });
+    expect(provider.providerName).toBe("resend");
+  });
+
+  it("preview: explicit fake selection works", () => {
+    const provider = resolveNotificationProvider("EMAIL", {
+      VERCEL_ENV: "preview",
+      NOTIFICATION_PROVIDER: "fake",
+    });
+    expect(provider.providerName).toBe("fake");
+  });
+
   it("never selects fake in a production deployment — even explicitly", () => {
     expect(() =>
       resolveNotificationProvider("EMAIL", {

@@ -5,7 +5,11 @@ import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
 import { listOrganizationDocuments } from "@/lib/domain/attachments";
 import { formatDateOnly } from "@/lib/dates";
 
-import { createOrganizationDocumentAction } from "../../../actions";
+import {
+  createOrganizationDocumentAction,
+  finalizeDocumentCreateAction,
+  prepareDocumentUploadAction,
+} from "../../../actions";
 import { OrganizationDocumentCreateForm } from "../../../attachment-forms";
 import { formatBytes } from "../../../attachment-section";
 
@@ -141,7 +145,11 @@ export default async function OrganizationDocumentsPage({
           Add a document
         </h2>
         <div className="mt-3 max-w-lg">
-          <OrganizationDocumentCreateForm action={createAction} />
+          <OrganizationDocumentCreateForm
+            action={createAction}
+            prepare={prepareDocumentUploadAction.bind(null, orgId)}
+            finalize={finalizeDocumentCreateAction.bind(null, orgId)}
+          />
         </div>
       </section>
     </main>

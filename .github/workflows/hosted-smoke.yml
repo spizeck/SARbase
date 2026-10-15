@@ -1,0 +1,54 @@
+name: Hosted Smoke
+
+# Manual-only smoke run against a deployed instance (Vercel preview or
+# any reachable build). Never auto-triggers: the target URL is an
+# operator input, and the anonymous suite needs no secrets at all.
+# Authenticated specs self-skip unless SMOKE_TEST_* secrets exist.
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Deployment URL to smoke (https://<preview>.vercel.app)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.url }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Hosted smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Hosted smoke suite
+        env:
+          SMOKE_BASE_URL: ${{ inputs.url }}
+          SMOKE_VERCEL_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          SMOKE_TEST_EMAIL: ${{ secrets.SMOKE_TEST_EMAIL }}
+          SMOKE_TEST_PASSWORD: ${{ secrets.SMOKE_TEST_PASSWORD }}
+          # Token-flow fixture DB + the pepper the TARGET deployment
+          # uses (a preview value — never the production secret). Both
+          # are optional: without them the data-coupled specs skip.
+          SMOKE_DATABASE_URL: ${{ secrets.SMOKE_DATABASE_URL }}
+          CALLOUT_RESPONSE_TOKEN_SECRET: ${{ secrets.SMOKE_CALLOUT_RESPONSE_TOKEN_SECRET }}
+        run: npm run test:e2e:hosted
+      - name: Upload Playwright report
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hosted-smoke-report-${{ github.sha }}
+          path: playwright-report/
+          retention-days: 7

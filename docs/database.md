@@ -7,17 +7,27 @@ seeding, or environment behavior.
 
 ## Environment topology
 
-| Environment      | Database                                                        | Data            | Notes                        |
-| ---------------- | --------------------------------------------------------------- | --------------- | ---------------------------- |
-| local dev        | docker-compose postgres (`:5433`) or a personal Neon dev branch | synthetic seeds | disposable                   |
-| CI               | postgres service container, empty at job start                  | none            | migration replay + db tests  |
-| preview (per-PR) | ephemeral Neon branch via the Vercel–Neon integration           | synthetic seeds | deleted with the branch      |
-| production       | the production Neon project branch                              | real            | never touched by CI/previews |
+Model A of the app-foundations database-lifecycle standard (ADR-0001):
+GitHub Actions-managed Neon preview branches over a permanent fictional
+`testing` baseline.
 
-**Deliberately NOT "one Neon branch per git branch."** Branch-per-branch
-migrates schema drift into dozens of half-stale copies, costs quota, and
-produces confusing partial previews. The unit of isolation is the
-_deployment environment_, not the git ref.
+| Environment      | Database                                                        | Data            | Notes                                                              |
+| ---------------- | --------------------------------------------------------------- | --------------- | ------------------------------------------------------------------ |
+| local dev        | docker-compose postgres (`:5433`) or a personal Neon dev branch | synthetic seeds | disposable                                                         |
+| CI               | postgres service container, empty at job start                  | none            | migration replay + db tests                                        |
+| testing          | permanent Neon branch `testing`                                 | fictional only  | baseline for all previews; maintained, never reset from production |
+| preview (per-PR) | Neon branch `preview/pr-<n>`, child of `testing`                | fictional only  | created/torn down by `.github/workflows/neon-preview.yml`          |
+| production       | Neon branch `main`                                              | real            | never touched by CI/previews                                       |
+
+Preview branches are provisioned per _pull request_, not per git
+branch: a PR gets exactly one `preview/pr-<n>` branch, reused on every
+push. The unit of isolation is the PR's deployment — copy-on-write
+branches keep that cheap.
+
+`testing` must never be refreshed from `main` once production holds
+real data: fictional data is rebuilt by replaying committed migrations
+and running `npm run db:seed -- --target testing --confirm`. See
+`docs/preview-databases.md` for the full lifecycle and setup runbook.
 
 **Readiness gate:** after `docker compose up -d postgres`, run
 `npm run db:wait` (`scripts/wait-for-postgres.ts`) before any `createdb`,
@@ -34,24 +44,47 @@ logs on timeout.
 - `DATABASE_URL_UNPOOLED` — direct endpoint, used by `prisma migrate
 deploy`, introspection, and seed/backup scripts. PgBouncer-pooled
   connections break session-level migration locks; never run migrations
-  through the pooler.
-- `APP_PRODUCTION_DB_HOST` — non-secret production hostname, set **only
-  on the Vercel Preview environment**. `scripts/vercel-build.ts` uses it
-  as an exclusion check; a missing value skips preview migrations
-  (fail-safe), a matching host fails the build.
+  through the pooler. Declared as `directUrl` in `prisma/schema.prisma`
+  so `migrate deploy` always takes the direct endpoint.
+- `APP_PRODUCTION_DB_HOST` — non-secret production hostname, set on
+  **both the Vercel Preview and Production environments**. On production
+  it is a positive-identity check: a production build whose
+  `DATABASE_URL*` does not resolve to it refuses to build. On preview it
+  is an exclusion check: a preview whose database URL resolves to it
+  fails the build. A missing value fails closed in both cases.
+- `APP_PREVIEW_DB_HOST` — non-secret hostname of this preview's Neon
+  branch, written per git branch by the neon-preview workflow alongside
+  the connection URLs. Positive preview identity: a preview build whose
+  `DATABASE_URL`/`DATABASE_URL_UNPOOLED` do not both resolve to this
+  exact host refuses to migrate.
+- `APP_TESTING_DB_HOST` — non-secret hostname of the permanent `testing`
+  branch, bound to `db:seed -- --target testing` so the target name
+  proves endpoint identity.
 
 ## Migration posture
 
 Production migrations run **inside the Vercel build**
-(`build:vercel` → `scripts/vercel-build.ts`), before `next build`:
+(`build:vercel` → `scripts/vercel-build.ts`), before `next build`.
+This only happens if Vercel actually invokes `build:vercel` — the
+required build command, where it is configured, and the drift checks
+around it are documented in
+[preview-databases.md → Required Vercel build command](preview-databases.md#required-vercel-build-command):
 
-- `VERCEL_ENV=production` + `DATABASE_URL` → `prisma migrate deploy`,
-  then build. No `DATABASE_URL` → **fail closed** (exit 1).
-- `VERCEL_ENV=preview` + non-production-host `DATABASE_URL` → migrate,
-  then build. Missing `APP_PRODUCTION_DB_HOST` → skip migrations.
-- Production host detected in a preview → **fail the build**.
+- `VERCEL_ENV=production` → requires `DATABASE_URL`,
+  `DATABASE_URL_UNPOOLED`, and `APP_PRODUCTION_DB_HOST`; both URLs must
+  resolve to the production host and to the same database →
+  `prisma migrate deploy`, then build. Any gap → **fail closed** (exit 1).
+- `VERCEL_ENV=preview` without `DATABASE_URL` → skip migrations and
+  build (a branch without a PR simply has no preview database).
+- `VERCEL_ENV=preview` with `DATABASE_URL` → requires
+  `DATABASE_URL_UNPOOLED`, `APP_PRODUCTION_DB_HOST` (production
+  exclusion), and `APP_PREVIEW_DB_HOST` (positive preview identity);
+  both URLs must resolve to exactly that host and the same database →
+  migrate, then build. Any gap or mismatch → **fail the build**.
 - A failed migration aborts the build → the deployment is never
-  promoted and the previous release keeps serving.
+  promoted and the previous release keeps serving. Failed migrations
+  are recovered by fix-forward (a new migration commit), never by
+  automatic rollback.
 
 Because migrations apply _before_ the new build exists, every migration
 must be backward-compatible with the currently-serving release —
@@ -79,9 +112,32 @@ backfill, then constrain/drop in a follow-up deploy.
 
 ## Seeding
 
-`npm run db:seed` inserts synthetic placeholder rows only. It refuses
-when `DATABASE_URL` resolves to `APP_PRODUCTION_DB_HOST`. Seed data is
-generated here — never copied from production.
+`npm run db:seed` inserts synthetic placeholder rows only — fictional
+organizations, units, members, qualifications, equipment, inspections,
+maintenance, and availability, all with fixed `seed-*` ids and upserts
+so reseeding is idempotent. Seed data is generated here — never copied
+or derived from production.
+
+Target safety (`prisma/seed.ts`):
+
+- Loopback hosts (local dev, CI service containers) seed freely.
+- Any remote host requires `--target <name> --confirm`.
+- `--target testing` additionally requires the URL to resolve to
+  `APP_TESTING_DB_HOST` — a positive identity binding, not just an
+  asserted name.
+- The `APP_PRODUCTION_DB_HOST` host is refused under every invocation.
+- Connection strings with `host`/`port`/`database`/`service` query
+  overrides are refused — a slipstreamed parameter could otherwise
+  retarget the driver past the validated hostname.
+- The client binds `DATABASE_URL_UNPOOLED ?? DATABASE_URL`, the same
+  URL the guard inspects.
+
+`npm run db:verify` (`scripts/verify-database.ts`) is the read-only
+baseline check: prints the normalized target identity, fails on the
+production host or an unverifiable remote target, reports
+`prisma migrate status`, and asserts fictional-only invariants (seed-*
+ids on every Member/AuthIdentity, RFC 2606 email domains, warnings for
+non-seed operational rows).
 
 ## Database tests
 

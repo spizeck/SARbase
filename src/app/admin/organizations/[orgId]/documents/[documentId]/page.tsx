@@ -10,6 +10,8 @@ import { formatDateOnly, formatInstantInZone } from "@/lib/dates";
 import {
   addDocumentVersionAction,
   deleteAttachmentAction,
+  finalizeDocumentVersionAction,
+  prepareDocumentVersionAction,
   setOrganizationDocumentStatusAction,
   updateOrganizationDocumentAction,
 } from "../../../../actions";
@@ -228,7 +230,11 @@ export default async function OrganizationDocumentPage({
         </ul>
         {document.status === "ACTIVE" && (
           <div className="mt-4 max-w-md">
-            <DocumentVersionUploadForm action={versionAction} />
+            <DocumentVersionUploadForm
+              action={versionAction}
+              prepare={prepareDocumentVersionAction.bind(null, document.id)}
+              finalize={finalizeDocumentVersionAction.bind(null, document.id)}
+            />
           </div>
         )}
       </section>

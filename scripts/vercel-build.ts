@@ -1,13 +1,22 @@
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
+import {
+  arePostgresqlUrlsSameDatabase,
+  normalizeDatabaseEndpoint,
+} from "../src/lib/env";
+
+import { parseDatabaseTargetUrl } from "./lib/db-target";
+
 /**
  * Vercel build wrapper: applies committed Prisma migrations during the
  * build for Production deployments and for Preview deployments whose
- * database clears the production-host exclusion check.
+ * database passes positive-identity verification.
  *
  * Derived from the RISE Saba implementation (its issues #86/#91
- * iteration), generalized to APP_PRODUCTION_DB_HOST.
+ * iteration), generalized to APP_PRODUCTION_DB_HOST +
+ * APP_PREVIEW_DB_HOST per the app-foundations database-lifecycle
+ * standard (ADR-0001, model A).
  *
  * Ordering guarantee: Vercel runs install → buildCommand → promote. A
  * non-zero exit here fails the build, so a failed migration means the
@@ -21,22 +30,33 @@ import { pathToFileURL } from "node:url";
  * signal — available at build time and independent of which environment
  * variables a deployment can see.
  *
- * Preview safety: the Neon-managed Vercel integration injects a
- * per-deployment DATABASE_URL for the `preview/<git-branch>` branch —
- * database isolation for previews is guaranteed by that integration's
- * configuration, not by this script. What this script adds is
- * defense-in-depth: APP_PRODUCTION_DB_HOST (a non-secret hostname, set
- * on the Preview environment) is an exclusion check, so a preview whose
- * DATABASE_URL still points at the Production host fails the build
- * rather than running migrations against it. The check does not prove
- * the URL is the intended preview branch — a stale or wrong
- * non-production URL would also pass — so a missing marker skips
- * migrations instead of guessing.
+ * Preview safety: the neon-preview workflow writes branch-scoped
+ * Preview env vars for each PR — DATABASE_URL, DATABASE_URL_UNPOOLED,
+ * and APP_PREVIEW_DB_HOST, the canonical host of that PR's
+ * `preview/pr-<n>` Neon branch. This script enforces three checks
+ * before migrating: APP_PRODUCTION_DB_HOST (a non-secret hostname, set
+ * on the Preview AND Production environments) is an exclusion check
+ * that fails the build if either URL points at Production;
+ * APP_PREVIEW_DB_HOST is a positive identity check — a preview
+ * DATABASE_URL whose host is not the verified preview-branch host fails
+ * the build rather than running migrations against an unverifiable
+ * database; and both URLs must resolve to the SAME database so the
+ * pooled runtime and the unpooled migration endpoint cannot diverge.
+ * A missing DATABASE_URL still skips migrations (a branch pushed
+ * without a PR simply has no preview database), but a
+ * present-but-unverifiable configuration fails closed — there is no
+ * fallback to production or testing credentials.
  *
- * If your team prefers operator-gated production migrations instead
- * (the Sea Saba posture), delete the production branch of this gate and
- * run `prisma migrate deploy` manually per docs/database.md — do not
- * silently keep both.
+ * Production safety: the production deployment must positively prove it
+ * is building against the production host — DATABASE_URL and
+ * DATABASE_URL_UNPOOLED must both be present and both resolve to
+ * APP_PRODUCTION_DB_HOST. A production deployment without that proof
+ * fails the build rather than migrating an unknown database.
+ *
+ * Migration endpoint: the Prisma datasource declares
+ * `directUrl = env("DATABASE_URL_UNPOOLED")`, so `migrate deploy`
+ * always uses the direct endpoint — PgBouncer pooling breaks the
+ * session-level advisory lock migrations depend on.
  */
 
 type RunResult = { status: number | null };
@@ -54,13 +74,33 @@ const defaultRunner: Runner = (command, args) =>
 
 const TAG = "[vercel-build]";
 
-/** Hostname of a Postgres connection string, lowercased — null if unparseable. */
+/**
+ * Canonical hostname of a Postgres connection string — lowercased and
+ * pooler-normalized so a Neon pooled URL cannot bypass a direct
+ * production-host check. Null if unparseable.
+ */
 function dbHostname(url: string | undefined): string | null {
   if (!url) return null;
   try {
-    return new URL(url).hostname.toLowerCase() || null;
+    const hostname = new URL(url).hostname;
+    return hostname ? normalizeDatabaseEndpoint(hostname) : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * A hostname check alone is not a routing boundary: drivers honor
+ * query-parameter overrides (`?host=` as a Unix-socket directory for
+ * Prisma, `hostaddr`/`port`/`service` for pg tooling). Both migration
+ * URLs must parse clean before Prisma ever sees them.
+ */
+function isSafeMigrationTarget(url: string): boolean {
+  try {
+    parseDatabaseTargetUrl(url);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -90,34 +130,146 @@ export function runVercelBuild(
       );
       return 1;
     }
+    if (!env.DATABASE_URL_UNPOOLED) {
+      console.error(
+        `${TAG} VERCEL_ENV=production but DATABASE_URL_UNPOOLED is not set — migrations run on the direct endpoint; refusing to build.`,
+      );
+      return 1;
+    }
+    if (
+      !isSafeMigrationTarget(env.DATABASE_URL) ||
+      !isSafeMigrationTarget(env.DATABASE_URL_UNPOOLED)
+    ) {
+      console.error(
+        `${TAG} a database URL contains a routing-override query parameter — refusing to migrate.`,
+      );
+      return 1;
+    }
+    // Positive identity: the URLs must BE the production host, not
+    // merely "a host that isn't excluded". Without the marker we cannot
+    // distinguish production from a miswired preview database.
+    const prodHost = env.APP_PRODUCTION_DB_HOST?.trim();
+    if (!prodHost) {
+      console.error(
+        `${TAG} VERCEL_ENV=production but APP_PRODUCTION_DB_HOST is not configured — cannot verify the production database host; refusing to build. See docs/database.md.`,
+      );
+      return 1;
+    }
+    const normalizedProdHost = normalizeDatabaseEndpoint(prodHost);
+    const candidateHosts = [env.DATABASE_URL, env.DATABASE_URL_UNPOOLED].map(
+      dbHostname,
+    );
+    if (candidateHosts.some((h) => h === null)) {
+      console.error(
+        `${TAG} a configured database URL hostname could not be parsed — refusing to migrate.`,
+      );
+      return 1;
+    }
+    if (candidateHosts.some((h) => h !== normalizedProdHost)) {
+      console.error(
+        `${TAG} a database URL does not resolve to the configured production host (APP_PRODUCTION_DB_HOST) — refusing to migrate or build against an unverified database.`,
+      );
+      return 1;
+    }
+    if (
+      !arePostgresqlUrlsSameDatabase(
+        env.DATABASE_URL,
+        env.DATABASE_URL_UNPOOLED,
+      )
+    ) {
+      console.error(
+        `${TAG} DATABASE_URL and DATABASE_URL_UNPOOLED resolve to different databases — refusing to migrate.`,
+      );
+      return 1;
+    }
     console.log(
-      `${TAG} production deployment — applying committed migrations (npm run db:migrate:deploy)`,
+      `${TAG} production deployment verified against APP_PRODUCTION_DB_HOST — applying committed migrations (npm run db:migrate:deploy)`,
     );
     const failed = runMigrations(run);
     if (failed !== null) return failed;
   } else if (env.VERCEL_ENV === "preview") {
     if (!env.DATABASE_URL) {
       console.log(
-        `${TAG} preview deployment without DATABASE_URL — no preview branch injected; skipping migrations`,
+        `${TAG} preview deployment without DATABASE_URL — no preview branch provisioned; skipping migrations`,
       );
     } else {
-      const prodHost = env.APP_PRODUCTION_DB_HOST?.trim().toLowerCase();
-      if (!prodHost) {
-        console.warn(
-          `${TAG} preview has DATABASE_URL but APP_PRODUCTION_DB_HOST is not configured — cannot exclude the production host; skipping migrations. See docs/database.md.`,
-        );
-      } else if (dbHostname(env.DATABASE_URL) === prodHost) {
+      // Fail closed on every identity gap: a preview that cannot prove
+      // which database it targets must not migrate (or silently skip
+      // while deploying) — the build fails instead.
+      if (!env.DATABASE_URL_UNPOOLED) {
         console.error(
-          `${TAG} preview DATABASE_URL resolves to the configured production host — refusing to migrate or build against Production.`,
+          `${TAG} preview has DATABASE_URL but DATABASE_URL_UNPOOLED is not set — migrations run on the direct endpoint; refusing to migrate or build.`,
         );
         return 1;
-      } else {
-        console.log(
-          `${TAG} preview database differs from configured production host — applying committed migrations (npm run db:migrate:deploy)`,
-        );
-        const failed = runMigrations(run);
-        if (failed !== null) return failed;
       }
+      if (
+        !isSafeMigrationTarget(env.DATABASE_URL) ||
+        !isSafeMigrationTarget(env.DATABASE_URL_UNPOOLED)
+      ) {
+        console.error(
+          `${TAG} a preview database URL contains a routing-override query parameter — refusing to migrate.`,
+        );
+        return 1;
+      }
+      const prodHost = env.APP_PRODUCTION_DB_HOST?.trim();
+      if (!prodHost) {
+        console.error(
+          `${TAG} preview has DATABASE_URL but APP_PRODUCTION_DB_HOST is not configured — cannot exclude the production host; refusing to migrate or build. See docs/database.md.`,
+        );
+        return 1;
+      }
+      const normalizedProdHost = normalizeDatabaseEndpoint(prodHost);
+      const candidateHosts = [env.DATABASE_URL, env.DATABASE_URL_UNPOOLED].map(
+        dbHostname,
+      );
+      if (candidateHosts.some((h) => h === null)) {
+        console.error(
+          `${TAG} a configured database URL hostname could not be parsed — refusing to migrate.`,
+        );
+        return 1;
+      }
+      if (candidateHosts.some((h) => h === normalizedProdHost)) {
+        console.error(
+          `${TAG} preview database URL resolves to the configured production host — refusing to migrate or build against Production.`,
+        );
+        return 1;
+      }
+      const expectedHost = env.APP_PREVIEW_DB_HOST?.trim();
+      if (!expectedHost) {
+        console.error(
+          `${TAG} preview has DATABASE_URL but APP_PREVIEW_DB_HOST is not set — preview database identity cannot be verified; refusing to migrate or build. See docs/preview-databases.md.`,
+        );
+        return 1;
+      }
+      const normalizedExpected = normalizeDatabaseEndpoint(expectedHost);
+      if (normalizedExpected === normalizedProdHost) {
+        console.error(
+          `${TAG} APP_PREVIEW_DB_HOST equals the production host — refusing to migrate; preview identity is misconfigured.`,
+        );
+        return 1;
+      }
+      if (candidateHosts.some((h) => h !== normalizedExpected)) {
+        console.error(
+          `${TAG} a preview database URL does not resolve to the verified preview host (APP_PREVIEW_DB_HOST) — refusing to migrate or build against an unverified database.`,
+        );
+        return 1;
+      }
+      if (
+        !arePostgresqlUrlsSameDatabase(
+          env.DATABASE_URL,
+          env.DATABASE_URL_UNPOOLED,
+        )
+      ) {
+        console.error(
+          `${TAG} DATABASE_URL and DATABASE_URL_UNPOOLED resolve to different databases — refusing to migrate.`,
+        );
+        return 1;
+      }
+      console.log(
+        `${TAG} preview database verified against APP_PREVIEW_DB_HOST — applying committed migrations (npm run db:migrate:deploy)`,
+      );
+      const failed = runMigrations(run);
+      if (failed !== null) return failed;
     }
   } else {
     console.log(

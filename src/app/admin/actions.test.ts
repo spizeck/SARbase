@@ -315,4 +315,48 @@ describe("in-scope admin operations", () => {
     expect(result).toEqual({});
     expect(organizationUpdateMock).toHaveBeenCalled();
   });
+
+  it("forwards phoneRegion so a national number normalizes to the right E.164", async () => {
+    // Regression: the actions previously dropped `phoneRegion`, so a
+    // national number like "06 …" (NL) would parse against the BQ
+    // default. The phone input now submits national digits, making the
+    // hidden region field load-bearing.
+    memberCreateMock.mockResolvedValue({ id: "member-new" });
+    await expect(
+      createMemberAction(
+        ORG_A,
+        {},
+        formData({
+          displayName: "Person",
+          phone: "06 12345678",
+          phoneRegion: "NL",
+        }),
+      ),
+    ).rejects.toThrow("NEXT_REDIRECT");
+    expect(memberCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ phone: "+31612345678" }),
+      }),
+    );
+
+    memberUpdateMock.mockResolvedValue({
+      id: "member-a",
+      organizationId: ORG_A,
+    });
+    const result = await updateMemberAction(
+      "member-a",
+      {},
+      formData({
+        displayName: "Person",
+        phone: "246 226 0000",
+        phoneRegion: "BB",
+      }),
+    );
+    expect(result).toEqual({});
+    expect(memberUpdateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ phone: "+12462260000" }),
+      }),
+    );
+  });
 });

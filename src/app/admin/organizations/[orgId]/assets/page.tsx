@@ -4,9 +4,12 @@ import { notFound } from "next/navigation";
 import { getOrganization } from "@/lib/domain/organization";
 import {
   listAssets,
+  listAssetCategories,
+  listAssetVendorNames,
   listStorageLocations,
   locationPathMap,
 } from "@/lib/domain/assets";
+import { listOrganizationVendors } from "@/lib/domain/expenses";
 import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
 
 import { createAssetAction } from "../../../actions";
@@ -31,6 +34,8 @@ export default async function AssetsPage({
     unit?: string;
     location?: string;
     retired?: string;
+    q?: string;
+    category?: string;
   }>;
 }) {
   const { orgId } = await params;
@@ -43,6 +48,8 @@ export default async function AssetsPage({
     unit: unitFilter,
     location: locationFilter,
     retired,
+    q,
+    category: categoryFilter,
   } = await searchParams;
 
   // Filter values are untrusted selectors. A unit/location id that is
@@ -55,19 +62,40 @@ export default async function AssetsPage({
   const unitId =
     unitFilter === "org" ? null : filterUnit ? filterUnit.id : undefined;
   const showRetired = retired === "1";
+  const query = q?.trim() || undefined;
 
-  const [assets, allAssets, locations, paths] = await Promise.all([
+  const [
+    assets,
+    allAssets,
+    locations,
+    paths,
+    categories,
+    vendors,
+    vendorNames,
+  ] = await Promise.all([
     listAssets(orgId, {
       unitId,
       storageLocationId: locationFilter || undefined,
       includeRetired: showRetired,
+      query,
+      category: categoryFilter,
     }),
     // Parent options for the create form are the full catalog — the
     // list filters above shouldn't narrow what an asset can be part of.
     listAssets(orgId, { includeRetired: true }),
     listStorageLocations(orgId),
     locationPathMap(orgId),
+    listAssetCategories(orgId),
+    listOrganizationVendors(orgId),
+    listAssetVendorNames(orgId),
   ]);
+
+  // Autocomplete merges the org's Vendor records with vendor strings
+  // already typed onto assets — suggestions converge on the established
+  // spellings without forcing the free-text field to become a lookup.
+  const vendorSuggestions = [
+    ...new Set([...vendors.map((v) => v.name), ...vendorNames]),
+  ].sort((a, b) => a.localeCompare(b));
 
   const base = `/admin/organizations/${orgId}/assets`;
   const pageQuery = (overrides: Record<string, string | undefined>) => {
@@ -75,6 +103,8 @@ export default async function AssetsPage({
       unit: unitFilter,
       location: locationFilter,
       retired: showRetired ? "1" : undefined,
+      q: query,
+      category: categoryFilter,
       ...overrides,
     };
     const qs = new URLSearchParams();
@@ -141,6 +171,45 @@ export default async function AssetsPage({
         </nav>
         <form method="get" className="mt-3 flex flex-wrap items-end gap-3">
           {unitFilter && <input type="hidden" name="unit" value={unitFilter} />}
+          <div className="min-w-40">
+            <label
+              htmlFor="asset-q"
+              className="block text-xs font-medium text-neutral-600"
+            >
+              Search
+            </label>
+            <input
+              id="asset-q"
+              name="q"
+              type="search"
+              defaultValue={query ?? ""}
+              placeholder="Name, tag, serial, model"
+              className="mt-1 block w-full rounded-md border border-neutral-300 px-2 py-1.5 text-sm"
+            />
+          </div>
+          {categories.length > 0 && (
+            <div>
+              <label
+                htmlFor="asset-category-filter"
+                className="block text-xs font-medium text-neutral-600"
+              >
+                Category
+              </label>
+              <select
+                id="asset-category-filter"
+                name="category"
+                defaultValue={categoryFilter ?? ""}
+                className="mt-1 block rounded-md border border-neutral-300 px-2 py-1.5 text-sm"
+              >
+                <option value="">All categories</option>
+                {categories.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div>
             <label
               htmlFor="asset-location-filter"
@@ -178,12 +247,38 @@ export default async function AssetsPage({
           >
             Apply
           </button>
+          {(query || categoryFilter || locationFilter || showRetired) && (
+            <Link
+              href={pageQuery({
+                q: undefined,
+                category: undefined,
+                location: undefined,
+                retired: undefined,
+              })}
+              className="pb-1.5 text-sm text-neutral-500 hover:underline"
+            >
+              Clear filters
+            </Link>
+          )}
         </form>
 
         {assets.length === 0 ? (
-          <p className="mt-4 text-sm text-neutral-500">
-            No assets match this view.
-          </p>
+          <div className="mt-4 rounded-md border border-dashed border-neutral-300 p-4">
+            <p className="text-sm text-neutral-500">
+              {allAssets.length === 0
+                ? "No assets recorded yet — use the form below to add the first one."
+                : "No assets match the current filters."}
+            </p>
+            {allAssets.length > 0 && (
+              <Link
+                href={base}
+                className="mt-1 inline-block text-sm text-neutral-700 underline"
+              >
+                Clear filters and show all {allAssets.length} asset
+                {allAssets.length === 1 ? "" : "s"}
+              </Link>
+            )}
+          </div>
         ) : (
           <ul className="mt-4 space-y-2">
             {assets.map((asset) => (
@@ -231,12 +326,15 @@ export default async function AssetsPage({
           <div className="mt-3">
             <AssetForm
               action={createAssetAction.bind(null, orgId)}
+              orgId={orgId}
               units={organization.units}
               locationOptions={locations.map((l) => ({
                 id: l.id,
                 path: l.path,
               }))}
               parentOptions={allAssets.map((a) => ({ id: a.id, name: a.name }))}
+              categorySuggestions={categories}
+              vendorSuggestions={vendorSuggestions}
               submitLabel="Save asset"
             />
           </div>

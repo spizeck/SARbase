@@ -7,6 +7,11 @@ import { log } from "@/lib/logging";
 import { prisma } from "@/lib/prisma";
 import { getFileStorageProvider } from "@/lib/storage/resolve";
 import { StorageError, type FileStorageProvider } from "@/lib/storage/provider";
+import {
+  resolveUploadTicketSecret,
+  signUploadTicket,
+  verifyUploadTicket,
+} from "@/lib/storage/upload-ticket";
 
 /**
  * Attachments and organizational documents (issue #16).
@@ -69,6 +74,17 @@ export class AttachmentDeletedError extends Error {
   constructor() {
     super("This file has been deleted.");
     this.name = "AttachmentDeletedError";
+  }
+}
+
+/**
+ * The presented upload grant is forged, expired, mismatched, or already
+ * spent — the caller must restart the upload to get a fresh grant.
+ */
+export class AttachmentUploadGrantError extends Error {
+  constructor() {
+    super("The upload session is no longer valid. Please try again.");
+    this.name = "AttachmentUploadGrantError";
   }
 }
 
@@ -163,22 +179,32 @@ export interface AttachmentFileInput {
 }
 
 /**
- * Validate an upload against the v1 policy: non-empty, within the size
- * cap, declared media type allowed, extension consistent with the type,
- * and — where the format has a signature — content that plausibly
- * matches. Throws AttachmentInputError with an operator-safe message.
+ * The declared-metadata half of an upload — what the client SAYS the
+ * file is. Validated at grant time (before a byte exists) and again at
+ * finalize; the object itself is checked by `validateUploadHead`.
  */
-export function validateUpload(file: AttachmentFileInput): void {
+export interface DeclaredUploadMetadata {
+  name: string;
+  mediaType: string;
+  sizeBytes: number;
+}
+
+/**
+ * Declared-metadata policy: filename present and bounded, size within
+ * the cap, media type allowlisted, and filename extension consistent
+ * with the declared type. Throws AttachmentInputError.
+ */
+export function validateDeclaredUpload(file: DeclaredUploadMetadata): void {
   const name = file.name?.trim() ?? "";
   if (!name || name.length > ATTACHMENT_ORIGINAL_FILENAME_MAX) {
     throw new AttachmentInputError(
       "Choose a file with a filename under 300 characters.",
     );
   }
-  if (file.bytes.byteLength === 0) {
+  if (!Number.isInteger(file.sizeBytes) || file.sizeBytes <= 0) {
     throw new AttachmentInputError("Empty files cannot be uploaded.");
   }
-  if (file.bytes.byteLength > ATTACHMENT_MAX_BYTES) {
+  if (file.sizeBytes > ATTACHMENT_MAX_BYTES) {
     throw new AttachmentInputError(
       `Files must be ${Math.floor(ATTACHMENT_MAX_BYTES / (1024 * 1024))} MB or smaller.`,
     );
@@ -194,18 +220,43 @@ export function validateUpload(file: AttachmentFileInput): void {
       "The file extension does not match the file type.",
     );
   }
-  const signature = matchesSignature(file.mediaType, file.bytes);
+}
+
+/**
+ * The content half of the policy — run against the first bytes of the
+ * actual object (the whole body when buffered, or the streamed head of
+ * a staged object; every check probes at most 4 KiB). Signature match
+ * for formats that have one, NUL-byte rejection for text formats.
+ * Throws AttachmentInputError.
+ */
+export function validateUploadHead(mediaType: string, head: Uint8Array): void {
+  const signature = matchesSignature(mediaType, head);
   if (signature === false) {
     throw new AttachmentInputError(
       "The file contents do not match the declared file type.",
     );
   }
   if (
-    (file.mediaType === "text/plain" || file.mediaType === "text/csv") &&
-    !looksLikeText(file.bytes)
+    (mediaType === "text/plain" || mediaType === "text/csv") &&
+    !looksLikeText(head)
   ) {
     throw new AttachmentInputError("The file does not look like text content.");
   }
+}
+
+/**
+ * Validate an upload against the v1 policy: non-empty, within the size
+ * cap, declared media type allowed, extension consistent with the type,
+ * and — where the format has a signature — content that plausibly
+ * matches. Throws AttachmentInputError with an operator-safe message.
+ */
+export function validateUpload(file: AttachmentFileInput): void {
+  validateDeclaredUpload({
+    name: file.name,
+    mediaType: file.mediaType,
+    sizeBytes: file.bytes.byteLength,
+  });
+  validateUploadHead(file.mediaType, file.bytes.subarray(0, 4096));
 }
 
 /**
@@ -779,6 +830,451 @@ export async function uploadAttachment(
 }
 
 /* ------------------------------------------------------------------ */
+/* Direct-to-store uploads (prepare → client PUT → finalize)            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Unfinalized objects live under `staging/` — a dedicated prefix an
+ * object-store lifecycle rule can expire wholesale. An abandoned
+ * direct upload never becomes a DB row and never reaches the
+ * `organizations/` namespace a recorded attachment lives under.
+ */
+export const ATTACHMENT_STAGING_PREFIX = "staging";
+
+/** Upload grants are short-lived: the PUT must finish within 15 minutes. */
+export const UPLOAD_GRANT_TTL_SECONDS = 15 * 60;
+
+/** Staging keys are opaque, org-scoped, and generated server-side. */
+export function newAttachmentStagingKey(organizationId: string): string {
+  return `${ATTACHMENT_STAGING_PREFIX}/organizations/${organizationId}/${randomUUID()}`;
+}
+
+/** Grant returned to the client — the URL is a write-only capability. */
+export interface PreparedUpload {
+  stagingKey: string;
+  finalKey: string;
+  url: string;
+  /** Signed form fields the client must echo verbatim in its POST. */
+  fields: Record<string, string>;
+  ticket: string;
+  /** ISO 8601 — serialized across the server-action boundary. */
+  expiresAt: string;
+}
+
+/** What the client echoes back after its direct upload completes. */
+export interface StagedUploadCompletion {
+  stagingKey: string;
+  finalKey: string;
+  ticket: string;
+}
+
+/**
+ * Issue a direct-upload grant for an already-resolved organization.
+ * Returns null when the configured provider cannot direct-upload —
+ * the caller then falls back to the proxied `uploadAttachment` path.
+ * NEVER log or persist the returned URL.
+ */
+async function prepareUploadGrant(
+  organizationId: string,
+  declared: DeclaredUploadMetadata,
+  actorAuthIdentityId: string,
+  storage: FileStorageProvider,
+): Promise<PreparedUpload | null> {
+  validateDeclaredUpload(declared);
+  if (!storage.createUploadTarget || !storage.promoteObject) {
+    return null;
+  }
+  const stagingKey = newAttachmentStagingKey(organizationId);
+  const finalKey = newAttachmentStorageKey(organizationId);
+  const target = await storage.createUploadTarget(stagingKey, {
+    contentType: declared.mediaType,
+    sizeBytes: declared.sizeBytes,
+    expiresInSeconds: UPLOAD_GRANT_TTL_SECONDS,
+  });
+  const ticket = signUploadTicket(
+    {
+      stagingKey,
+      finalKey,
+      actorId: actorAuthIdentityId,
+      mediaType: declared.mediaType,
+      sizeBytes: declared.sizeBytes,
+      expiresAt: Math.floor(target.expiresAt.getTime() / 1000),
+    },
+    resolveUploadTicketSecret(),
+  );
+  log({
+    event: "attachment.upload_authorized",
+    subsystem: "attachments",
+    organizationId,
+    actorId: actorAuthIdentityId,
+    storageProvider: storage.providerName,
+    sizeBytes: declared.sizeBytes,
+  });
+  return {
+    stagingKey,
+    finalKey,
+    url: target.url,
+    fields: target.fields,
+    ticket,
+    expiresAt: target.expiresAt.toISOString(),
+  };
+}
+
+/**
+ * Authorize a direct upload onto a domain record. Same resolution and
+ * protected-record rules as `uploadAttachment` — the grant is issued
+ * only after the real organization and its policy checks pass.
+ */
+export async function prepareAttachmentUpload(
+  entity: { type: AttachmentEntityType; id: string },
+  declared: DeclaredUploadMetadata,
+  options: AttachmentUploadOptions,
+  actorAuthIdentityId: string,
+  storage: FileStorageProvider = getFileStorageProvider(),
+): Promise<PreparedUpload | null> {
+  const preview = await resolveEntity(prisma, entity.type, entity.id);
+  requireReasonForProtected(preview, options.reason);
+  return prepareUploadGrant(
+    preview.organizationId,
+    declared,
+    actorAuthIdentityId,
+    storage,
+  );
+}
+
+/** Authorize a direct upload for a new organization document. */
+export async function prepareDocumentUpload(
+  organizationId: string,
+  declared: DeclaredUploadMetadata,
+  actorAuthIdentityId: string,
+  storage: FileStorageProvider = getFileStorageProvider(),
+): Promise<PreparedUpload | null> {
+  return prepareUploadGrant(
+    organizationId,
+    declared,
+    actorAuthIdentityId,
+    storage,
+  );
+}
+
+/**
+ * Versions only land on ACTIVE documents — the UI hides the form on
+ * archived ones, and the domain enforces the same rule server-side.
+ */
+function requireDocumentAcceptsVersions(document: { status: string }): void {
+  if (document.status !== "ACTIVE") {
+    throw new AttachmentInputError(
+      "This document is archived and cannot accept new versions.",
+    );
+  }
+}
+
+/** Authorize a direct upload for the next version of a document. */
+export async function prepareDocumentVersionUpload(
+  documentId: string,
+  declared: DeclaredUploadMetadata,
+  actorAuthIdentityId: string,
+  storage: FileStorageProvider = getFileStorageProvider(),
+): Promise<PreparedUpload | null> {
+  const document = await prisma.organizationDocument.findUnique({
+    where: { id: documentId },
+    select: { organizationId: true, status: true },
+  });
+  if (!document) throw new CrossOrganizationAttachmentError();
+  requireDocumentAcceptsVersions(document);
+  return prepareUploadGrant(
+    document.organizationId,
+    declared,
+    actorAuthIdentityId,
+    storage,
+  );
+}
+
+type VerifiedStagedUpload =
+  | { kind: "existing"; attachment: Attachment }
+  | {
+      kind: "verified";
+      finalKey: string;
+      sizeBytes: number;
+      checksumSha256: string;
+    };
+
+/** Best-effort removal of a rejected staging object — logged, never thrown. */
+async function cleanupStagingObject(
+  storage: FileStorageProvider,
+  stagingKey: string,
+  organizationId: string,
+) {
+  try {
+    await storage.delete(stagingKey);
+  } catch (cleanupError) {
+    log({
+      event: "attachment.staging_cleanup",
+      subsystem: "attachments",
+      organizationId,
+      level: "error",
+      outcome: "operational_failure",
+      errorName: cleanupError instanceof Error ? cleanupError.name : "unknown",
+    });
+  }
+}
+
+/**
+ * Hash a staged object while streaming it — the whole body is hashed
+ * and its head sampled for content checks, but the file is never
+ * buffered in memory. Returns the SHA-256, the counted byte length,
+ * and the first ≤4 KiB for signature/text probes.
+ */
+async function hashObjectStream(stream: ReadableStream<Uint8Array>): Promise<{
+  checksumSha256: string;
+  sizeBytes: number;
+  head: Uint8Array;
+}> {
+  const hash = createHash("sha256");
+  const headParts: Uint8Array[] = [];
+  let headLength = 0;
+  let sizeBytes = 0;
+  const reader = stream.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      hash.update(value);
+      sizeBytes += value.byteLength;
+      if (headLength < 4096) {
+        headParts.push(value);
+        headLength += value.byteLength;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const head = new Uint8Array(Math.min(headLength, 4096));
+  let offset = 0;
+  for (const part of headParts) {
+    head.set(part.subarray(0, head.length - offset), offset);
+    offset += part.byteLength;
+    if (offset >= head.length) break;
+  }
+  return { checksumSha256: hash.digest("hex"), sizeBytes, head };
+}
+
+/**
+ * Verify a presented grant and the staged object behind it, then
+ * promote the object to its recorded key. Every check the proxied path
+ * runs happens here too — against the REAL stored bytes, not client
+ * claims: ticket authenticity/expiry/actor/field binding, key scoping
+ * to the resolved organization, existence, exact size, media-type
+ * signature, and a streamed SHA-256.
+ *
+ * Idempotent: a missing staging object with an already-recorded final
+ * key means an earlier finalize committed — return that row instead of
+ * failing the retry.
+ */
+async function verifyStagedUpload(
+  organizationId: string,
+  staged: StagedUploadCompletion,
+  declared: DeclaredUploadMetadata,
+  actorAuthIdentityId: string,
+  storage: FileStorageProvider,
+): Promise<VerifiedStagedUpload> {
+  const payload = verifyUploadTicket(
+    staged.ticket,
+    resolveUploadTicketSecret(),
+  );
+  if (
+    !payload ||
+    payload.stagingKey !== staged.stagingKey ||
+    payload.finalKey !== staged.finalKey ||
+    payload.actorId !== actorAuthIdentityId ||
+    payload.mediaType !== declared.mediaType ||
+    payload.sizeBytes !== declared.sizeBytes
+  ) {
+    throw new AttachmentUploadGrantError();
+  }
+  validateDeclaredUpload(declared);
+
+  // The grant's keys must live inside THIS organization's namespaces —
+  // a ticket cannot be replayed to record an object under another org's
+  // prefix, and the staging object must be one this flow issued.
+  if (
+    !staged.stagingKey.startsWith(
+      `${ATTACHMENT_STAGING_PREFIX}/organizations/${organizationId}/`,
+    ) ||
+    !staged.finalKey.startsWith(`organizations/${organizationId}/attachments/`)
+  ) {
+    throw new AttachmentUploadGrantError();
+  }
+  if (!storage.promoteObject) {
+    throw new StorageError(
+      "config_missing",
+      "The configured storage provider cannot finalize direct uploads.",
+    );
+  }
+
+  const stat = await storage.head(staged.stagingKey);
+  if (!stat) {
+    const existing = await prisma.attachment.findFirst({
+      where: { storageKey: staged.finalKey },
+    });
+    if (existing) return { kind: "existing", attachment: existing };
+    throw new AttachmentUploadGrantError();
+  }
+  if (stat.sizeBytes !== declared.sizeBytes) {
+    await cleanupStagingObject(storage, staged.stagingKey, organizationId);
+    throw new AttachmentInputError(
+      "The uploaded file does not match the authorized upload.",
+    );
+  }
+
+  const object = await storage.openRead(staged.stagingKey);
+  const streamed = await hashObjectStream(object.stream);
+  if (streamed.sizeBytes !== stat.sizeBytes) {
+    await cleanupStagingObject(storage, staged.stagingKey, organizationId);
+    throw new StorageError(
+      "provider_error",
+      "The stored object did not read back completely.",
+    );
+  }
+  try {
+    validateUploadHead(declared.mediaType, streamed.head);
+  } catch (error) {
+    await cleanupStagingObject(storage, staged.stagingKey, organizationId);
+    throw error;
+  }
+
+  // Pin the promotion to the verified object version. The presigned
+  // POST stays valid until expiry: without the precondition the grant
+  // holder could re-POST the same key between this verify pass and the
+  // copy — promoting bytes that never saw the signature checks and
+  // recording a checksum that doesn't match. A 412 means "restart".
+  try {
+    await storage.promoteObject(staged.stagingKey, staged.finalKey, {
+      ifMatchEtag: stat.etag ?? undefined,
+    });
+  } catch (error) {
+    if (error instanceof StorageError && error.code === "precondition_failed") {
+      await cleanupStagingObject(storage, staged.stagingKey, organizationId);
+      throw new AttachmentUploadGrantError();
+    }
+    throw error;
+  }
+  return {
+    kind: "verified",
+    finalKey: staged.finalKey,
+    sizeBytes: stat.sizeBytes,
+    checksumSha256: streamed.checksumSha256,
+  };
+}
+
+/**
+ * Finalize a direct upload onto a domain record: the staged object is
+ * verified and promoted, then Attachment + link + audit events commit
+ * in one transaction — identical durable shape to `uploadAttachment`.
+ * On a failed commit the promoted object is deleted (same orphan
+ * compensation as the proxied path).
+ */
+export async function finalizeAttachmentUpload(
+  entity: { type: AttachmentEntityType; id: string },
+  staged: StagedUploadCompletion,
+  declared: DeclaredUploadMetadata,
+  options: AttachmentUploadOptions,
+  actorAuthIdentityId: string,
+  storage: FileStorageProvider = getFileStorageProvider(),
+): Promise<Attachment> {
+  const preview = await resolveEntity(prisma, entity.type, entity.id);
+  requireReasonForProtected(preview, options.reason);
+  const verified = await verifyStagedUpload(
+    preview.organizationId,
+    staged,
+    declared,
+    actorAuthIdentityId,
+    storage,
+  );
+  if (verified.kind === "existing") return verified.attachment;
+
+  const displayFilename = sanitizeDisplayFilename(declared.name);
+  try {
+    const attachment = await prisma.$transaction(async (tx) => {
+      const resolved = await resolveEntity(tx, entity.type, entity.id);
+      requireReasonForProtected(resolved, options.reason);
+
+      const attachment = await tx.attachment.create({
+        data: {
+          organizationId: resolved.organizationId,
+          displayFilename,
+          mediaType: declared.mediaType,
+          sizeBytes: verified.sizeBytes,
+          storageProvider: storage.providerName,
+          storageKey: verified.finalKey,
+          checksumSha256: verified.checksumSha256,
+          description: options.description?.trim() || null,
+          uploadedByAuthIdentityId: actorAuthIdentityId,
+        },
+      });
+      await createLinkRow(
+        tx,
+        entity.type,
+        resolved,
+        entity.id,
+        attachment.id,
+        actorAuthIdentityId,
+      );
+      await attachmentEvent(tx, attachment, "UPLOADED", actorAuthIdentityId, {
+        entityType: entity.type,
+        entityId: entity.id,
+      });
+      await attachmentEvent(tx, attachment, "LINKED", actorAuthIdentityId, {
+        entityType: entity.type,
+        entityId: entity.id,
+        reason: options.reason ?? null,
+      });
+      await entityEventMirror(
+        tx,
+        resolved,
+        "ATTACHMENT_ADDED",
+        attachment.id,
+        actorAuthIdentityId,
+        options.reason,
+      );
+      return attachment;
+    });
+    log({
+      event: "attachment.uploaded",
+      subsystem: "attachments",
+      entityType: "Attachment",
+      entityId: attachment.id,
+      organizationId: attachment.organizationId,
+      actorId: actorAuthIdentityId,
+      storageProvider: storage.providerName,
+      sizeBytes: attachment.sizeBytes,
+    });
+    return attachment;
+  } catch (error) {
+    try {
+      await storage.delete(verified.finalKey);
+      log({
+        event: "attachment.orphan_cleanup",
+        subsystem: "attachments",
+        organizationId: preview.organizationId,
+        outcome: "success",
+      });
+    } catch (cleanupError) {
+      log({
+        event: "attachment.orphan_cleanup",
+        subsystem: "attachments",
+        organizationId: preview.organizationId,
+        level: "error",
+        outcome: "operational_failure",
+        errorName:
+          cleanupError instanceof Error ? cleanupError.name : "unknown",
+      });
+    }
+    throw error;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Unlink                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -1297,6 +1793,7 @@ export async function addOrganizationDocumentVersion(
     select: { id: true, organizationId: true, status: true },
   });
   if (!document) throw new CrossOrganizationAttachmentError();
+  requireDocumentAcceptsVersions(document);
 
   const displayFilename = sanitizeDisplayFilename(file.name);
   const checksumSha256 = createHash("sha256").update(file.bytes).digest("hex");
@@ -1305,6 +1802,13 @@ export async function addOrganizationDocumentVersion(
 
   try {
     const version = await prisma.$transaction(async (tx) => {
+      // Re-check inside the transaction — an archive landing between the
+      // outer check and this commit must not win the race.
+      const current = await tx.organizationDocument.findUniqueOrThrow({
+        where: { id: documentId },
+        select: { status: true },
+      });
+      requireDocumentAcceptsVersions(current);
       const latest = await tx.organizationDocumentVersion.aggregate({
         where: { documentId },
         _max: { versionNumber: true },
@@ -1354,6 +1858,220 @@ export async function addOrganizationDocumentVersion(
   } catch (error) {
     try {
       await storage.delete(storageKey);
+    } catch (cleanupError) {
+      log({
+        event: "attachment.orphan_cleanup",
+        subsystem: "attachments",
+        organizationId: document.organizationId,
+        level: "error",
+        outcome: "operational_failure",
+        errorName:
+          cleanupError instanceof Error ? cleanupError.name : "unknown",
+      });
+    }
+    throw error;
+  }
+}
+
+/**
+ * Finalize a direct upload as a new organization document — the staged
+ * object is verified and promoted, then document + version 1 + audit
+ * events commit in one transaction (same durable shape as
+ * `createOrganizationDocument`). On a failed commit the promoted
+ * object is deleted.
+ */
+export async function finalizeDocumentCreate(
+  organizationId: string,
+  staged: StagedUploadCompletion,
+  declared: DeclaredUploadMetadata,
+  input: OrganizationDocumentInput & { description?: string | null },
+  versionNote: string | null,
+  actorAuthIdentityId: string,
+  storage: FileStorageProvider = getFileStorageProvider(),
+) {
+  const verified = await verifyStagedUpload(
+    organizationId,
+    staged,
+    declared,
+    actorAuthIdentityId,
+    storage,
+  );
+  if (verified.kind === "existing") {
+    const version = await prisma.organizationDocumentVersion.findFirst({
+      where: { attachmentId: verified.attachment.id },
+      include: { document: true },
+    });
+    if (!version) throw new CrossOrganizationAttachmentError();
+    return version.document;
+  }
+
+  const displayFilename = sanitizeDisplayFilename(declared.name);
+  try {
+    const document = await prisma.$transaction(async (tx) => {
+      const attachment = await tx.attachment.create({
+        data: {
+          organizationId,
+          displayFilename,
+          mediaType: declared.mediaType,
+          sizeBytes: verified.sizeBytes,
+          storageProvider: storage.providerName,
+          storageKey: verified.finalKey,
+          checksumSha256: verified.checksumSha256,
+          description: input.description?.trim() || null,
+          uploadedByAuthIdentityId: actorAuthIdentityId,
+        },
+      });
+      const document = await tx.organizationDocument.create({
+        data: {
+          organizationId,
+          title: input.title,
+          category: input.category?.trim() || null,
+          effectiveOn: input.effectiveOn ?? null,
+          expiresOn: input.expiresOn ?? null,
+          notes: input.notes?.trim() || null,
+          createdByAuthIdentityId: actorAuthIdentityId,
+        },
+      });
+      await tx.organizationDocumentVersion.create({
+        data: {
+          organizationId,
+          documentId: document.id,
+          attachmentId: attachment.id,
+          versionNumber: 1,
+          note: versionNote,
+          createdByAuthIdentityId: actorAuthIdentityId,
+        },
+      });
+      await attachmentEvent(tx, attachment, "UPLOADED", actorAuthIdentityId, {
+        entityType: "ORGANIZATION_DOCUMENT",
+        entityId: document.id,
+      });
+      await attachmentEvent(tx, attachment, "LINKED", actorAuthIdentityId, {
+        entityType: "ORGANIZATION_DOCUMENT",
+        entityId: document.id,
+      });
+      return document;
+    });
+    log({
+      event: "document.created",
+      subsystem: "attachments",
+      entityType: "OrganizationDocument",
+      entityId: document.id,
+      organizationId,
+      actorId: actorAuthIdentityId,
+    });
+    return document;
+  } catch (error) {
+    try {
+      await storage.delete(verified.finalKey);
+    } catch (cleanupError) {
+      log({
+        event: "attachment.orphan_cleanup",
+        subsystem: "attachments",
+        organizationId,
+        level: "error",
+        outcome: "operational_failure",
+        errorName:
+          cleanupError instanceof Error ? cleanupError.name : "unknown",
+      });
+    }
+    throw error;
+  }
+}
+
+/**
+ * Finalize a direct upload as the next version of a document — same
+ * serialization on (documentId, versionNumber) as the proxied path.
+ */
+export async function finalizeDocumentVersion(
+  documentId: string,
+  staged: StagedUploadCompletion,
+  declared: DeclaredUploadMetadata,
+  versionNote: string | null,
+  actorAuthIdentityId: string,
+  storage: FileStorageProvider = getFileStorageProvider(),
+) {
+  const document = await prisma.organizationDocument.findUnique({
+    where: { id: documentId },
+    select: { id: true, organizationId: true, status: true },
+  });
+  if (!document) throw new CrossOrganizationAttachmentError();
+  requireDocumentAcceptsVersions(document);
+
+  const verified = await verifyStagedUpload(
+    document.organizationId,
+    staged,
+    declared,
+    actorAuthIdentityId,
+    storage,
+  );
+  if (verified.kind === "existing") {
+    const version = await prisma.organizationDocumentVersion.findFirst({
+      where: { attachmentId: verified.attachment.id },
+    });
+    if (!version) throw new CrossOrganizationAttachmentError();
+    return version;
+  }
+
+  const displayFilename = sanitizeDisplayFilename(declared.name);
+  try {
+    const version = await prisma.$transaction(async (tx) => {
+      // Re-check inside the transaction — an archive landing between the
+      // outer check and this commit must not win the race.
+      const current = await tx.organizationDocument.findUniqueOrThrow({
+        where: { id: documentId },
+        select: { status: true },
+      });
+      requireDocumentAcceptsVersions(current);
+      const latest = await tx.organizationDocumentVersion.aggregate({
+        where: { documentId },
+        _max: { versionNumber: true },
+      });
+      const attachment = await tx.attachment.create({
+        data: {
+          organizationId: document.organizationId,
+          displayFilename,
+          mediaType: declared.mediaType,
+          sizeBytes: verified.sizeBytes,
+          storageProvider: storage.providerName,
+          storageKey: verified.finalKey,
+          checksumSha256: verified.checksumSha256,
+          uploadedByAuthIdentityId: actorAuthIdentityId,
+        },
+      });
+      const version = await tx.organizationDocumentVersion.create({
+        data: {
+          organizationId: document.organizationId,
+          documentId: document.id,
+          attachmentId: attachment.id,
+          versionNumber: (latest._max.versionNumber ?? 0) + 1,
+          note: versionNote,
+          createdByAuthIdentityId: actorAuthIdentityId,
+        },
+      });
+      await attachmentEvent(tx, attachment, "UPLOADED", actorAuthIdentityId, {
+        entityType: "ORGANIZATION_DOCUMENT",
+        entityId: document.id,
+      });
+      await attachmentEvent(tx, attachment, "LINKED", actorAuthIdentityId, {
+        entityType: "ORGANIZATION_DOCUMENT",
+        entityId: document.id,
+      });
+      return version;
+    });
+    log({
+      event: "document.version_added",
+      subsystem: "attachments",
+      entityType: "OrganizationDocument",
+      entityId: document.id,
+      organizationId: document.organizationId,
+      actorId: actorAuthIdentityId,
+      versionNumber: version.versionNumber,
+    });
+    return version;
+  } catch (error) {
+    try {
+      await storage.delete(verified.finalKey);
     } catch (cleanupError) {
       log({
         event: "attachment.orphan_cleanup",

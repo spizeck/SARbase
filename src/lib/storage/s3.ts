@@ -1,4 +1,5 @@
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
@@ -8,9 +9,11 @@ import {
   S3Client,
   S3ServiceException,
 } from "@aws-sdk/client-s3";
+import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 
 import {
   StorageError,
+  type DirectUploadTarget,
   type FileStorageProvider,
   type StorageObjectStat,
   type StorageObjectStream,
@@ -24,6 +27,8 @@ export interface S3StorageOptions {
   endpoint?: string;
   accessKeyId: string;
   secretAccessKey: string;
+  /** Test seam — production code leaves this unset. */
+  client?: S3Client;
 }
 
 /**
@@ -45,18 +50,26 @@ export class S3FileStorageProvider implements FileStorageProvider {
 
   constructor(options: S3StorageOptions) {
     this.bucket = options.bucket;
-    this.client = new S3Client({
-      region: options.region,
-      endpoint: options.endpoint,
-      // Path-style addressing is required by MinIO and most S3-compatible
-      // endpoints; harmless when an endpoint is not set for AWS S3 virtual
-      // hosts, but only enable it when a custom endpoint is in play.
-      forcePathStyle: Boolean(options.endpoint),
-      credentials: {
-        accessKeyId: options.accessKeyId,
-        secretAccessKey: options.secretAccessKey,
-      },
-    });
+    this.client =
+      options.client ??
+      new S3Client({
+        region: options.region,
+        endpoint: options.endpoint,
+        // Path-style addressing is required by MinIO and most S3-compatible
+        // endpoints; harmless when an endpoint is not set for AWS S3 virtual
+        // hosts, but only enable it when a custom endpoint is in play.
+        forcePathStyle: Boolean(options.endpoint),
+        credentials: {
+          accessKeyId: options.accessKeyId,
+          secretAccessKey: options.secretAccessKey,
+        },
+        // Recent SDK defaults compute a CRC32 body checksum and sign it —
+        // a presigned URL then demands a header a browser cannot produce.
+        // "WHEN_REQUIRED" keeps checksums off unless an API needs one;
+        // integrity is verified server-side (SHA-256) at finalize instead.
+        requestChecksumCalculation: "WHEN_REQUIRED",
+        responseChecksumValidation: "WHEN_REQUIRED",
+      });
   }
 
   async put(key: string, body: Uint8Array, contentType: string) {
@@ -110,6 +123,7 @@ export class S3FileStorageProvider implements FileStorageProvider {
       return {
         sizeBytes: response.ContentLength ?? 0,
         contentType: response.ContentType ?? null,
+        etag: response.ETag ?? null,
       };
     } catch (error) {
       if (isS3NotFound(error)) {
@@ -128,6 +142,80 @@ export class S3FileStorageProvider implements FileStorageProvider {
       );
     } catch (error) {
       throw mapS3Error(error, "delete");
+    }
+  }
+
+  /**
+   * Presigned POST target for one exact key — the direct-upload path
+   * that keeps file bytes off the hosting platform entirely. The POST
+   * policy binds, at the store edge: the exact key, the declared
+   * Content-Type (exact-match condition), and the declared byte size
+   * (content-length-range pinned to a single value). A browser cannot
+   * relabel or resize the object it uploads; the finalize step still
+   * re-verifies everything against the stored bytes.
+   */
+  async createUploadTarget(
+    key: string,
+    options: {
+      contentType: string;
+      sizeBytes: number;
+      expiresInSeconds: number;
+    },
+  ): Promise<DirectUploadTarget> {
+    assertStorageKeyShape(key);
+    const expiresAt = new Date(Date.now() + options.expiresInSeconds * 1000);
+    const { url, fields } = await createPresignedPost(this.client, {
+      Bucket: this.bucket,
+      Key: key,
+      Conditions: [
+        ["content-length-range", options.sizeBytes, options.sizeBytes],
+      ],
+      Fields: { "Content-Type": options.contentType },
+      Expires: options.expiresInSeconds,
+    });
+    return { url, method: "POST", fields, expiresAt };
+  }
+
+  /**
+   * Server-side copy staging → final (S3 CopyObject never round-trips
+   * bytes through this process), then best-effort removal of the
+   * staging object. A failed staging delete leaves a duplicate that the
+   * documented staging-prefix lifecycle rule expires — the final object
+   * is authoritative and the operation still succeeds.
+   *
+   * `ifMatchEtag` sets x-amz-copy-source-if-match: the presigned POST
+   * stays valid until expiry, so the grant holder could re-upload the
+   * staging object between our verify pass and this copy. Pinning the
+   * copy to the observed ETag makes a swapped object fail the
+   * promotion (S3 answers 412 PreconditionFailed) instead of recording
+   * unverified bytes under a mismatched checksum.
+   */
+  async promoteObject(
+    stagingKey: string,
+    finalKey: string,
+    options?: { ifMatchEtag?: string },
+  ) {
+    assertStorageKeyShape(stagingKey);
+    assertStorageKeyShape(finalKey);
+    try {
+      await this.client.send(
+        new CopyObjectCommand({
+          Bucket: this.bucket,
+          Key: finalKey,
+          CopySource: `${this.bucket}/${stagingKey}`,
+          CopySourceIfMatch: options?.ifMatchEtag,
+        }),
+      );
+    } catch (error) {
+      throw mapS3Error(error, "write");
+    }
+    try {
+      await this.client.send(
+        new DeleteObjectCommand({ Bucket: this.bucket, Key: stagingKey }),
+      );
+    } catch {
+      // Duplicate staging object — lifecycle expiry cleans it; a
+      // failed cleanup delete must not fail a completed promote.
     }
   }
 }
@@ -153,6 +241,16 @@ function mapS3Error(error: unknown, operation: string): StorageError {
       return new StorageError(
         "object_not_found",
         "The stored object does not exist.",
+        error,
+      );
+    }
+    if (status === 412) {
+      // Conditional copy (copy-source-if-match): the staged object was
+      // replaced after verification — the finalize must restart, not
+      // record whatever arrived last.
+      return new StorageError(
+        "precondition_failed",
+        "The stored object changed while it was being verified.",
         error,
       );
     }

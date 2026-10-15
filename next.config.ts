@@ -12,6 +12,12 @@ const nextConfig: NextConfig = {
   // lockfiles. Pinning the root stops Next from inferring a parent
   // directory as the workspace root.
   turbopack: { root: dirname(fileURLToPath(import.meta.url)) },
+  // firebase-admin stays out of the server bundle so its CommonJS
+  // require chain (jwks-rsa -> jose) loads natively on Vercel. The
+  // scoped jose@5 pin in package.json is the companion guard for any
+  // path that still bundles it (issue: production /login 500
+  // ERR_REQUIRE_ESM; fix proven in contract-builder PR #122).
+  serverExternalPackages: ["firebase-admin"],
   experimental: {
     serverActions: {
       // Attachment uploads (issue #16) submit files through Server

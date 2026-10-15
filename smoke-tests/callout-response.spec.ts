@@ -42,7 +42,17 @@ test.describe("callout response — invalid link", () => {
 });
 
 test.describe("callout response — token flow", () => {
-  const prisma = new PrismaClient();
+  // Fixture DB: SMOKE_DATABASE_URL when set (hosted runs — the operator
+  // names the deployment's database explicitly), else ambient
+  // DATABASE_URL (local mode — the webServer shares this process's env).
+  // Either way the DEPLOYMENT must have CALLOUT_RESPONSE_TOKEN_SECRET
+  // configured or /respond 500s — a real misconfig signal, not a flake.
+  const databaseUrl =
+    process.env.SMOKE_DATABASE_URL ?? process.env.DATABASE_URL;
+  // Constructed lazily — new PrismaClient throws synchronously when the
+  // URL is absent, which would fail the whole spec before the skip
+  // logic could run (e.g. the build-only CI smoke job).
+  let prisma!: PrismaClient;
   // The fixture token must be the token the server would derive for
   // this invitation — the response path verifies against the live
   // derivation, not just the stored hash. Same pepper as the smoke
@@ -59,13 +69,14 @@ test.describe("callout response — token flow", () => {
   let dbAvailable = false;
 
   test.beforeAll(async () => {
-    try {
-      await prisma.$queryRaw`SELECT 1`;
-      dbAvailable = true;
-    } catch {
-      // No database configured for the smoke server (e.g. the CI
-      // build-only job) — the token-flow tests report skipped.
-      dbAvailable = false;
+    if (databaseUrl) {
+      prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+      try {
+        await prisma.$queryRaw`SELECT 1`;
+        dbAvailable = true;
+      } catch {
+        dbAvailable = false;
+      }
     }
     if (!dbAvailable) return;
 
@@ -119,7 +130,7 @@ test.describe("callout response — token flow", () => {
       await prisma.member.deleteMany({ where: { organizationId } });
       await prisma.organization.delete({ where: { id: organizationId } });
     }
-    await prisma.$disconnect();
+    if (prisma) await prisma.$disconnect();
   });
 
   test.beforeEach(() => {

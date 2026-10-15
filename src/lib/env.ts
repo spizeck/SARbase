@@ -83,13 +83,19 @@ function isNeonHostname(hostname: string): boolean {
  * Neon pooled and unpooled endpoints for the same branch differ only by
  * a `-pooler` suffix on the first hostname label. Normalizing removes
  * it so pooled/unpooled URLs can be compared for same-database safety.
+ * Comparison canonicalizes case and a trailing root dot — DNS names are
+ * case-insensitive and `host.` is the same host spelled absolutely.
  */
 export function normalizeDatabaseEndpoint(hostname: string): string {
-  if (!isNeonHostname(hostname)) {
-    return hostname;
+  let normalized = hostname.toLowerCase();
+  if (normalized.endsWith(".")) {
+    normalized = normalized.slice(0, -1);
+  }
+  if (!isNeonHostname(normalized)) {
+    return normalized;
   }
 
-  const labels = hostname.split(".");
+  const labels = normalized.split(".");
   if (labels[0]?.endsWith("-pooler")) {
     labels[0] = labels[0].slice(0, -"-pooler".length);
   }
@@ -205,6 +211,15 @@ export const appEnvironmentSchema = z.object({
     )
     .optional(),
   VERCEL_ENV: z.enum(["development", "preview", "production"]).optional(),
+  // Preview side-effect opt-ins (external-service isolation). A preview
+  // deployment must never gain access to a real external service merely
+  // because its environment happened to inherit production-shaped
+  // values — each capability requires a deliberate, preview-scoped
+  // flag. See docs/database.md and the resolver/firebase modules for
+  // the enforcement points.
+  ALLOW_FIREBASE_ADMIN_IN_PREVIEW: z.string().optional(),
+  ALLOW_RESEND_IN_PREVIEW: z.string().optional(),
+  ALLOW_S3_IN_PREVIEW: z.string().optional(),
 });
 
 export type AppEnvironment = z.infer<typeof appEnvironmentSchema>;
@@ -290,14 +305,61 @@ export type FirebaseAdminEnvironment = z.infer<
 export function parseFirebaseAdminEnvironment(
   values: Record<string, string | undefined> = process.env,
 ): FirebaseAdminEnvironment {
-  return firebaseAdminEnvironmentSchema.parse(values);
+  const env = firebaseAdminEnvironmentSchema.parse(values);
+  assertFirebaseAdminAllowedInEnvironment(values);
+  return env;
+}
+
+/**
+ * Preview isolation for the Admin SDK. Service-account credentials on
+ * a VERCEL_ENV=preview deployment are a mistake by default: they would
+ * let a preview act on the production project's users and sessions.
+ * Two conditions must hold before preview Admin initializes:
+ *
+ * - `ALLOW_FIREBASE_ADMIN_IN_PREVIEW=true` — a deliberate, preview-
+ *   scoped opt-in (absent by definition when production env values are
+ *   copied wholesale, since the flag only exists in preview scope);
+ * - when the deployment's public client config is present, its
+ *   `NEXT_PUBLIC_FIREBASE_PROJECT_ID` must equal the service account's
+ *   `FIREBASE_ADMIN_PROJECT_ID` — a service account for a different
+ *   project than the app is configured for is a credential leak, not
+ *   configuration.
+ */
+function assertFirebaseAdminAllowedInEnvironment(
+  values: Record<string, string | undefined>,
+): void {
+  if (values.VERCEL_ENV !== "preview") {
+    return;
+  }
+  if (values.ALLOW_FIREBASE_ADMIN_IN_PREVIEW !== "true") {
+    throw new Error(
+      "Firebase Admin is not permitted on preview deployments by default. " +
+        "To enable it deliberately (e.g. against a dedicated preview " +
+        "Firebase project), set ALLOW_FIREBASE_ADMIN_IN_PREVIEW=true as a " +
+        "preview-scoped variable.",
+    );
+  }
+  const clientProjectId = values.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+  if (clientProjectId && clientProjectId !== values.FIREBASE_ADMIN_PROJECT_ID) {
+    throw new Error(
+      "Firebase Admin credentials on this preview belong to a different " +
+        "project than NEXT_PUBLIC_FIREBASE_PROJECT_ID — refusing to " +
+        "initialize. Preview must use its own Firebase project's service " +
+        "account, not the production one.",
+    );
+  }
 }
 
 /** Non-throwing variant for "is server auth configured?" checks. */
 export function isFirebaseAdminConfigured(
   values: Record<string, string | undefined> = process.env,
 ): boolean {
-  return firebaseAdminEnvironmentSchema.safeParse(values).success;
+  try {
+    parseFirebaseAdminEnvironment(values);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

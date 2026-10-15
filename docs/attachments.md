@@ -43,9 +43,10 @@ URLs, and request metadata cannot leak into logs or responses.
   `FILE_STORAGE_LOCAL_ROOT` — a directory outside the source tree, gitignored.
   Self-hosters may use it in production but own filesystem backup.
 - **`s3`**: any S3-compatible API (AWS S3, Cloudflare R2, MinIO) via
-  `@aws-sdk/client-s3`. Buckets are expected to be **private**; SARbase never
-  builds public or presigned object URLs — every download streams through the
-  authorized route.
+  `@aws-sdk/client-s3` + `@aws-sdk/s3-presigned-post`. Buckets are expected to
+  be **private**; SARbase never builds public or presigned _read_ URLs — every
+  download streams through the authorized route. The only signing is
+  short-lived, write-only presigned POSTs for direct uploads (see below).
 - **`memory`**: deterministic in-process fake for tests; never selectable via
   configuration at all — tests inject it directly.
 
@@ -125,8 +126,296 @@ SOPs, manuals, insurance, registrations, forms.
 
 ## Upload flow
 
+Two paths exist behind the same policy. The preferred path on providers
+that support it (S3) is **direct-to-store**, keeping file bytes off the
+hosting platform entirely — the serverless request-body limit (~4.5 MB
+on Vercel) never applies. Providers without direct-upload support fall
+back to the classic **proxied** path.
+
+### Direct-to-store (prepare → client POST → finalize)
+
+```
+client → prepare action  → authorized upload grant (presigned POST + ticket)
+client → object store    → file bytes, straight to a staging key
+client → finalize action → verified, promoted, recorded
+```
+
+1. **Prepare** — the form asks a server action for an upload grant with
+   the declared name/type/size. The server resolves the target record,
+   derives the real organization, enforces admin authorization, rate
+   limits, and the protected-record reason rule, then validates the
+   declared metadata (allowlisted type, extension/type consistency,
+   ≤ 25 MiB). Only then does it mint:
+   - a **presigned POST** (`createPresignedPost`) scoped to one exact
+     staging key, with the declared `Content-Type` as an exact-match
+     policy field and `content-length-range` pinned to the declared
+     byte size — the store edge itself rejects a relabeled or resized
+     upload. 15-minute expiry.
+   - an **upload ticket** — an HMAC-SHA256-signed grant
+     (`src/lib/storage/upload-ticket.ts`) binding staging key, final
+     key, actor, declared type/size, and the same expiry. The signing
+     secret derives from the S3 credential; rotating it rotates grants.
+2. **Client upload** — the browser POSTs the signed fields plus the
+   file straight to the bucket as multipart form data (the only way
+   progress events exist). Bytes never touch the app.
+3. **Finalize** — the client echoes the grant handles back. The server
+   re-resolves the record and re-checks authorization and the reason
+   rule, verifies the ticket (signature, expiry, actor, key pair,
+   declared fields), verifies the staging key lives in this
+   organization's staging namespace, `HEAD`s the staging object, then
+   **streams it once** computing SHA-256 and sampling the head for the
+   magic-byte/text checks — against the real stored bytes, not client
+   claims. On success it `CopyObject`s staging → final key **pinned to
+   the verified ETag** (`x-amz-copy-source-if-match` — the presigned
+   POST stays valid until expiry, so a replayed grant cannot swap the
+   object's bytes between verification and promotion), deletes the
+   staging copy, and commits `Attachment` + link + `UPLOADED`/`LINKED`
+   events in one transaction.
+4. **Compensation** — a failed commit deletes the promoted object;
+   a rejected staged object is deleted from staging. Finalize is
+   idempotent: retrying a grant whose record already committed returns
+   the existing row.
+
+### Staged-object lifecycle
+
+Unfinalized objects live under `staging/organizations/<orgId>/<uuid>` —
+a prefix a bucket **lifecycle rule should expire** (e.g. delete after
+7 days). Abandoned uploads therefore cost nothing forever, never
+collide with the recorded `organizations/` namespace, and can never be
+recorded without a ticket.
+
+### Bucket CORS
+
+The bucket must allow browser POSTs **from the app origin only**:
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://<app-host>"],
+    "AllowedMethods": ["POST"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3000
+  }
+]
+```
+
+`POST` is the only method the browser uses — uploads are presigned
+POSTs (multipart form); downloads are proxied through the application,
+so no `GET` exposure is needed or wanted. A preview bucket that serves
+hosted smoke tests adds the preview origins to `AllowedOrigins`, e.g.
+`"https://sar-base-*.vercel.app"`.
+
+### Minimal IAM posture
+
+The credential needs: `PutObject` on `staging/*` (the browser POST is
+signed by the server — the browser holds no credentials),
+`GetObject`/`DeleteObject` on `staging/*` and `organizations/*`,
+`PutObject` on `organizations/*` (proxied puts + promote copies), and
+`HeadObject` (covered by `GetObject`) on both. Scope all of it to the
+one bucket; a dedicated prefix or separate bucket per environment is
+required — **production and preview never share writable storage**.
+
+## AWS S3 activation (operator runbook)
+
+The `s3` provider uses exactly five AWS API operations — `PutObject`,
+`GetObject`, `HeadObject`, `CopyObject`, `DeleteObject` — plus presigned
+POST signing (no API call; the signature is computed locally). The
+IAM actions those map to are `s3:PutObject`, `s3:GetObject`,
+`s3:DeleteObject` — `HeadObject` is covered by `s3:GetObject`, and
+`CopyObject` reads the source (`s3:GetObject`) and writes the
+destination (`s3:PutObject`). The app never lists keys, so no
+`s3:ListBucket` is granted. All key material lives under exactly two
+prefixes: `staging/` and `organizations/`.
+
+Provider-specific behavior the finalize path relies on:
+
+- **`x-amz-copy-source-if-match`** (S3 `CopyObject` conditional
+  header) pins the promotion to the ETag observed during verification
+  — the TOCTOU guard. Native AWS S3 supports this; if you point
+  `FILE_STORAGE_S3_ENDPOINT` at an S3-compatible store instead, verify
+  it honors conditional copy headers (R2 and recent MinIO do; older
+  MinIO silently ignores them).
+- **ETag presence** — AWS S3 always returns an ETag from `HeadObject`.
+  If a compatible store ever returned none, promotion would proceed
+  unconditionally; do not use such a store.
+
+### 1. Create the bucket
+
+Production and preview get **separate buckets** — e.g.
+`sarbase-files-prod` and `sarbase-files-preview`. Separate buckets are
+the isolation boundary; prefix-sharing one bucket is weaker and not
+recommended.
+
+- **Region:** the AWS region closest to your Vercel function region —
+  `us-east-1` is the default unless Vercel is configured otherwise.
+- **Block Public Access:** all four settings ON (the default).
+- **Object Ownership:** "Bucket owner enforced" (the default — ACLs
+  disabled). The provider never sends ACLs; this must stay on.
+- **Default encryption:** SSE-S3 (AES-256) — the default. SSE-KMS is
+  optional hardening but adds key-policy complexity; only adopt it if
+  you need key-level audit.
+- **Versioning:** leave OFF. SARbase does its own record versioning,
+  and deletes are deliberate tombstones — S3 versioning would turn
+  every delete into a delete-marker pair and complicate lifecycle.
+  (If you want extra byte-level protection, rely on bucket backups or
+  replication instead.)
+- **If versioning was already enabled:** prefer **suspending** it
+  (bucket → Properties → Bucket versioning → Suspend). Existing
+  noncurrent versions persist until expired — the lifecycle rule below
+  covers only `staging/`; noncurrent versions under `organizations/`
+  need their own rule or a manual delete. Keeping versioning ON is
+  workable but weaker: `DeleteObject` then only writes a delete marker,
+  so a tombstoned attachment's bytes remain recoverable as a
+  noncurrent version (storage cost plus longer retention of content
+  the app considers deleted). If you keep it, add a second rule with
+  `NoncurrentVersionExpiration` covering `organizations/`, or deleted
+  files accumulate forever.
+
+### 2. Lifecycle rule — expire abandoned staging objects
+
+Apply to prefix `staging/`, expire current versions after **7 days**:
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "expire-abandoned-staging",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "staging/" },
+      "Expiration": { "Days": 7 },
+      "NoncurrentVersionExpiration": { "NoncurrentDays": 7 }
+    }
+  ]
+}
+```
+
+The `NoncurrentVersionExpiration` clause is harmless with versioning
+off and essential with versioning on — without it a deleted staging
+object's bytes persist as noncurrent versions. Confirm the console rule
+is scoped to prefix `staging/` exactly: S3 lifecycle filters are literal
+string prefixes, and the code writes only under
+`staging/organizations/<orgId>/` (`ATTACHMENT_STAGING_PREFIX` in
+`src/lib/domain/attachments.ts`).
+
+This is the backstop for interrupted/abandoned direct uploads —
+finalize deletes staging objects on success, the lifecycle catches
+what never finalized.
+
+### 3. CORS
+
+Apply the CORS block from [Bucket CORS](#bucket-cors) above, with
+`AllowedOrigins` set to the real app origin
+(`https://<your-domain>`). Expect an `OPTIONS` preflight before each
+upload — per the Fetch spec, attaching an `XMLHttpRequest.upload`
+progress listener (which the upload forms do) upgrades the cross-origin
+POST to a preflighted request even though multipart form data is
+otherwise safelisted. The rule above answers it: `POST` in
+`AllowedMethods` covers the preflight's `Access-Control-Request-Method`,
+and `AllowedHeaders`/`AllowedOrigins` admit it.
+
+### 4. IAM policy and credentials
+
+Create a dedicated IAM user (e.g. `sarbase-app-prod`) with an inline or
+attached policy scoped to one bucket and two prefixes — replace
+`<BUCKET>`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SarbaseAttachmentObjects",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": [
+        "arn:aws:s3:::<BUCKET>/staging/*",
+        "arn:aws:s3:::<BUCKET>/organizations/*"
+      ]
+    }
+  ]
+}
+```
+
+Then create an access key pair for that user ("Application running
+outside AWS" use case). That pair feeds the `FILE_STORAGE_S3_*` Vercel
+variables — **the secret access key also derives the HMAC key that
+signs upload tickets**, so rotating it invalidates outstanding grants
+(15-minute window; harmless). Rotate by creating a second key, updating
+Vercel, redeploying, then deactivating the old key.
+
+The preview bucket gets its own user and policy with the same shape —
+**never reuse production credentials on a preview.**
+
+### 5. Vercel environment variables
+
+Production environment scope:
+
+| Variable                            | Value                     |
+| ----------------------------------- | ------------------------- |
+| `FILE_STORAGE_PROVIDER`             | `s3`                      |
+| `FILE_STORAGE_S3_BUCKET`            | `sarbase-files-prod`      |
+| `FILE_STORAGE_S3_REGION`            | `us-east-1` (your region) |
+| `FILE_STORAGE_S3_ACCESS_KEY_ID`     | the IAM access key        |
+| `FILE_STORAGE_S3_SECRET_ACCESS_KEY` | the IAM secret — SECRET   |
+
+Leave `FILE_STORAGE_S3_ENDPOINT` **unset** for AWS (it exists for
+R2/MinIO).
+
+Vercel environment variables are snapshotted at deploy time — a
+deployment already running never sees a variable added afterward.
+Saving these variables activates nothing until the next production
+deployment; verify `FILE_STORAGE_PROVIDER` is exactly `s3` — a typo
+fails closed at provider resolution (uploads error out) rather than
+silently falling back to ephemeral local storage.
+
+Preview environment scope — only if preview uploads should exercise
+the real path: same five variables pointed at `sarbase-files-preview`
+plus `ALLOW_S3_IN_PREVIEW=true` (the resolver fails closed without the
+explicit opt-in — see `src/lib/storage/resolve.ts`).
+
+### 6. Verify activation
+
+After deploying with the variables set:
+
+1. **Upload** — as an org admin, attach a PDF to an incident. In
+   browser devtools the file POST goes to `https://<bucket>.s3.<region>
+.amazonaws.com` — no large request body reaches Vercel. A `204`
+   response is the normal AWS answer for presigned POST.
+2. **Download** — the attachment row downloads through
+   `/api/attachments/<id>/download` and the object exists under
+   `organizations/<orgId>/attachments/` in the bucket.
+3. **Access control** — `GET /api/attachments/<foreign-org-id>/download`
+   returns 404; the bucket itself has no public access (confirm with
+   the AWS "check public access" banner).
+4. **Cleanup** — start an upload and abandon it; confirm the
+   `staging/` lifecycle rule exists and will expire the object.
+5. **Failure mode** — if `FILE_STORAGE_S3_*` values are wrong the
+   provider fails closed at first use with a `StorageConfigError`;
+   uploads surface a safe error, nothing is written.
+
+### 7. Rollback
+
+Object storage is independent of code deploys: rolling back the Vercel
+deployment (instant rollback) restores the previous application
+behavior while the bucket and objects stay untouched. If storage is
+misconfigured, uploads/deletes fail with honest errors — nothing is
+silently lost, and metadata rows never claim an object exists without
+the object having been verified.
+
+### 8. Cost posture
+
+At attachment scale (≤ 25 MiB each, modest volume) S3 spend is
+dominated by storage — pennies per GB-month; requests and the
+staging-prefix lifecycle are negligible. Still set an **AWS Budgets**
+alert (e.g. $5/month with email notification) so a pathological uploader
+or a misconfigured loop shows up as an alert, not a bill.
+
+### Proxied fallback
+
 `uploadAttachment` (and the document variants) in
-`src/lib/domain/attachments.ts`:
+`src/lib/domain/attachments.ts` — used when the configured provider
+lacks direct-upload support (local dev, `memory` tests):
 
 1. Resolve the **target record** and derive the real organization from it —
    caller-supplied ids are untrusted selectors only.

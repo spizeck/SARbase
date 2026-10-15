@@ -424,7 +424,14 @@ function runPrismaMigrateDeploy(databaseUrl: string, dryRun: boolean): void {
     stdio: "inherit",
     shell: true,
     cwd: process.cwd(),
-    env: { ...process.env, DATABASE_URL: databaseUrl },
+    // The datasource declares directUrl, so the migration subprocess
+    // needs both variables; the drill database has no pooler, so one
+    // URL serves both roles.
+    env: {
+      ...process.env,
+      DATABASE_URL: databaseUrl,
+      DATABASE_URL_UNPOOLED: databaseUrl,
+    },
   });
 
   if (result.status !== 0) {

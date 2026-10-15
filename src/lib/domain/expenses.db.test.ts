@@ -128,7 +128,7 @@ describe.skipIf(!hasDb)("vendors and expenses (issue #17)", () => {
         name: uniq("vendor-a"),
         contactName: "Sam Sales",
         email: "sam@example.test",
-        phone: "+1 555 0100",
+        phone: "+1 (721) 555-0134",
         website: "https://vendor-a.example.test",
         accountReference: "ACCT-001",
         notes: "asks for PO numbers",

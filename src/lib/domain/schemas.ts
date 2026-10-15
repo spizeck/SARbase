@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 import { isValidTimeZone } from "@/lib/dates";
+import { DEFAULT_ORGANIZATION_TIMEZONE } from "@/lib/timezones";
+import { normalizePhoneNumber, PhoneNumberInvalidError } from "@/lib/contact";
 
 /**
  * Input validation for the organization/unit/member admin surface.
@@ -46,28 +48,80 @@ export const emailSchema = z.preprocess(
     .optional(),
 );
 
-export const phoneSchema = z.preprocess(
+/** Non-optional variant — e.g. the invitation destination. */
+export const requiredEmailSchema = z.preprocess(
   emptyToUndefined,
   z
     .string()
     .trim()
-    .regex(/^\+?[0-9][0-9\s().-]{4,31}$/, "Enter a valid phone number.")
-    // Normalize for storage: digits plus an optional leading "+" —
-    // E.164-shaped when the caller supplies a country code, a plain
-    // national number otherwise. No country is invented; whatever
-    // prefix the organization recorded is preserved.
-    .transform((value) => value.replace(/[\s().-]/g, ""))
-    .optional(),
+    .toLowerCase()
+    .max(254)
+    .pipe(z.email("Enter a valid email address.")),
 );
 
 /**
+ * Phone input arrives as two fields: `phone` (what the user typed —
+ * national digits or "+…" international) and `phoneRegion` (the ISO
+ * region selected in the UI, defaulting to Caribbean Netherlands BQ).
+ * `phoneSchema` itself stays a permissive presence/length check; the
+ * region-aware validity check lives in `phoneRefinement` (applied via
+ * superRefine on the object schemas), and the canonical E.164 rewrite
+ * happens in the domain layer via `normalizePhoneField` — so
+ * normalization is enforced for every caller, not only form parsing.
+ */
+export const phoneSchema = z.preprocess(
+  emptyToUndefined,
+  z.string().trim().max(40).optional(),
+);
+
+export const phoneRegionSchema = z.preprocess(
+  emptyToUndefined,
+  z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z]{2}$/, "Select a country for the phone number.")
+    .optional(),
+);
+
+const phoneContactFields = {
+  phone: phoneSchema,
+  phoneRegion: phoneRegionSchema,
+} as const;
+
+/**
+ * Region-aware phone validity check for object schemas that collect
+ * `{ phone, phoneRegion }` — surfaces a field error on `phone`.
+ */
+function phoneRefinement(
+  data: { phone?: string; phoneRegion?: string },
+  ctx: z.RefinementCtx,
+): void {
+  if (data.phone == null) return;
+  try {
+    normalizePhoneNumber(data.phone, data.phoneRegion);
+  } catch (error) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["phone"],
+      message:
+        error instanceof PhoneNumberInvalidError
+          ? error.message
+          : "Enter a valid phone number.",
+    });
+  }
+}
+
+/**
  * IANA timezone identifier, validated against the runtime's Intl data —
- * no date library needed. Blank/absent input defaults to "UTC".
+ * no date library needed. Blank/absent input defaults to
+ * DEFAULT_ORGANIZATION_TIMEZONE (America/Kralendijk, Saba SAR's zone) —
+ * the same default the Organization column carries for new rows.
  */
 export const timeZoneSchema = z.preprocess(
   (value) =>
     value == null || (typeof value === "string" && value.trim() === "")
-      ? "UTC"
+      ? DEFAULT_ORGANIZATION_TIMEZONE
       : value,
   z
     .string()
@@ -89,12 +143,25 @@ export const unitInputSchema = z.object({
 });
 export type UnitInput = z.infer<typeof unitInputSchema>;
 
-export const memberInputSchema = z.object({
-  displayName: displayNameSchema,
-  email: emailSchema,
-  phone: phoneSchema,
-});
+export const memberInputSchema = z
+  .object({
+    displayName: displayNameSchema,
+    email: emailSchema,
+    ...phoneContactFields,
+  })
+  .superRefine(phoneRefinement);
 export type MemberInput = z.infer<typeof memberInputSchema>;
+
+/**
+ * Member invitation issuance — the admin's explicit destination and role
+ * choice. The email is normalized (trim + lowercase) but is NOT the
+ * member's contact record and never an authorization input.
+ */
+export const memberInvitationInputSchema = z.object({
+  email: requiredEmailSchema,
+  role: z.enum(["MEMBER", "ADMIN"]),
+});
+export type MemberInvitationInput = z.infer<typeof memberInvitationInputSchema>;
 
 export const memberStatusSchema = z.enum(["ACTIVE", "INACTIVE"]);
 export type MemberStatusInput = z.infer<typeof memberStatusSchema>;
@@ -1024,18 +1091,20 @@ export type DocumentVersionInput = z.infer<typeof documentVersionSchema>;
 /* is not automatically a reimbursement.                               */
 /* ------------------------------------------------------------------ */
 
-export const vendorInputSchema = z.object({
-  name: nameSchema,
-  contactName: optionalText(120),
-  email: emailSchema,
-  phone: phoneSchema,
-  website: optionalText(200).refine(
-    (v) => !v || /^https?:\/\/\S+$/.test(v),
-    "Enter a web address starting with http:// or https://.",
-  ),
-  accountReference: optionalText(120),
-  notes: optionalText(2000),
-});
+export const vendorInputSchema = z
+  .object({
+    name: nameSchema,
+    contactName: optionalText(120),
+    email: emailSchema,
+    ...phoneContactFields,
+    website: optionalText(200).refine(
+      (v) => !v || /^https?:\/\/\S+$/.test(v),
+      "Enter a web address starting with http:// or https://.",
+    ),
+    accountReference: optionalText(120),
+    notes: optionalText(2000),
+  })
+  .superRefine(phoneRefinement);
 export type VendorInput = z.infer<typeof vendorInputSchema>;
 
 export const vendorStatusSchema = z.enum(["ACTIVE", "INACTIVE"]);

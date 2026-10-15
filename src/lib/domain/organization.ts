@@ -45,7 +45,14 @@ export async function createOrganization(input: {
 export async function updateOrganization(id: string, input: OrganizationInput) {
   const organization = await prisma.organization.update({
     where: { id },
-    data: { name: input.name, timezone: input.timezone },
+    data: {
+      name: input.name,
+      timezone: input.timezone,
+      // The setup checklist's "review settings" item reads this — it is
+      // stamped only here, by an actual settings save, never inferred
+      // from @updatedAt (any unrelated org write bumps that).
+      settingsReviewedAt: new Date(),
+    },
   });
   log({
     event: "organization.updated",

@@ -11,7 +11,11 @@ export default defineConfig({
     environment: "node",
     // *.db.test.ts needs a real database — it runs only via
     // `npm run test:db` (vitest.db.config.ts + TEST_DATABASE_URL).
-    include: ["src/**/*.test.{ts,tsx}", "scripts/**/*.test.ts"],
+    include: [
+      "src/**/*.test.{ts,tsx}",
+      "scripts/**/*.test.ts",
+      "prisma/**/*.test.ts",
+    ],
     exclude: ["src/**/*.db.test.ts", "tests/db/**"],
   },
 });

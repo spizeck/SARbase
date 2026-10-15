@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useActionState } from "react";
 
 import type { ActionState } from "./actions";
@@ -195,24 +196,42 @@ export interface AssetDefaults {
 
 export function AssetForm({
   action,
+  orgId,
   units,
   locationOptions,
   parentOptions,
+  categorySuggestions = [],
+  vendorSuggestions = [],
   defaults,
   submitLabel,
 }: {
   action: BoundAction;
+  /** Enables "create the missing record" links into the org admin area. */
+  orgId: string;
   units: { id: string; name: string }[];
   locationOptions: { id: string; path: string }[];
   /** Same-org assets eligible as a physical parent; excludes self. */
   parentOptions: { id: string; name: string }[];
+  /** Categories already in use — suggestions, not a closed vocabulary. */
+  categorySuggestions?: string[];
+  /** Vendor names from the org's vendor records (plus past free text). */
+  vendorSuggestions?: string[];
   defaults?: AssetDefaults;
   submitLabel: string;
 }) {
   const [state, formAction, pending] = useActionState(action, {});
   const id = (f: string) => `asset-${f}`;
+  // React resets uncontrolled inputs when a form action completes, so
+  // the duplicate warning would erase everything entered. The action
+  // echoes the submitted values; remounting on them restores the user's
+  // work (and reverts the confirm checkbox to unchecked).
+  const submitted = state.duplicates?.length ? state.submitted : undefined;
   return (
-    <form action={formAction} className="space-y-3">
+    <form
+      key={submitted ? "dup-warning" : "base"}
+      action={formAction}
+      className="space-y-3"
+    >
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div>
           <label htmlFor={id("name")} className={labelClass}>
@@ -224,7 +243,7 @@ export function AssetForm({
             type="text"
             required
             maxLength={120}
-            defaultValue={defaults?.name}
+            defaultValue={submitted?.name ?? defaults?.name}
             placeholder="e.g. Rescue Boat 1"
             aria-invalid={Boolean(state.fieldErrors?.name)}
             aria-describedby={id("name-error")}
@@ -241,12 +260,20 @@ export function AssetForm({
             name="category"
             type="text"
             maxLength={60}
-            defaultValue={defaults?.category ?? undefined}
+            defaultValue={
+              submitted?.category ?? defaults?.category ?? undefined
+            }
             placeholder="e.g. Vessel, Radio, Medical"
+            list={id("category-suggestions")}
             aria-invalid={Boolean(state.fieldErrors?.category)}
             aria-describedby={id("category-error")}
             className={inputClass}
           />
+          <datalist id={id("category-suggestions")}>
+            {categorySuggestions.map((c) => (
+              <option key={c} value={c} />
+            ))}
+          </datalist>
           <FieldError
             id={id("category-error")}
             errors={state.fieldErrors?.category}
@@ -263,7 +290,9 @@ export function AssetForm({
             name="manufacturer"
             type="text"
             maxLength={120}
-            defaultValue={defaults?.manufacturer ?? undefined}
+            defaultValue={
+              submitted?.manufacturer ?? defaults?.manufacturer ?? undefined
+            }
             className={inputClass}
           />
         </div>
@@ -276,7 +305,7 @@ export function AssetForm({
             name="model"
             type="text"
             maxLength={120}
-            defaultValue={defaults?.model ?? undefined}
+            defaultValue={submitted?.model ?? defaults?.model ?? undefined}
             className={inputClass}
           />
         </div>
@@ -289,7 +318,9 @@ export function AssetForm({
             name="serialNumber"
             type="text"
             maxLength={120}
-            defaultValue={defaults?.serialNumber ?? undefined}
+            defaultValue={
+              submitted?.serialNumber ?? defaults?.serialNumber ?? undefined
+            }
             className={inputClass}
           />
         </div>
@@ -304,7 +335,9 @@ export function AssetForm({
             name="assetTag"
             type="text"
             maxLength={60}
-            defaultValue={defaults?.assetTag ?? undefined}
+            defaultValue={
+              submitted?.assetTag ?? defaults?.assetTag ?? undefined
+            }
             placeholder="e.g. SAR-0042"
             aria-invalid={Boolean(state.fieldErrors?.assetTag)}
             aria-describedby={id("tag-error")}
@@ -323,7 +356,9 @@ export function AssetForm({
             id={id("purchased")}
             name="purchaseDate"
             type="date"
-            defaultValue={defaults?.purchaseDate ?? undefined}
+            defaultValue={
+              submitted?.purchaseDate ?? defaults?.purchaseDate ?? undefined
+            }
             aria-invalid={Boolean(state.fieldErrors?.purchaseDate)}
             aria-describedby={id("purchased-error")}
             className={inputClass}
@@ -342,10 +377,29 @@ export function AssetForm({
             name="vendor"
             type="text"
             maxLength={120}
-            defaultValue={defaults?.vendor ?? undefined}
+            defaultValue={submitted?.vendor ?? defaults?.vendor ?? undefined}
             placeholder="Where it was bought, if useful"
+            list={id("vendor-suggestions")}
             className={inputClass}
           />
+          <datalist id={id("vendor-suggestions")}>
+            {vendorSuggestions.map((v) => (
+              <option key={v} value={v} />
+            ))}
+          </datalist>
+          <p className="mt-1 text-xs text-neutral-500">
+            Vendor records are managed on the{" "}
+            <Link
+              href={`/admin/organizations/${orgId}/vendors`}
+              target="_blank"
+              rel="noreferrer"
+              className="underline hover:text-neutral-800"
+            >
+              vendors page
+            </Link>{" "}
+            — this field stays free text so historical purchases are never
+            blocked by missing records.
+          </p>
         </div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -356,7 +410,7 @@ export function AssetForm({
           <select
             id={id("unit")}
             name="unitId"
-            defaultValue={defaults?.unitId ?? ""}
+            defaultValue={submitted?.unitId ?? defaults?.unitId ?? ""}
             className={inputClass}
           >
             <option value="">Organization-wide</option>
@@ -366,6 +420,20 @@ export function AssetForm({
               </option>
             ))}
           </select>
+          {units.length === 0 && (
+            <p className="mt-1 text-xs text-neutral-500">
+              No units yet — optional. You can add them on the{" "}
+              <Link
+                href={`/admin/organizations/${orgId}#units-heading`}
+                target="_blank"
+                rel="noreferrer"
+                className="underline hover:text-neutral-800"
+              >
+                organization page
+              </Link>
+              .
+            </p>
+          )}
         </div>
         <div>
           <label htmlFor={id("location")} className={labelClass}>
@@ -374,7 +442,9 @@ export function AssetForm({
           <select
             id={id("location")}
             name="storageLocationId"
-            defaultValue={defaults?.storageLocationId ?? ""}
+            defaultValue={
+              submitted?.storageLocationId ?? defaults?.storageLocationId ?? ""
+            }
             aria-invalid={Boolean(state.fieldErrors?.storageLocationId)}
             aria-describedby={id("location-error")}
             className={inputClass}
@@ -386,6 +456,20 @@ export function AssetForm({
               </option>
             ))}
           </select>
+          {locationOptions.length === 0 ? (
+            <p className="mt-1 text-xs text-neutral-500">
+              No storage locations yet —{" "}
+              <Link
+                href={`/admin/organizations/${orgId}/locations`}
+                target="_blank"
+                rel="noreferrer"
+                className="underline hover:text-neutral-800"
+              >
+                add locations
+              </Link>{" "}
+              (opens a new tab, so this form keeps what you have entered).
+            </p>
+          ) : null}
           <FieldError
             id={id("location-error")}
             errors={state.fieldErrors?.storageLocationId}
@@ -398,7 +482,9 @@ export function AssetForm({
           <select
             id={id("parent")}
             name="parentAssetId"
-            defaultValue={defaults?.parentAssetId ?? ""}
+            defaultValue={
+              submitted?.parentAssetId ?? defaults?.parentAssetId ?? ""
+            }
             aria-invalid={Boolean(state.fieldErrors?.parentAssetId)}
             aria-describedby={id("parent-error")}
             className={inputClass}
@@ -412,6 +498,7 @@ export function AssetForm({
           </select>
           <p className="mt-1 text-xs text-neutral-500">
             Physical fitting — e.g. an engine is part of a boat.
+            {parentOptions.length === 0 ? " No other assets recorded yet." : ""}
           </p>
           <FieldError
             id={id("parent-error")}
@@ -427,7 +514,9 @@ export function AssetForm({
           <select
             id={id("condition")}
             name="condition"
-            defaultValue={defaults?.condition ?? "UNKNOWN"}
+            defaultValue={
+              submitted?.condition ?? defaults?.condition ?? "UNKNOWN"
+            }
             className={inputClass}
           >
             <option value="UNKNOWN">Unknown</option>
@@ -443,7 +532,7 @@ export function AssetForm({
           <select
             id={id("status")}
             name="status"
-            defaultValue={defaults?.status ?? "ACTIVE"}
+            defaultValue={submitted?.status ?? defaults?.status ?? "ACTIVE"}
             className={inputClass}
           >
             <option value="ACTIVE">Active</option>
@@ -466,10 +555,47 @@ export function AssetForm({
           name="notes"
           rows={2}
           maxLength={2000}
-          defaultValue={defaults?.notes ?? undefined}
+          defaultValue={submitted?.notes ?? defaults?.notes ?? undefined}
           className={inputClass}
         />
       </div>
+      {state.duplicates && state.duplicates.length > 0 && (
+        <div
+          className="rounded-md border border-amber-300 bg-amber-50 p-3"
+          role="alert"
+        >
+          <p className="text-sm font-medium text-amber-900">
+            Possible duplicate —{" "}
+            {state.duplicates.length === 1
+              ? "an existing asset"
+              : `${state.duplicates.length} existing assets`}{" "}
+            already {state.duplicates.length === 1 ? "matches" : "match"}:
+          </p>
+          <ul className="mt-1 list-disc pl-5 text-sm text-amber-900">
+            {state.duplicates.map((d) => (
+              <li key={d.id}>
+                <Link
+                  href={d.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline hover:text-amber-700"
+                >
+                  {d.label}
+                </Link>
+              </li>
+            ))}
+          </ul>
+          <label className="mt-2 flex items-center gap-2 text-sm text-amber-900">
+            <input
+              type="checkbox"
+              name="confirmDuplicate"
+              value="1"
+              className="h-4 w-4 rounded border-amber-400"
+            />
+            This is a different asset — save anyway
+          </label>
+        </div>
+      )}
       {state.message && (
         <p className={errorClass} role="alert">
           {state.message}
@@ -502,15 +628,22 @@ interface InventoryItemDefaults {
 export function InventoryItemForm({
   action,
   formId,
+  orgId,
   units,
   locationOptions,
+  categorySuggestions = [],
+  vendorSuggestions = [],
   defaults,
   submitLabel,
 }: {
   action: BoundAction;
   formId: string;
+  /** Enables "create the missing record" links into the org admin area. */
+  orgId: string;
   units: { id: string; name: string }[];
   locationOptions: { id: string; path: string }[];
+  categorySuggestions?: string[];
+  vendorSuggestions?: string[];
   defaults?: InventoryItemDefaults;
   submitLabel: string;
 }) {
@@ -548,8 +681,14 @@ export function InventoryItemForm({
             maxLength={60}
             defaultValue={defaults?.category ?? undefined}
             placeholder="e.g. Rope, Pyrotechnics"
+            list={id("category-suggestions")}
             className={inputClass}
           />
+          <datalist id={id("category-suggestions")}>
+            {categorySuggestions.map((c) => (
+              <option key={c} value={c} />
+            ))}
+          </datalist>
         </div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -599,8 +738,14 @@ export function InventoryItemForm({
             maxLength={120}
             defaultValue={defaults?.vendor ?? undefined}
             placeholder="Where it was bought, if useful"
+            list={id("vendor-suggestions")}
             className={inputClass}
           />
+          <datalist id={id("vendor-suggestions")}>
+            {vendorSuggestions.map((v) => (
+              <option key={v} value={v} />
+            ))}
+          </datalist>
         </div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -621,6 +766,20 @@ export function InventoryItemForm({
               </option>
             ))}
           </select>
+          {units.length === 0 && (
+            <p className="mt-1 text-xs text-neutral-500">
+              No units yet — optional. You can add them on the{" "}
+              <Link
+                href={`/admin/organizations/${orgId}#units-heading`}
+                target="_blank"
+                rel="noreferrer"
+                className="underline hover:text-neutral-800"
+              >
+                organization page
+              </Link>
+              .
+            </p>
+          )}
         </div>
         <div>
           <label htmlFor={id("location")} className={labelClass}>
@@ -639,6 +798,20 @@ export function InventoryItemForm({
               </option>
             ))}
           </select>
+          {locationOptions.length === 0 && (
+            <p className="mt-1 text-xs text-neutral-500">
+              No storage locations yet —{" "}
+              <Link
+                href={`/admin/organizations/${orgId}/locations`}
+                target="_blank"
+                rel="noreferrer"
+                className="underline hover:text-neutral-800"
+              >
+                add locations
+              </Link>{" "}
+              (opens a new tab, so this form keeps what you have entered).
+            </p>
+          )}
         </div>
         <div>
           <label htmlFor={id("condition")} className={labelClass}>

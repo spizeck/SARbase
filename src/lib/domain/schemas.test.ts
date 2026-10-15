@@ -20,6 +20,7 @@ import {
   trainingAttendanceSchema,
   trainingEventInputSchema,
 } from "./schemas";
+import { DEFAULT_ORGANIZATION_TIMEZONE } from "@/lib/timezones";
 
 describe("organizationInputSchema", () => {
   it("trims and accepts a non-empty name", () => {
@@ -70,20 +71,36 @@ describe("memberInputSchema", () => {
     ).toBe(false);
   });
 
-  it("normalizes phone to digits plus an optional leading +", () => {
+  it("accepts an international-format phone — E.164 normalization happens in the domain layer", () => {
     const parsed = memberInputSchema.parse({
       displayName: "Pat Example",
       phone: "+1 (721) 555-0134",
     });
-    expect(parsed.phone).toBe("+17215550134");
+    expect(parsed.phone).toBe("+1 (721) 555-0134");
   });
 
-  it("preserves a national number without inventing a country code", () => {
+  it("accepts a national number under the default BQ region", () => {
     const parsed = memberInputSchema.parse({
       displayName: "Pat Example",
       phone: "416 12 34",
     });
-    expect(parsed.phone).toBe("4161234");
+    expect(parsed.phone).toBe("416 12 34");
+  });
+
+  it("rejects a phone that is not valid in the chosen region", () => {
+    expect(
+      memberInputSchema.safeParse({
+        displayName: "Pat",
+        phone: "12",
+      }).success,
+    ).toBe(false);
+    expect(
+      memberInputSchema.safeParse({
+        displayName: "Pat",
+        phone: "12",
+        phoneRegion: "US",
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects a blank display name", () => {
@@ -185,11 +202,13 @@ describe("memberQualificationInputSchema", () => {
 });
 
 describe("organizationInputSchema timezone", () => {
-  it("defaults blank/absent timezone to UTC", () => {
+  it("defaults blank/absent timezone to the organization default", () => {
     expect(
       organizationInputSchema.parse({ name: "Org", timezone: "" }).timezone,
-    ).toBe("UTC");
-    expect(organizationInputSchema.parse({ name: "Org" }).timezone).toBe("UTC");
+    ).toBe(DEFAULT_ORGANIZATION_TIMEZONE);
+    expect(organizationInputSchema.parse({ name: "Org" }).timezone).toBe(
+      DEFAULT_ORGANIZATION_TIMEZONE,
+    );
   });
 
   it("accepts a real IANA timezone", () => {

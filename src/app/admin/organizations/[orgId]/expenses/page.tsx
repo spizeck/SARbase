@@ -416,6 +416,7 @@ export default async function OrganizationExpensesPage({
         <div className="mt-3">
           <ExpenseFieldsForm
             action={createExpenseAction.bind(null, orgId)}
+            orgId={orgId}
             vendors={vendors}
             members={members}
             categories={categories}

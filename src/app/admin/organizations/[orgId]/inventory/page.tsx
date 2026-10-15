@@ -4,9 +4,12 @@ import { notFound } from "next/navigation";
 import { getOrganization } from "@/lib/domain/organization";
 import {
   listInventoryItems,
+  listInventoryCategories,
+  listInventoryVendorNames,
   listStorageLocations,
   locationPathMap,
 } from "@/lib/domain/assets";
+import { listOrganizationVendors } from "@/lib/domain/expenses";
 import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
 
 import {
@@ -42,14 +45,23 @@ export default async function InventoryPage({
   // A foreign/fabricated location id simply matches zero rows.
   const showArchived = archived === "1";
 
-  const [items, locations, paths] = await Promise.all([
-    listInventoryItems(orgId, {
-      storageLocationId: locationFilter || undefined,
-      includeArchived: showArchived,
-    }),
-    listStorageLocations(orgId),
-    locationPathMap(orgId),
-  ]);
+  const [items, allItems, locations, paths, categories, vendors, vendorNames] =
+    await Promise.all([
+      listInventoryItems(orgId, {
+        storageLocationId: locationFilter || undefined,
+        includeArchived: showArchived,
+      }),
+      listInventoryItems(orgId, { includeArchived: true }),
+      listStorageLocations(orgId),
+      locationPathMap(orgId),
+      listInventoryCategories(orgId),
+      listOrganizationVendors(orgId),
+      listInventoryVendorNames(orgId),
+    ]);
+
+  const vendorSuggestions = [
+    ...new Set([...vendors.map((v) => v.name), ...vendorNames]),
+  ].sort((a, b) => a.localeCompare(b));
 
   const base = `/admin/organizations/${orgId}/inventory`;
 
@@ -134,9 +146,22 @@ export default async function InventoryPage({
         </form>
 
         {items.length === 0 ? (
-          <p className="mt-4 text-sm text-neutral-500">
-            No inventory items match this view.
-          </p>
+          <div className="mt-4 rounded-md border border-dashed border-neutral-300 p-4">
+            <p className="text-sm text-neutral-500">
+              {allItems.length === 0
+                ? "No inventory recorded yet — use the form below to add the first item."
+                : "No inventory items match the current filters."}
+            </p>
+            {allItems.length > 0 && (
+              <Link
+                href={base}
+                className="mt-1 inline-block text-sm text-neutral-700 underline"
+              >
+                Clear filters and show all {allItems.length} item
+                {allItems.length === 1 ? "" : "s"}
+              </Link>
+            )}
+          </div>
         ) : (
           <ul className="mt-4 space-y-2">
             {items.map((item) => (
@@ -181,11 +206,14 @@ export default async function InventoryPage({
                     <InventoryItemForm
                       formId={item.id}
                       action={updateInventoryItemAction.bind(null, item.id)}
+                      orgId={orgId}
                       units={organization.units}
                       locationOptions={locations.map((l) => ({
                         id: l.id,
                         path: l.path,
                       }))}
+                      categorySuggestions={categories}
+                      vendorSuggestions={vendorSuggestions}
                       defaults={{
                         name: item.name,
                         category: item.category,
@@ -215,11 +243,14 @@ export default async function InventoryPage({
             <InventoryItemForm
               formId="new"
               action={createInventoryItemAction.bind(null, orgId)}
+              orgId={orgId}
               units={organization.units}
               locationOptions={locations.map((l) => ({
                 id: l.id,
                 path: l.path,
               }))}
+              categorySuggestions={categories}
+              vendorSuggestions={vendorSuggestions}
               submitLabel="Save item"
             />
           </div>

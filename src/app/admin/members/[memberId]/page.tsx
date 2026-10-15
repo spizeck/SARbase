@@ -15,6 +15,13 @@ import {
 } from "@/lib/domain/training";
 import { requireAuth, isOrgAdmin } from "@/lib/auth/authorize";
 import {
+  getMemberInvitation,
+  invitationDisplayState,
+  MEMBER_INVITATION_STATE_LABELS,
+  MEMBER_INVITATION_ACTION_LABELS,
+} from "@/lib/domain/invitations";
+import { resolveActorLabels } from "@/lib/domain/actors";
+import {
   getMemberAvailability,
   getMemberContactPreference,
   listMemberAvailabilityHistory,
@@ -28,6 +35,9 @@ import {
   setMemberUnitsAction,
   linkIdentityToMemberAction,
   unlinkIdentityFromMemberAction,
+  createMemberInvitationAction,
+  resendMemberInvitationAction,
+  revokeMemberInvitationAction,
   createMemberQualificationAction,
   updateMemberQualificationAction,
   setMemberAvailabilityAction,
@@ -37,9 +47,12 @@ import {
   MemberForm,
   MemberUnitsForm,
   LinkIdentityForm,
+  InviteMemberForm,
+  InvitationActionButtons,
   MemberQualificationForm,
 } from "../../forms";
 import { AttachmentSection } from "../../attachment-section";
+import { phoneRegionOptions } from "@/lib/contact";
 import {
   AvailabilityForm,
   ContactPreferencesForm,
@@ -78,6 +91,21 @@ export default async function MemberPage({
   const availability = await getMemberAvailability(member.id);
   const availabilityHistory = await listMemberAvailabilityHistory(member.id);
   const contactPreference = await getMemberContactPreference(member.id);
+
+  const invitation = await getMemberInvitation(member.id);
+  const inviteState = invitationDisplayState(invitation);
+  const inviteActorLabels = invitation
+    ? await resolveActorLabels(
+        orgId,
+        invitation.events.map((e) => e.actorAuthIdentityId),
+      )
+    : new Map<string, string>();
+  const inviteBadgeClass =
+    inviteState === "pending"
+      ? "bg-amber-100 text-amber-800"
+      : inviteState === "accepted"
+        ? "bg-green-100 text-green-800"
+        : "bg-neutral-100 text-neutral-600";
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
@@ -164,6 +192,7 @@ export default async function MemberPage({
               phone: member.phone,
             }}
             submitLabel="Save changes"
+            regions={phoneRegionOptions()}
           />
         </div>
       </section>
@@ -471,15 +500,31 @@ export default async function MemberPage({
         aria-labelledby="login-heading"
         className="mt-6 rounded-md border border-neutral-200 p-4"
       >
-        <h2 id="login-heading" className="text-sm font-medium text-neutral-800">
-          Login account
-        </h2>
+        <div className="flex items-center justify-between gap-3">
+          <h2
+            id="login-heading"
+            className="text-sm font-medium text-neutral-800"
+          >
+            Login account
+          </h2>
+          {invitation && (
+            <span
+              className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${inviteBadgeClass}`}
+            >
+              {MEMBER_INVITATION_STATE_LABELS[inviteState]}
+            </span>
+          )}
+        </div>
+
         {member.authIdentityId ? (
           <div className="mt-2">
             <p className="text-sm text-neutral-600">
-              This member record is linked to a sign-in identity. Unlinking
-              removes that identity&apos;s member context — it does not remove
-              the identity&apos;s organization access grants.
+              This member record is linked to a sign-in identity
+              {invitation?.acceptedByAuthIdentityId
+                ? " — the invitation was accepted"
+                : ""}
+              . Unlinking removes that identity&apos;s member context — it does
+              not remove the identity&apos;s organization access grants.
             </p>
             <form
               action={unlinkIdentityFromMemberAction.bind(null, member.id)}
@@ -493,19 +538,136 @@ export default async function MemberPage({
               </button>
             </form>
           </div>
+        ) : inviteState === "pending" && invitation ? (
+          <div className="mt-2">
+            <p className="text-sm text-neutral-600">
+              An invitation was sent to{" "}
+              <span className="font-medium text-neutral-800">
+                {invitation.email}
+              </span>{" "}
+              for {invitation.role === "ADMIN" ? "administrator" : "member"}{" "}
+              access. The recipient signs in or registers with that address to
+              accept.
+            </p>
+            <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-neutral-600">
+              <div>
+                <dt className="text-xs text-neutral-500">Sent</dt>
+                <dd>{relativeTimeLabel(invitation.createdAt)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-neutral-500">Expires</dt>
+                <dd>{relativeTimeLabel(invitation.expiresAt)}</dd>
+              </div>
+              {invitation.notification && (
+                <div>
+                  <dt className="text-xs text-neutral-500">Latest send</dt>
+                  <dd>
+                    {invitation.notification.status === "ACCEPTED"
+                      ? "Delivered to provider"
+                      : invitation.notification.status === "FAILED"
+                        ? "Delivery failed"
+                        : invitation.notification.status === "SUPPRESSED"
+                          ? "Not sent"
+                          : "Sending"}
+                    {invitation.notification.attempts.at(-1)?.errorSummary
+                      ? ` — ${
+                          invitation.notification.attempts.at(-1)?.errorSummary
+                        }`
+                      : ""}
+                  </dd>
+                </div>
+              )}
+            </dl>
+            <div className="mt-3">
+              <InvitationActionButtons
+                resendAction={resendMemberInvitationAction.bind(
+                  null,
+                  invitation.id,
+                )}
+                revokeAction={revokeMemberInvitationAction.bind(
+                  null,
+                  invitation.id,
+                )}
+              />
+            </div>
+            <p className="mt-2 text-xs text-neutral-500">
+              Resending issues a new link and invalidates the previous one.
+            </p>
+            <details className="mt-3">
+              <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+                Link an existing sign-in identity instead
+              </summary>
+              <div className="mt-2">
+                <LinkIdentityForm
+                  action={linkIdentityToMemberAction.bind(null, member.id)}
+                />
+              </div>
+            </details>
+          </div>
         ) : (
           <div className="mt-2">
             <p className="mt-1 text-sm text-neutral-600">
-              No sign-in identity linked. To grant this member login access,
-              have them sign in once, then link their identity here by its email
-              address.
+              {inviteState === "expired"
+                ? "The invitation expired before it was accepted."
+                : inviteState === "revoked"
+                  ? "The invitation was revoked."
+                  : inviteState === "accepted"
+                    ? "The invitation was accepted, but the sign-in identity was unlinked afterwards."
+                    : "No sign-in identity is linked and no invitation has been sent."}{" "}
+              Send an invitation to grant this member login access — they will
+              sign in or register to accept it.
             </p>
             <div className="mt-3">
-              <LinkIdentityForm
-                action={linkIdentityToMemberAction.bind(null, member.id)}
+              <InviteMemberForm
+                action={createMemberInvitationAction.bind(null, member.id)}
+                defaultEmail={member.email}
               />
             </div>
+            <details className="mt-3">
+              <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+                Link an existing sign-in identity instead
+              </summary>
+              <div className="mt-2">
+                <LinkIdentityForm
+                  action={linkIdentityToMemberAction.bind(null, member.id)}
+                />
+              </div>
+            </details>
           </div>
+        )}
+
+        {invitation && invitation.events.length > 0 && (
+          <details className="mt-4">
+            <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+              Invitation history ({invitation.events.length})
+            </summary>
+            <ul className="mt-2 divide-y divide-neutral-200 rounded-md border border-neutral-200">
+              {invitation.events.map((event) => (
+                <li key={event.id} className="px-4 py-2 text-xs">
+                  <span className="font-medium text-neutral-900">
+                    {MEMBER_INVITATION_ACTION_LABELS[event.action] ??
+                      event.action}
+                  </span>
+                  <span className="text-neutral-500">
+                    {" "}
+                    · {relativeTimeLabel(event.createdAt)}
+                    {event.actorAuthIdentityId
+                      ? ` · ${
+                          inviteActorLabels.get(event.actorAuthIdentityId) ??
+                          "unknown account"
+                        }`
+                      : ""}
+                    {(() => {
+                      const detail = event.detail as { role?: string } | null;
+                      return detail?.role
+                        ? ` · ${detail.role === "ADMIN" ? "administrator" : "member"} role`
+                        : "";
+                    })()}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </details>
         )}
       </section>
     </main>

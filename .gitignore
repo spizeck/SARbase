@@ -19,6 +19,9 @@ coverage/
 playwright-report/
 test-results/
 
+# hosted smoke session state — a real session cookie, never commit
+.auth/
+
 # database dumps — contain real data, never commit
 backups/
 *.dump

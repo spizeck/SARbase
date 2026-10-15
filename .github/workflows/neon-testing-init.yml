@@ -1,0 +1,68 @@
+name: Initialize Neon testing database
+
+# ONE-TIME / on-demand initialization of the permanent `testing` Neon
+# branch (app-foundations ADR-0001, model A). Applies committed Prisma
+# migrations, seeds the fictional baseline, and verifies the result —
+# safe to re-run (migrate deploy and the seed are idempotent).
+#
+# This workflow is MANUAL ONLY and deliberately separate from the
+# automatic PR preview lifecycle in neon-preview.yml. It uses the same
+# NEON_API_KEY secret but NOT the NEON_PROJECT_ID repository variable —
+# that variable is the enable switch for automatic preview
+# provisioning and stays unset until that lifecycle is activated. The
+# expected project is pinned as an identity constant below; the script
+# re-verifies it (and the optional project name) against the Neon API.
+#
+# Trust boundary: even though workflow_dispatch is manual, the job
+# always checks out the repository DEFAULT branch — scripts, lockfile,
+# and `npm ci` dependency installs come from trusted code only.
+#
+# Production safety (enforced in scripts/neon-testing-init.ts, not just
+# here): the Neon project and `testing` branch are resolved through the
+# API; the target must be named exactly `testing`, must not be the
+# primary branch, and its pooled + unpooled connection URIs must
+# resolve to one non-production, non-loopback database — with the
+# production host derived from the PRIMARY branch itself, so the
+# exclusion cannot be configured away. The seed and verifier re-check
+# the same identities via APP_TESTING_DB_HOST / APP_PRODUCTION_DB_HOST.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize initialization: two concurrent runs mutating `testing`
+# could interleave migrations and seed upserts.
+concurrency:
+  group: neon-testing-init
+  cancel-in-progress: false
+
+env:
+  # Identity constants — not secrets. NEON_PROJECT_ID here is a
+  # workflow-local pin to the SARBase-db project; it does not enable
+  # the automatic preview lifecycle (that reads vars.NEON_PROJECT_ID).
+  NEON_PROJECT_ID: rough-thunder-07294432
+  NEON_PROJECT_NAME: SARBase-db
+  NEON_DATABASE: ${{ vars.NEON_DATABASE || 'neondb' }}
+  NEON_ROLE: ${{ vars.NEON_ROLE || 'neondb_owner' }}
+
+jobs:
+  initialize:
+    name: Initialize the testing baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Migrate, seed, and verify the testing baseline
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: npx tsx scripts/neon-testing-init.ts

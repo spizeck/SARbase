@@ -49,11 +49,14 @@ export interface CalloutMemberOption {
  */
 export function CalloutActivationForm({
   action,
+  orgId,
   units,
   members,
   activationKey,
 }: {
   action: BoundAction;
+  /** Enables "create the missing record" links into the org admin area. */
+  orgId: string;
   units: { id: string; name: string }[];
   members: CalloutMemberOption[];
   activationKey: string;
@@ -62,6 +65,10 @@ export function CalloutActivationForm({
   const [audience, setAudience] = useState<"ORGANIZATION" | "UNIT" | "MEMBERS">(
     "ORGANIZATION",
   );
+  // Every audience materializes from the same active-member pool, so an
+  // organization with no members can never invite anyone — say so
+  // instead of letting the submit fail server-side.
+  const noMembers = members.length === 0;
 
   return (
     <form action={formAction} className="space-y-4">
@@ -123,25 +130,48 @@ export function CalloutActivationForm({
             />
             All active members of this organization
           </label>
-          <label className="flex items-center gap-2 text-sm text-neutral-800">
+          <label
+            className={`flex items-center gap-2 text-sm ${units.length === 0 ? "text-neutral-400" : "text-neutral-800"}`}
+          >
             <input
               type="radio"
               name="audience"
               value="UNIT"
               checked={audience === "UNIT"}
+              disabled={units.length === 0}
               onChange={() => setAudience("UNIT")}
             />
             Members of one unit
+            {units.length === 0 && (
+              <span className="text-xs text-neutral-400">
+                — no units yet (
+                <a
+                  href={`/admin/organizations/${orgId}#units-heading`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline hover:text-neutral-700"
+                >
+                  add units
+                </a>
+                )
+              </span>
+            )}
           </label>
-          <label className="flex items-center gap-2 text-sm text-neutral-800">
+          <label
+            className={`flex items-center gap-2 text-sm ${noMembers ? "text-neutral-400" : "text-neutral-800"}`}
+          >
             <input
               type="radio"
               name="audience"
               value="MEMBERS"
               checked={audience === "MEMBERS"}
+              disabled={noMembers}
               onChange={() => setAudience("MEMBERS")}
             />
             Selected members
+            {noMembers && (
+              <span className="text-xs text-neutral-400">— no members yet</span>
+            )}
           </label>
         </div>
         <FieldError
@@ -206,12 +236,30 @@ export function CalloutActivationForm({
         </fieldset>
       )}
 
+      {noMembers && (
+        <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          This organization has no active members to invite.{" "}
+          <a
+            href={`/admin/organizations/${orgId}#members-heading`}
+            target="_blank"
+            rel="noreferrer"
+            className="underline hover:text-amber-700"
+          >
+            Add members
+          </a>{" "}
+          (opens a new tab), then reload this page.
+        </p>
+      )}
       {state.message && (
         <p className={errorClass} role="alert">
           {state.message}
         </p>
       )}
-      <button type="submit" disabled={pending} className={buttonClass}>
+      <button
+        type="submit"
+        disabled={pending || noMembers}
+        className={buttonClass}
+      >
         {pending ? "Activating…" : "Activate callout"}
       </button>
     </form>
