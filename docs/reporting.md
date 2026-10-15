@@ -124,7 +124,8 @@ and maintenance (`performedOn`), defects (`reportedOn`), meter readings
 (`recordedOn`), callouts (`activatedAt`), incidents (record `createdAt`),
 incident participants/assets (`recordedAt`), timeline (`occurredAt`),
 notes/corrections/changes (`createdAt`), availability (`createdAt`),
-invitations (`invitedAt`), attachments (`createdAt`), expenses
+callout invitations (`invitedAt`), member invitations and invitation
+events (`createdAt`), attachments (`createdAt`), expenses
 (`expenseDate`), expense events (`occurredAt`), expense changes and
 export events (`createdAt`). Unit filtering exists where the record
 carries a direct `unitId` (training events, assets, inventory items,

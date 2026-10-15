@@ -1403,7 +1403,9 @@ const expensesDataset: DatasetDef = {
         expenseDate: e.expenseDate,
         amountMinor: e.amountMinor,
         currency: e.currency,
-        amount: amountMinorToDecimal(e.amountMinor, e.currency),
+        amount:
+          (e.amountMinor < 0 ? "-" : "") +
+          amountMinorToDecimal(e.amountMinor, e.currency),
         vendorId: e.vendorId,
         vendorName: e.vendor?.name ?? null,
         category: e.category,

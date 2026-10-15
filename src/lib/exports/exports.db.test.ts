@@ -964,6 +964,40 @@ describe.skipIf(!hasDb)("data exports", () => {
       expect(events!.csv).toContain(`${PREFIX}event-marker`);
     });
 
+    it("preserves the sign of a negative persisted amount", async () => {
+      // Writes reject negative input, but the column carries no DB
+      // constraint — a negative row must export a self-consistent CSV.
+      // Lives in orgB so orgA summary count assertions stay fixed.
+      const expense = await prisma.expense.create({
+        data: {
+          organizationId: orgB,
+          sequence: 900001,
+          reference: "EXP-900001",
+          expenseDate: new Date("2026-02-01T00:00:00.000Z"),
+          amountMinor: -500,
+          currency: "USD",
+          status: "DRAFT",
+          reimbursementStatus: "NOT_REQUIRED",
+          submittedByMemberId: ids.foreignMember,
+          paidByMemberId: ids.foreignMember,
+          createdByAuthIdentityId: `${PREFIX}actor`,
+        },
+      });
+      const result = await runCsvExport(
+        ctxFor(orgB, "ADMIN"),
+        orgB,
+        "expenses",
+        emptyParams,
+      );
+      const rows = csvRows(result!.csv);
+      const header = rows[0]!;
+      const row = rows.slice(1).find((r) => r[0] === expense.id)!;
+      expect(row[header.indexOf("amountMinor")]).toBe("-500");
+      // The decimal string is a `text` cell: formula mitigation emits
+      // '-5.00, which spreadsheets display as -5.00.
+      expect(row[header.indexOf("amount")]).toBe("'-5.00");
+    });
+
     it("translates instant date filters through the organization timezone", async () => {
       // 2026-01-01T03:30Z is 2025-12-31 23:30 in America/Puerto_Rico —
       // a 2026 local range must exclude it.
