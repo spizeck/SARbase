@@ -49,8 +49,9 @@ same row but writes a fresh CREATED event — one row, honest history.
   explicit confirmation checkbox.
 - **Pending** — the email is sent through the notification seam
   (`member_invitation` template). The member page shows destination,
-  creation date, expiry (7 days), and the notification's delivery
-  status. Expiry is derived at read time — `PENDING` + past `expiresAt`
+  creation date, expiry (7 days, rendered as relative + absolute in the
+  organization's timezone), and the notification's delivery status.
+  Expiry is derived at read time — `PENDING` + past `expiresAt`
   displays as **Expired**; nothing is materialized lazily.
 - **Resend** — increments `tokenVersion`, rotates the token hash,
   refreshes `expiresAt`, and records a `RESENT` event. Superseded links
@@ -87,6 +88,27 @@ lookup  = sha256(token)         — the only thing persisted
   the exact stored message while always carrying the current token —
   and a secret rotation does not strand a queued send holding a dead
   link.
+
+## Delivery semantics
+
+**"Accepted by email provider" is not inbox delivery.** Resend's
+`emails.send` returning `{ data: { id } }` means Resend accepted the
+message for processing — it says nothing about mailbox delivery, spam
+placement, or bounces. The admin surface uses the exact wording
+"Accepted by email provider" (matching the notifications page's
+"Accepted by provider"), and the latest attempt's `providerMessageId`
+is shown as a "Provider ref" for correlating with the Resend
+dashboard.
+
+Delivery/bounce/complaint webhooks are **not** currently wired — the
+notification model's status axis (`PENDING`/`SUPPRESSED`/`ACCEPTED`/
+`FAILED`) records provider-request outcomes only. Adding a
+`POST /api/webhooks/resend` endpoint with svix signature verification
+and new terminal statuses (`DELIVERED`, `BOUNCED`, `COMPLAINED`) is a
+reasonable follow-up if real inbox visibility is needed, but is
+deliberately deferred: it requires a publicly reachable endpoint, a
+signing secret, and new enum values — infrastructure beyond the fix
+scope here.
 
 ## Acceptance requirements
 

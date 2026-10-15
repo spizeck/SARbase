@@ -30,6 +30,7 @@ import {
   InvitationMemberLinkedError,
   InvitationStateError,
 } from "./invitations";
+import { MEMBER_INVITATION_TTL_MS } from "./invitationTokens";
 const hasDb = Boolean(process.env.DATABASE_URL);
 const PREFIX = "invtest-";
 
@@ -703,6 +704,25 @@ describe.skipIf(!hasDb)("member invitations", () => {
     expect(
       invitationDisplayState({ status: "REVOKED", expiresAt: future }),
     ).toBe("revoked");
+  });
+
+  it("keeps a nearly-expired invitation pending until the exact instant, then expires it", () => {
+    // One second to go — still pending; the boundary itself is expired
+    // (expiry is inclusive: expiresAt <= now).
+    const oneSecondOut = new Date(Date.now() + 1_000);
+    const now = new Date();
+    const boundary = new Date(now.getTime());
+    expect(
+      invitationDisplayState({ status: "PENDING", expiresAt: oneSecondOut }),
+    ).toBe("pending");
+    expect(
+      invitationDisplayState({ status: "PENDING", expiresAt: boundary }),
+    ).toBe("expired");
+    // A fresh invitation's full 7-day window is far from the boundary.
+    const fresh = new Date(Date.now() + MEMBER_INVITATION_TTL_MS);
+    expect(
+      invitationDisplayState({ status: "PENDING", expiresAt: fresh }),
+    ).toBe("pending");
   });
 
   /* ---------------- authorization ---------------- */

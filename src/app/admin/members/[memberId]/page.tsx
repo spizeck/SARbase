@@ -27,7 +27,7 @@ import {
   listMemberAvailabilityHistory,
   AVAILABILITY_STATUS_LABELS,
 } from "@/lib/domain/availability";
-import { relativeTimeLabel } from "@/lib/dates";
+import { formatInstantInZone, relativeTimeLabel } from "@/lib/dates";
 
 import {
   updateMemberAction,
@@ -556,14 +556,21 @@ export default async function MemberPage({
               </div>
               <div>
                 <dt className="text-xs text-neutral-500">Expires</dt>
-                <dd>{relativeTimeLabel(invitation.expiresAt)}</dd>
+                <dd>
+                  {relativeTimeLabel(invitation.expiresAt)} —{" "}
+                  {formatInstantInZone(
+                    invitation.expiresAt,
+                    member.organization.timezone,
+                  )}{" "}
+                  ({member.organization.timezone})
+                </dd>
               </div>
               {invitation.notification && (
                 <div>
                   <dt className="text-xs text-neutral-500">Latest send</dt>
                   <dd>
                     {invitation.notification.status === "ACCEPTED"
-                      ? "Delivered to provider"
+                      ? "Accepted by email provider"
                       : invitation.notification.status === "FAILED"
                         ? "Delivery failed"
                         : invitation.notification.status === "SUPPRESSED"
@@ -574,6 +581,16 @@ export default async function MemberPage({
                           invitation.notification.attempts.at(-1)?.errorSummary
                         }`
                       : ""}
+                    {invitation.notification.attempts.at(-1)
+                      ?.providerMessageId ? (
+                      <span className="block text-xs text-neutral-400">
+                        Provider ref:{" "}
+                        {
+                          invitation.notification.attempts.at(-1)
+                            ?.providerMessageId
+                        }
+                      </span>
+                    ) : null}
                   </dd>
                 </div>
               )}

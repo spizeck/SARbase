@@ -160,6 +160,34 @@ describe("relativeTimeLabel", () => {
       "2027-09-01",
     );
   });
+
+  it("describes future timestamps as upcoming — never 'just now' or 'ago'", () => {
+    // The original defect: a freshly issued invitation expiry (7 days
+    // out) rendered "just now" because future dates fell through to the
+    // sub-minute branch.
+    expect(relativeTimeLabel(INSTANT("2027-11-14T12:00:30.000Z"), now)).toBe(
+      "just now",
+    );
+    expect(relativeTimeLabel(INSTANT("2027-11-14T12:15:00.000Z"), now)).toBe(
+      "in 15 minutes",
+    );
+    expect(relativeTimeLabel(INSTANT("2027-11-14T13:00:00.000Z"), now)).toBe(
+      "in 1 hour",
+    );
+    expect(relativeTimeLabel(INSTANT("2027-11-15T06:00:00.000Z"), now)).toBe(
+      "in 18 hours",
+    );
+    expect(relativeTimeLabel(INSTANT("2027-11-21T12:00:00.000Z"), now)).toBe(
+      "in 7 days",
+    );
+    expect(relativeTimeLabel(INSTANT("2027-11-16T12:00:00.000Z"), now)).toBe(
+      "in 2 days",
+    );
+    // Beyond a month the absolute date is clearer, same as the past.
+    expect(relativeTimeLabel(INSTANT("2028-03-01T12:00:00.000Z"), now)).toBe(
+      "2028-03-01",
+    );
+  });
 });
 
 describe("instantInZone / localDateTimeString (incident wall times)", () => {
@@ -212,5 +240,25 @@ describe("instantInZone / localDateTimeString (incident wall times)", () => {
       formatInstantInZone(INSTANT("2026-09-15T02:00:00.000Z"), "UTC"),
     ).toBe("Sep 15, 2026, 2:00 AM");
     expect(formatInstantInZone(null, "UTC")).toBeNull();
+  });
+
+  it("formats the same instant honestly per zone — day boundaries and DST", () => {
+    // An invitation expiry at 01:30 UTC is the previous evening in the
+    // organization's zone — the absolute display must not say
+    // "Oct 22" when the member sees Oct 21 local.
+    const instant = INSTANT("2027-10-22T01:30:00.000Z");
+    expect(formatInstantInZone(instant, "UTC")).toBe("Oct 22, 2027, 1:30 AM");
+    expect(formatInstantInZone(instant, "America/Kralendijk")).toBe(
+      "Oct 21, 2027, 9:30 PM",
+    );
+    // DST-aware: the same wall clock format shifts with the offset.
+    const summer = INSTANT("2027-07-01T12:00:00.000Z");
+    const winter = INSTANT("2027-12-01T12:00:00.000Z");
+    expect(formatInstantInZone(summer, "America/New_York")).toBe(
+      "Jul 1, 2027, 8:00 AM",
+    );
+    expect(formatInstantInZone(winter, "America/New_York")).toBe(
+      "Dec 1, 2027, 7:00 AM",
+    );
   });
 });

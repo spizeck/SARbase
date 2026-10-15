@@ -61,21 +61,28 @@ export function formatDateOnly(d: Date | null | undefined): string | null {
 }
 
 /**
- * Compact "how long ago" label for a timestamp ("updated 2 hours ago").
+ * Compact relative label for a timestamp ("updated 2 hours ago",
+ * "expires in 7 days"). Past values render "N units ago", future values
+ * "in N units" — future timestamps like expiry times are valid inputs.
  * Exact instants, not calendar dates — an instant is unambiguous
  * regardless of which organization's zone it is displayed in, so this
- * deliberately takes no timezone. Beyond a month the absolute date is
- * clearer than a large day count.
+ * deliberately takes no timezone. Beyond a month either direction the
+ * absolute date is clearer than a large day count.
  */
 export function relativeTimeLabel(date: Date, now: Date = new Date()): string {
   const elapsedSeconds = Math.round((now.getTime() - date.getTime()) / 1000);
-  if (elapsedSeconds < 60) return "just now";
-  const minutes = Math.floor(elapsedSeconds / 60);
-  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  if (Math.abs(elapsedSeconds) < 60) return "just now";
+  const future = elapsedSeconds < 0;
+  const suffix = (n: number, unit: string) =>
+    future
+      ? `in ${n} ${unit}${n === 1 ? "" : "s"}`
+      : `${n} ${unit}${n === 1 ? "" : "s"} ago`;
+  const minutes = Math.floor(Math.abs(elapsedSeconds) / 60);
+  if (minutes < 60) return suffix(minutes, "minute");
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  if (hours < 24) return suffix(hours, "hour");
   const days = Math.floor(hours / 24);
-  if (days < 31) return `${days} day${days === 1 ? "" : "s"} ago`;
+  if (days < 31) return suffix(days, "day");
   return formatDateOnly(date) ?? "";
 }
 

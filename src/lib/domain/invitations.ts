@@ -153,6 +153,7 @@ export function getMemberInvitation(memberId: string) {
               status: true,
               attemptedAt: true,
               errorSummary: true,
+              providerMessageId: true,
             },
             orderBy: { attemptNumber: "asc" },
           },
