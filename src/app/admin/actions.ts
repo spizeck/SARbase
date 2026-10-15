@@ -606,6 +606,7 @@ export async function createMemberAction(
     displayName: formData.get("displayName"),
     email: formData.get("email"),
     phone: formData.get("phone"),
+    phoneRegion: formData.get("phoneRegion"),
   });
   if (!parsed.success) return zodErrors(parsed.error);
 
@@ -630,6 +631,7 @@ export async function updateMemberAction(
     displayName: formData.get("displayName"),
     email: formData.get("email"),
     phone: formData.get("phone"),
+    phoneRegion: formData.get("phoneRegion"),
   });
   if (!parsed.success) return zodErrors(parsed.error);
 
@@ -3548,6 +3550,7 @@ const vendorFieldsFrom = (formData: FormData) => ({
   contactName: formData.get("contactName"),
   email: formData.get("email"),
   phone: formData.get("phone"),
+  phoneRegion: formData.get("phoneRegion"),
   website: formData.get("website"),
   accountReference: formData.get("accountReference"),
   notes: formData.get("notes"),

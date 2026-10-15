@@ -1,9 +1,11 @@
 import {
   getCountries,
   getCountryCallingCode,
+  getExampleNumber,
   parsePhoneNumberWithError,
   type CountryCode,
 } from "libphonenumber-js";
+import exampleNumbers from "libphonenumber-js/examples.mobile.json";
 
 /**
  * Shared contact normalization (email + phone) — the single policy for
@@ -120,6 +122,33 @@ export function phoneRegionOf(input: string): string | null {
   }
 }
 
+export interface PhoneDisplayParts {
+  /** ISO alpha-2 region, e.g. "BQ". */
+  region: string;
+  /** Region-local display format, e.g. "416 6039" for a BQ number. */
+  national: string;
+}
+
+/**
+ * Split a "+…" international number into { region, national } for the
+ * split phone input — used both to initialize edit forms from a stored
+ * E.164 value and to re-decompose a number pasted or typed with a "+"
+ * prefix. `region` comes from the library's own numbering-plan data,
+ * so shared calling codes resolve by the actual digits (a +1 246 …
+ * number is Barbados, not "the first +1 region"). Returns null when the
+ * input is unparseable or non-geographic (e.g. +800 toll-free) — callers
+ * keep the raw value rather than invent a region.
+ */
+export function splitPhoneForDisplay(input: string): PhoneDisplayParts | null {
+  try {
+    const number = parsePhoneNumberWithError(input.trim());
+    if (!number.country) return null;
+    return { region: number.country, national: number.formatNational() };
+  } catch {
+    return null;
+  }
+}
+
 export interface PhoneRegionOption {
   /** ISO alpha-2 code, e.g. "BQ". */
   region: string;
@@ -127,6 +156,11 @@ export interface PhoneRegionOption {
   callingCode: string;
   /** Human-readable territory name. */
   name: string;
+  /**
+   * Region-local example mobile number for input placeholders, e.g.
+   * "318 1234" for BQ — absent when the library has no example.
+   */
+  example?: string;
 }
 
 let regionNames: Intl.DisplayNames | null = null;
@@ -145,6 +179,7 @@ export function phoneRegionOptions(): PhoneRegionOption[] {
       region,
       callingCode: getCountryCallingCode(region),
       name: names.of(region) ?? region,
+      example: getExampleNumber(region, exampleNumbers)?.formatNational(),
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }

@@ -8,7 +8,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider  = "postgresql"
   // Runtime queries use the pooled DATABASE_URL. Migrations and
   // introspection use DATABASE_URL_UNPOOLED via directUrl — PgBouncer
   // pooling breaks the session-level advisory lock migrate deploy
@@ -58,9 +58,9 @@ enum QualificationDefinitionStatus {
 // applies only to newly created organizations (America/Kralendijk,
 // Saba SAR's zone, UTC−04:00 with no daylight saving).
 model Organization {
-  id        String   @id @default(cuid())
-  name      String
-  timezone  String   @default("America/Kralendijk")
+  id                        String    @id @default(cuid())
+  name                      String
+  timezone                  String    @default("America/Kralendijk")
   // When an admin dismissed the new-organization setup checklist. NULL
   // means the checklist still shows until every item is complete or an
   // admin hides it; it is guidance, never a gate — every item is
@@ -71,8 +71,8 @@ model Organization {
   // on every write (including the checklist dismissal above) and would
   // falsely mark settings as reviewed.
   settingsReviewedAt        DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
 
   units   Unit[]
   members Member[]
@@ -139,6 +139,9 @@ model Organization {
   expenseAttachments        ExpenseAttachment[]
   expenseEvents             ExpenseEvent[]
   expenseChanges            ExpenseChange[]
+
+  // Issue #19 — export audit history.
+  dataExportEvents DataExportEvent[]
 }
 
 // An internal operational/administrative grouping within an organization
@@ -347,29 +350,29 @@ enum MemberInvitationAction {
 }
 
 model MemberInvitation {
-  id             String                  @id @default(cuid())
-  organizationId String
-  memberId       String                  @unique
+  id                       String                 @id @default(cuid())
+  organizationId           String
+  memberId                 String                 @unique
   // Invitation destination snapshot (normalized lowercase). Editable by the
   // inviting administrator — deliberately independent of Member.email.
-  email          String
+  email                    String
   // The exact organization role granted at acceptance.
-  role           OrgRole                 @default(MEMBER)
-  tokenHash      String                  @unique
-  tokenVersion   Int                     @default(1)
-  status         MemberInvitationStatus  @default(PENDING)
-  expiresAt      DateTime
+  role                     OrgRole                @default(MEMBER)
+  tokenHash                String                 @unique
+  tokenVersion             Int                    @default(1)
+  status                   MemberInvitationStatus @default(PENDING)
+  expiresAt                DateTime
   // Latest send's notification row (delivery history lives there); a fresh
   // send replaces this pointer and appends its own Notification.
-  notificationId String?
+  notificationId           String?
   // Plain scalar identity references — audit/history rows must survive
   // identity deletion (same convention as actorAuthIdentityId elsewhere).
-  createdByAuthIdentityId   String?
-  acceptedByAuthIdentityId  String?
-  createdAt      DateTime                @default(now())
-  updatedAt      DateTime                @updatedAt
-  acceptedAt     DateTime?
-  revokedAt      DateTime?
+  createdByAuthIdentityId  String?
+  acceptedByAuthIdentityId String?
+  createdAt                DateTime               @default(now())
+  updatedAt                DateTime               @updatedAt
+  acceptedAt               DateTime?
+  revokedAt                DateTime?
 
   organization Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   member       Member                  @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
@@ -397,8 +400,8 @@ model MemberInvitationEvent {
   detail              Json?
   createdAt           DateTime               @default(now())
 
-  invitation  MemberInvitation @relation(fields: [invitationId, organizationId], references: [id, organizationId], onDelete: Restrict)
-  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  invitation   MemberInvitation @relation(fields: [invitationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
 
   @@index([invitationId, createdAt])
   @@index([organizationId, createdAt])
@@ -2359,30 +2362,30 @@ model ExpenseSequence {
 /// Every foreign-key pointer is composite `(id, organizationId)` — the
 /// database itself rejects a cross-organization expense.
 model Expense {
-  id             String         @id @default(cuid())
-  organizationId String
-  sequence       Int
-  reference      String // "EXP-<n>", @@unique([organizationId, reference])
-  expenseDate    DateTime       @db.Date // organization-local calendar date
-  amountMinor    Int // exact minor units — see src/lib/money.ts
-  currency       String // ISO 4217, e.g. "USD"; one currency, no FX
-  vendorId       String?
-  category       String? // free text — no imposed accounting taxonomy
-  description    String?
-  submittedByMemberId String?
-  paidByMemberId      String?
-  status              ExpenseStatus       @default(DRAFT)
-  reimbursementStatus ReimbursementStatus @default(NOT_REQUIRED)
-  submittedAt         DateTime?
-  reviewedAt          DateTime?
-  reviewedByAuthIdentityId String?
-  reviewNote               String?
-  reimbursedAt             DateTime?
+  id                         String              @id @default(cuid())
+  organizationId             String
+  sequence                   Int
+  reference                  String // "EXP-<n>", @@unique([organizationId, reference])
+  expenseDate                DateTime            @db.Date // organization-local calendar date
+  amountMinor                Int // exact minor units — see src/lib/money.ts
+  currency                   String // ISO 4217, e.g. "USD"; one currency, no FX
+  vendorId                   String?
+  category                   String? // free text — no imposed accounting taxonomy
+  description                String?
+  submittedByMemberId        String?
+  paidByMemberId             String?
+  status                     ExpenseStatus       @default(DRAFT)
+  reimbursementStatus        ReimbursementStatus @default(NOT_REQUIRED)
+  submittedAt                DateTime?
+  reviewedAt                 DateTime?
+  reviewedByAuthIdentityId   String?
+  reviewNote                 String?
+  reimbursedAt               DateTime?
   reimbursedByAuthIdentityId String?
   reimbursementNote          String?
   createdByAuthIdentityId    String
-  createdAt                  DateTime @default(now())
-  updatedAt                  DateTime @updatedAt
+  createdAt                  DateTime            @default(now())
+  updatedAt                  DateTime            @updatedAt
 
   organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   vendor            Vendor?      @relation(fields: [vendorId, organizationId], references: [id, organizationId], onDelete: Restrict)
@@ -2415,13 +2418,13 @@ model Expense {
 // cannot enforce a polymorphic FK.
 
 model ExpenseIncident {
-  id             String   @id @default(cuid())
-  organizationId String
-  expenseId      String
-  incidentId     String
-  note           String? // optional factual context for the link
+  id                       String   @id @default(cuid())
+  organizationId           String
+  expenseId                String
+  incidentId               String
+  note                     String? // optional factual context for the link
   recordedByAuthIdentityId String
-  recordedAt     DateTime @default(now())
+  recordedAt               DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   expense      Expense      @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
@@ -2435,16 +2438,16 @@ model ExpenseIncident {
 }
 
 model ExpenseTrainingEvent {
-  id             String   @id @default(cuid())
-  organizationId String
-  expenseId      String
-  trainingEventId String
-  note           String?
+  id                       String   @id @default(cuid())
+  organizationId           String
+  expenseId                String
+  trainingEventId          String
+  note                     String?
   recordedByAuthIdentityId String
-  recordedAt     DateTime @default(now())
+  recordedAt               DateTime @default(now())
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  expense      Expense      @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expense       Expense       @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
   trainingEvent TrainingEvent @relation(fields: [trainingEventId, organizationId], references: [id, organizationId], onDelete: Restrict)
 
   @@unique([expenseId, trainingEventId])
@@ -2455,13 +2458,13 @@ model ExpenseTrainingEvent {
 }
 
 model ExpenseAsset {
-  id             String   @id @default(cuid())
-  organizationId String
-  expenseId      String
-  assetId        String
-  note           String?
+  id                       String   @id @default(cuid())
+  organizationId           String
+  expenseId                String
+  assetId                  String
+  note                     String?
   recordedByAuthIdentityId String
-  recordedAt     DateTime @default(now())
+  recordedAt               DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   expense      Expense      @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
@@ -2475,13 +2478,13 @@ model ExpenseAsset {
 }
 
 model ExpenseMaintenanceRecord {
-  id                  String   @id @default(cuid())
-  organizationId      String
-  expenseId           String
-  maintenanceRecordId String
-  note                String?
+  id                       String   @id @default(cuid())
+  organizationId           String
+  expenseId                String
+  maintenanceRecordId      String
+  note                     String?
   recordedByAuthIdentityId String
-  recordedAt          DateTime @default(now())
+  recordedAt               DateTime @default(now())
 
   organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   expense           Expense           @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
@@ -2495,13 +2498,13 @@ model ExpenseMaintenanceRecord {
 }
 
 model ExpenseInventoryItem {
-  id             String   @id @default(cuid())
-  organizationId String
-  expenseId      String
-  inventoryItemId String
-  note           String?
+  id                       String   @id @default(cuid())
+  organizationId           String
+  expenseId                String
+  inventoryItemId          String
+  note                     String?
   recordedByAuthIdentityId String
-  recordedAt     DateTime @default(now())
+  recordedAt               DateTime @default(now())
 
   organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   expense       Expense       @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
@@ -2519,12 +2522,12 @@ model ExpenseInventoryItem {
 /// storage, and tombstone semantics all live in the shared attachment
 /// domain; this table is only the same-organization join.
 model ExpenseAttachment {
-  id             String   @id @default(cuid())
-  organizationId String
-  expenseId      String
-  attachmentId   String
+  id                      String   @id @default(cuid())
+  organizationId          String
+  expenseId               String
+  attachmentId            String
   createdByAuthIdentityId String
-  createdAt      DateTime @default(now())
+  createdAt               DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   expense      Expense      @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
@@ -2543,14 +2546,14 @@ model ExpenseAttachment {
 /// `metadata` carries narrow JSON such as {from, to}, {kind, targetId,
 /// targetLabel}, or {reason}.
 model ExpenseEvent {
-  id             String           @id @default(cuid())
-  organizationId String
-  expenseId      String
-  type           ExpenseEventType
-  occurredAt     DateTime // when the recorded thing happened
+  id                  String           @id @default(cuid())
+  organizationId      String
+  expenseId           String
+  type                ExpenseEventType
+  occurredAt          DateTime // when the recorded thing happened
   actorAuthIdentityId String // scalar — survives identity deletion
-  metadata       Json?
-  createdAt      DateTime         @default(now()) // when SARbase wrote it
+  metadata            Json?
+  createdAt           DateTime         @default(now()) // when SARbase wrote it
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   expense      Expense      @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
@@ -2564,7 +2567,7 @@ model ExpenseEvent {
 /// Same contract as MaintenanceRecordChange/IncidentChange. A reason is
 /// required once the expense is APPROVED or already REIMBURSED.
 model ExpenseChange {
-  id             String   @id @default(cuid())
+  id             String  @id @default(cuid())
   organizationId String
   expenseId      String
   reason         String?
@@ -2594,5 +2597,37 @@ model ExpenseChange {
   expense      Expense      @relation(fields: [expenseId, organizationId], references: [id, organizationId], onDelete: Restrict)
 
   @@index([expenseId, createdAt])
+  @@index([organizationId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Issue #19 — export audit history.
+//
+// A durable record that a sensitive data export was generated: who, what
+// dataset, which normalized filters, how many rows. The exported file
+// itself is never stored — this is an audit event, not an archive.
+// ---------------------------------------------------------------------------
+
+/// Append-only audit record for one generated data export. Written inside
+/// the same transaction that reads the exported rows, so a CSV only ever
+/// leaves the application when its audit row also committed — an export
+/// whose audit insert fails produces no download.
+///
+/// actorAuthIdentityId is a plain scalar (no FK — the #38 actor policy):
+/// export history must survive auth identity deletion. `filters` stores
+/// only normalized structured filter metadata (date bounds, record ids,
+/// enum values); free-text filter input is deliberately not persisted.
+model DataExportEvent {
+  id                  String   @id @default(cuid())
+  organizationId      String
+  actorAuthIdentityId String
+  exportType          String // dataset key, e.g. "expenses"
+  format              String // "csv"
+  filters             Json?
+  recordCount         Int
+  createdAt           DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
   @@index([organizationId, createdAt])
 }

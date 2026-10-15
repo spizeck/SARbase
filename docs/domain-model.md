@@ -1151,3 +1151,34 @@ matching the surfaces those records already have; the registry's
 `adminOnly` flag is the seam for any future member-visible domains.
 Full contract, ranking rules, limits, and privacy posture:
 `docs/search.md`.
+
+## Reporting and data exports (issue #19)
+
+Reporting is a read-side projection over the records above — the only
+new model is the export audit row. The full contract is
+`docs/reporting.md`; the domain-model essentials:
+
+- **`DataExportEvent`** — append-only audit record written in the SAME
+  Repeatable Read transaction that produced an export's rows. If the
+  audit insert fails the export fails: no download escapes its audit
+  trail. `filters` stores normalized structured metadata (dates, ids,
+  enum values) only — free-text filter input is never persisted.
+  `actorAuthIdentityId` is a scalar (no FK), so export history survives
+  identity deletion. The exported file itself is never stored.
+- **CSV semantics** — UTF-8 with BOM, RFC 4180 quoting, declared stable
+  column order, `YYYY-MM-DD` date-only and ISO-8601-UTC instant
+  rendering, integer `amountMinor` + ISO `currency` money (with the
+  exponent-aware `amount` decimal as a convenience), no locale
+  dependence, and spreadsheet formula-injection mitigation applied only
+  to human-entered text cells. Every dataset exports stable ids so
+  files re-join relationally; one-to-many links export as relationship
+  tables (`attachment-links`, `expense-links`) rather than packed cells.
+- **Annual summary** — org-local-calendar-year aggregates:
+  participant-hours = Σ(durationMinutes × attendance) over COMPLETED
+  training events only; CANCELLED reported separately; incident counts
+  by status; maintenance/inspection/defect counts; expense counts and
+  per-currency totals that are never combined. Descriptive facts only —
+  no scoring, ranking, readiness, or accounting statements.
+- **Authorization** — every export and the reports page is org-scoped
+  ADMIN; foreign/fabricated identifiers collapse to an opaque 404, and
+  the pipeline fails closed when its audit write cannot persist.

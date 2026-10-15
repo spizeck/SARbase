@@ -268,6 +268,25 @@ status, reimbursement status, asset, and incident — combinable, all
 server-side, all preserved as query parameters. Asset/incident filters
 match through the typed link tables.
 
+## Export (issue #19)
+
+The `expenses` CSV dataset exports one row per expense: `id`,
+`organizationId`, `reference`, `expenseDate` (YYYY-MM-DD), the exact
+`amountMinor`/`currency` pair, `amount` (the exponent-aware decimal —
+`4215.38`), `vendorId` + `vendorName`, `category`, `description`,
+`status`, `reimbursementStatus`, `submittedByMemberId`/name,
+`paidByMemberId`/name, `submittedAt`, `reviewedAt` +
+`reviewedByAuthIdentityId` + `reviewNote`, `reimbursedAt` +
+`reimbursedByAuthIdentityId` + `reimbursementNote`, `attachmentCount`,
+`createdByAuthIdentityId`, `createdAt`, `updatedAt`. Context links
+export relationally via the `expense-links` dataset
+(`linkType`/`expenseId`/`targetId`); receipts join through
+`attachment-links` `linkType = EXPENSE`. Filters: org-local `from`/`to`
+on `expenseDate`, `vendor`, `status`, `reimbursementStatus`,
+`currency`, `category`. It remains recordkeeping, not accounting —
+there is no ledger semantics and no cross-currency total. See
+`docs/reporting.md`.
+
 ## Seams for later issues
 
 - **#18 search** — vendor `name`/`contactName`/`accountReference`/
