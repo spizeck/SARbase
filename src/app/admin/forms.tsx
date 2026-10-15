@@ -506,6 +506,102 @@ export function InvitationActionButtons({
   );
 }
 
+/**
+ * Organization role change with explicit confirmation (issue #74).
+ * The first click reveals a summary of the access being granted or
+ * removed; the change submits only on the second, confirming click.
+ */
+export function AccessRoleForm({
+  action,
+  currentRole,
+  targetLabel,
+  isSelf,
+}: {
+  action: BoundAction;
+  currentRole: "MEMBER" | "ADMIN";
+  /** Who the change applies to — shown inside the confirmation. */
+  targetLabel: string;
+  /** True when the administrator is changing their own grant. */
+  isSelf: boolean;
+}) {
+  const [state, formAction, pending] = useActionState(action, {});
+  const [confirming, setConfirming] = useState(false);
+  const nextRole = currentRole === "ADMIN" ? "MEMBER" : "ADMIN";
+
+  return (
+    <div className="space-y-2">
+      {confirming ? (
+        <form action={formAction} className="space-y-2">
+          <input type="hidden" name="role" value={nextRole} />
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-neutral-800">
+            {nextRole === "ADMIN" ? (
+              <p>
+                <strong>{targetLabel}</strong> will become an{" "}
+                <strong>administrator</strong>: they can manage members,
+                invitations, settings, records, and other accounts&apos; roles
+                in this organization. This is SARbase recordkeeping access only
+                — it says nothing about operational or command authority.
+              </p>
+            ) : (
+              <p>
+                <strong>{targetLabel}</strong> will become a{" "}
+                <strong>member</strong>: they lose all administrator
+                capabilities and keep only member self-service access.
+                {isSelf
+                  ? " You are changing your own access — you will no longer be able to administer this organization."
+                  : ""}
+              </p>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="submit"
+              disabled={pending}
+              className={
+                nextRole === "ADMIN"
+                  ? "rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-700 disabled:opacity-50"
+                  : "rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+              }
+            >
+              {pending
+                ? "Saving…"
+                : `Confirm: make ${nextRole === "ADMIN" ? "administrator" : "member"}`}
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              disabled={pending}
+              className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-800 hover:bg-neutral-100 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setConfirming(true)}
+          className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-800 hover:bg-neutral-100"
+        >
+          {currentRole === "ADMIN"
+            ? "Change to Member"
+            : "Change to Administrator"}
+        </button>
+      )}
+      {state.notice && (
+        <p className="text-sm text-amber-800" role="status">
+          {state.notice}
+        </p>
+      )}
+      {state.message && (
+        <p className={errorClass} role="alert">
+          {state.message}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function MemberUnitsForm({
   action,
   units,

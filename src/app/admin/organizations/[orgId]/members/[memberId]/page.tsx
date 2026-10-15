@@ -21,6 +21,7 @@ import {
   MEMBER_INVITATION_ACTION_LABELS,
 } from "@/lib/domain/invitations";
 import { resolveActorLabels } from "@/lib/domain/actors";
+import { getOrganizationAccessRole } from "@/lib/domain/access";
 import {
   getMemberAvailability,
   getMemberContactPreference,
@@ -106,6 +107,9 @@ export default async function MemberPage({
   const availabilityHistory = await listMemberAvailabilityHistory(member.id);
   const contactPreference = await getMemberContactPreference(member.id);
 
+  const memberAccessRole = member.authIdentityId
+    ? await getOrganizationAccessRole(orgId, member.authIdentityId)
+    : null;
   const invitation = await getMemberInvitation(member.id);
   // Issue #71 — contact-field audit trail (self-reported vs admin edits).
   const contactChanges = await listMemberContactChanges(member.id);
@@ -582,6 +586,23 @@ export default async function MemberPage({
                 : ""}
               . Unlinking removes that identity&apos;s member context — it does
               not remove the identity&apos;s organization access grants.
+            </p>
+            <p className="mt-2 text-sm text-neutral-600">
+              Organization role:{" "}
+              <span className="font-medium text-neutral-800">
+                {memberAccessRole === "ADMIN"
+                  ? "Administrator"
+                  : memberAccessRole === "MEMBER"
+                    ? "Member"
+                    : "None — no access grant"}
+              </span>{" "}
+              ·{" "}
+              <Link
+                href={`/admin/organizations/${orgId}/access`}
+                className="hover:underline"
+              >
+                Manage access &amp; roles
+              </Link>
             </p>
             <form
               action={unlinkIdentityFromMemberAction.bind(null, member.id)}

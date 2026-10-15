@@ -1074,7 +1074,14 @@ reference is `docs/authentication.md`. The model in brief:
 - **`OrganizationAccess`** — explicit `(authIdentityId, organizationId,
 role)` rows; the sole source of org-scoped authorization. `OrgRole` is
   `MEMBER` or `ADMIN` (application administration only — it implies no
-  SAR command authority or operational qualification).
+  SAR command authority or operational qualification). Admins change
+  roles in-app on the Access & roles screen (issue #74); the
+  last-active-administrator invariant is enforced under a per-org
+  advisory lock.
+- **`OrganizationAccessEvent`** — append-only audit history for access
+  role changes (`ROLE_CHANGED`): organization, target identity,
+  previous/new role, actor, timestamp. Actor and target are plain
+  scalar ids (no FKs) so history survives identity deletion.
 
 `Member` remains a domain person record, not an account. `MemberUnit`
 membership is never an authorization input — units are internal

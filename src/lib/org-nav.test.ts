@@ -42,6 +42,7 @@ describe("orgNavGroups", () => {
       "/incidents",
       "/training",
       "/members",
+      "/access",
       "/units",
       "/qualifications",
       "/expiring",
