@@ -22,6 +22,16 @@ export default function GlobalError({
 
   return (
     <html lang="en">
+      <head>
+        {/* This boundary owns its own <html> and cannot load
+            globals.css, so honor the OS scheme with a minimal media
+            query — the stored app preference is unreachable here. */}
+        <style
+          dangerouslySetInnerHTML={{
+            __html: `@media (prefers-color-scheme: dark){html,body,button{background-color:#0a0a0a !important;color:#fafafa !important}button{border-color:#404040 !important}}`,
+          }}
+        />
+      </head>
       <body
         style={{
           margin: 0,

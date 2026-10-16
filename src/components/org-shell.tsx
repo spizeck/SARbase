@@ -13,6 +13,8 @@ import { usePathname } from "next/navigation";
 import { signOutAction } from "@/app/login/actions";
 import { orgNavGroups } from "@/lib/org-nav";
 
+import { ThemeMenu } from "./theme";
+
 export interface ShellOrganization {
   id: string;
   name: string;
@@ -294,6 +296,7 @@ export function OrgShell({
         </div>
 
         <div className="ml-auto flex items-center gap-1">
+          <ThemeMenu />
           <Link
             href="/account"
             className="hidden rounded-md px-2 py-1 text-sm text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 sm:block"
@@ -330,7 +333,7 @@ export function OrgShell({
           aria-label="Navigation"
         >
           <div
-            className="absolute inset-0 bg-neutral-900/40"
+            className="absolute inset-0 bg-scrim"
             onClick={() => setDrawerOpen(false)}
             aria-hidden="true"
           />
