@@ -1,6 +1,6 @@
 import { ApiError, withApiObservability } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth/context";
-import { requireOrgAdminForAttachment } from "@/lib/auth/authorize";
+import { requireAttachmentForAdminOrOwner } from "@/lib/auth/authorize";
 import {
   AttachmentDeletedError,
   attachmentContentDisposition,
@@ -20,10 +20,12 @@ import { StorageError } from "@/lib/storage/provider";
  *
  * Files are PRIVATE — there is no public URL shape for stored objects
  * and no signed URLs are issued or persisted. Every request streams the
- * bytes through this route AFTER the attachment row is resolved and the
- * caller's ADMIN grant for the attachment's own organizationId is
- * verified. An attachment id outside the caller's scope is
- * indistinguishable from a nonexistent one.
+ * bytes through this route AFTER the attachment row is resolved and
+ * authorization is verified: an ADMIN grant on the attachment's own
+ * organizationId, or — issue #71 — membership scope when the file is
+ * linked to the caller's OWN submission or qualification record. An
+ * attachment id outside the caller's scope is indistinguishable from a
+ * nonexistent one.
  *
  * Response posture: download-only. `Content-Disposition: attachment`
  * plus `nosniff` keep even permitted types (PDF, images) from executing
@@ -57,7 +59,7 @@ async function handleGet(_request: Request, context: RouteContext) {
 
   let attachment;
   try {
-    attachment = await requireOrgAdminForAttachment(ctx, attachmentId);
+    attachment = await requireAttachmentForAdminOrOwner(ctx, attachmentId);
   } catch {
     // AuthorizationError deliberately collapses to a generic 404 — no
     // existence disclosure for foreign-org or fabricated ids.

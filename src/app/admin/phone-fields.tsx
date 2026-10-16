@@ -54,6 +54,8 @@ export function PhoneFields({
   defaultPhone,
   errors,
   required = false,
+  fieldName = "phone",
+  regionFieldName = "phoneRegion",
 }: {
   idPrefix: string;
   regions: PhoneRegionOption[];
@@ -61,6 +63,13 @@ export function PhoneFields({
   defaultPhone?: string | null;
   errors?: string[];
   required?: boolean;
+  /**
+   * Submitted field names — default `phone`/`phoneRegion`; the
+   * emergency-contact pair uses `emergencyContactPhone` /
+   * `emergencyContactPhoneRegion` (issue #71).
+   */
+  fieldName?: string;
+  regionFieldName?: string;
 }) {
   const byRegion = useMemo(
     () => new Map(regions.map((r) => [r.region, r])),
@@ -270,7 +279,7 @@ export function PhoneFields({
         <input
           ref={nationalRef}
           id={`${idPrefix}-phone`}
-          name="phone"
+          name={fieldName}
           type="tel"
           inputMode="tel"
           autoComplete="off"
@@ -284,7 +293,7 @@ export function PhoneFields({
           className="min-w-0 flex-1 rounded-r-md border border-l-0 border-neutral-300 px-3 py-2 text-sm"
         />
       </div>
-      <input type="hidden" name="phoneRegion" value={field.region} />
+      <input type="hidden" name={regionFieldName} value={field.region} />
       {errors?.length ? (
         <p id={`${idPrefix}-phone-error`} className={errorClass} role="alert">
           {errors.join(" ")}

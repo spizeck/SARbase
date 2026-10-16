@@ -202,6 +202,57 @@ qualification inference, or callout dispatch — those are operational
 decisions for the organization, and later issues (notifications,
 callouts) build on these records without changing their factual nature.
 
+## Member self-service — contact details and submissions
+
+Issue #71 widens what a signed-in member can do on their own linked
+member record from `/account`, and adds the staged path by which
+member-claimed information becomes verified.
+
+### Self-edited contact fields — `MemberContactChange`
+
+Members may edit `email`, `phone`, `emergencyContactName`, and
+`emergencyContactPhone` on their own record. `displayName` remains
+administrative. Every write — member self-edit or admin edit through
+`updateMember` — appends one `MemberContactChange` row per changed field
+inside the same transaction, so the contact history is one continuous,
+attributable record (`selfReported` marks who wrote it). Actor ids are
+plain scalars per the shared audit policy: history survives identity
+deletion.
+
+Authorization is identical to availability self-service: the submitted
+`memberId` is an untrusted selector intersected with
+`linkedMembersWithAccess` — the member must link to the caller's
+identity AND sit in an organization with a current `OrganizationAccess`
+row. Anything else is the opaque "Not found."
+
+### `MemberSubmission` — staged claims and corrections
+
+A submission is something a member **asked** their organization to
+record — a qualification claim (`QUALIFICATION_CLAIM`) or a correction
+to an existing record (`RECORD_CORRECTION`). It is inert while
+`PENDING`: it creates no `MemberQualification`, feeds no readiness
+computation, and is clearly labelled self-reported.
+
+- The claim payload names the org's `QualificationDefinition` plus
+  claimed `issuedOn`/`expiresOn`/`issuer`/`reference`; a correction can
+  point at one of the member's own `MemberQualification` records. All
+  references go through composite org-scoped foreign keys.
+- Evidence files are ordinary attachments linked through
+  `MemberSubmissionAttachment` — same private storage, upload policy,
+  and GuardDuty scan gating as every other entity. Files are accepted
+  only while `PENDING` (the domain re-checks inside the write
+  transaction). Download authorization admits the org's admins and the
+  owning member.
+- Review (`reviewMemberSubmission`) is serialized by a row lock:
+  `APPROVED` on a qualification claim creates the verified
+  `MemberQualification` and copies the evidence links onto it — in the
+  same transaction, so an approval can never be recorded without its
+  record. `REJECTED` requires a note shown verbatim to the member.
+  Either way the row keeps `reviewedByAuthIdentityId`, `reviewedAt`, and
+  `createdMemberQualificationId` for the audit trail.
+- Admins review from `/admin/organizations/[orgId]/reviews`; members see
+  status and feedback on `/account`.
+
 ## Notification requests and delivery records
 
 Issue #13 adds the notification foundation: the durable records behind
