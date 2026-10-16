@@ -1,6 +1,12 @@
 "use client";
 
-import { useActionState, useState, useTransition } from "react";
+import {
+  useActionState,
+  useEffect,
+  useReducer,
+  useState,
+  useTransition,
+} from "react";
 
 import type { PhoneRegionOption } from "@/lib/contact";
 
@@ -507,6 +513,50 @@ export function InvitationActionButtons({
 }
 
 /**
+ * Role-change confirmation state (issue #74). The pending intent records
+ * the exact role the operator chose — never re-derived from the current
+ * role — so a successful change that flips the rendered role cannot
+ * silently re-purpose an open confirmation into the opposite action.
+ */
+export interface RoleChangeUIState {
+  /** The role awaiting confirmation, or null when no change is pending. */
+  intent: "MEMBER" | "ADMIN" | null;
+}
+
+export type RoleChangeUIEvent =
+  | { type: "open"; role: "MEMBER" | "ADMIN" }
+  | { type: "cancel" }
+  | { type: "settled"; result: ActionState };
+
+export function roleChangeUIReducer(
+  state: RoleChangeUIState,
+  event: RoleChangeUIEvent,
+): RoleChangeUIState {
+  switch (event.type) {
+    case "open":
+      return { intent: event.role };
+    case "cancel":
+      return { intent: null };
+    case "settled":
+      // A completed request ends the intent: a changed role returns
+      // updatedRole, a same-role request returns a notice. An error
+      // keeps the confirmation open so the operator sees what failed.
+      if (event.result.updatedRole || event.result.notice) {
+        return state.intent === null ? state : { intent: null };
+      }
+      return state;
+  }
+}
+
+/** Blocks a second submission while a request is already in flight. */
+export function preventSubmitWhilePending(
+  pending: boolean,
+  event: { preventDefault: () => void },
+) {
+  if (pending) event.preventDefault();
+}
+
+/**
  * Organization role change with explicit confirmation (issue #74).
  * The first click reveals a summary of the access being granted or
  * removed; the change submits only on the second, confirming click.
@@ -525,16 +575,25 @@ export function AccessRoleForm({
   isSelf: boolean;
 }) {
   const [state, formAction, pending] = useActionState(action, {});
-  const [confirming, setConfirming] = useState(false);
+  const [ui, dispatch] = useReducer(roleChangeUIReducer, { intent: null });
   const nextRole = currentRole === "ADMIN" ? "MEMBER" : "ADMIN";
+  const intentRole = ui.intent;
+
+  useEffect(() => {
+    dispatch({ type: "settled", result: state });
+  }, [state]);
 
   return (
     <div className="space-y-2">
-      {confirming ? (
-        <form action={formAction} className="space-y-2">
-          <input type="hidden" name="role" value={nextRole} />
+      {intentRole !== null ? (
+        <form
+          action={formAction}
+          onSubmit={(event) => preventSubmitWhilePending(pending, event)}
+          className="space-y-2"
+        >
+          <input type="hidden" name="role" value={intentRole} />
           <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-neutral-800">
-            {nextRole === "ADMIN" ? (
+            {intentRole === "ADMIN" ? (
               <p>
                 <strong>{targetLabel}</strong> will become an{" "}
                 <strong>administrator</strong>: they can manage members,
@@ -558,18 +617,18 @@ export function AccessRoleForm({
               type="submit"
               disabled={pending}
               className={
-                nextRole === "ADMIN"
+                intentRole === "ADMIN"
                   ? "rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-700 disabled:opacity-50"
                   : "rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
               }
             >
               {pending
                 ? "Saving…"
-                : `Confirm: make ${nextRole === "ADMIN" ? "administrator" : "member"}`}
+                : `Confirm: make ${intentRole === "ADMIN" ? "administrator" : "member"}`}
             </button>
             <button
               type="button"
-              onClick={() => setConfirming(false)}
+              onClick={() => dispatch({ type: "cancel" })}
               disabled={pending}
               className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-800 hover:bg-neutral-100 disabled:opacity-50"
             >
@@ -580,7 +639,7 @@ export function AccessRoleForm({
       ) : (
         <button
           type="button"
-          onClick={() => setConfirming(true)}
+          onClick={() => dispatch({ type: "open", role: nextRole })}
           className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-800 hover:bg-neutral-100"
         >
           {currentRole === "ADMIN"
@@ -588,7 +647,13 @@ export function AccessRoleForm({
             : "Change to Administrator"}
         </button>
       )}
-      {state.notice && (
+      {state.updatedRole && intentRole === null && (
+        <p className="text-sm text-green-800" role="status">
+          {targetLabel} is now{" "}
+          {state.updatedRole === "ADMIN" ? "an administrator" : "a member"}.
+        </p>
+      )}
+      {state.notice && intentRole === null && (
         <p className="text-sm text-amber-800" role="status">
           {state.notice}
         </p>
@@ -598,6 +663,11 @@ export function AccessRoleForm({
           {state.message}
         </p>
       )}
+      {state.fieldErrors?.role?.length ? (
+        <p className={errorClass} role="alert">
+          {state.fieldErrors.role.join(" ")}
+        </p>
+      ) : null}
     </div>
   );
 }

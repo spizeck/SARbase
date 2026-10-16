@@ -309,6 +309,12 @@ export interface ActionState {
    * form switches to evidence-upload mode for this submission.
    */
   submissionId?: string;
+  /**
+   * The role just written by setOrganizationAccessRoleAction — the
+   * access form uses it to close its confirmation and name the user
+   * and new role in a success notice.
+   */
+  updatedRole?: "MEMBER" | "ADMIN";
 }
 
 function zodErrors(error: {
@@ -1047,7 +1053,7 @@ export async function setOrganizationAccessRoleAction(
   if (!result.changed) {
     return { notice: "That account already has this role — nothing changed." };
   }
-  return {};
+  return { updatedRole: parsed.data };
 }
 
 /* ------------------------------------------------------------------ */

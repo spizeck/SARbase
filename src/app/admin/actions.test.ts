@@ -586,7 +586,7 @@ describe("setOrganizationAccessRoleAction (issue #74)", () => {
       {},
       formData({ role: "ADMIN" }),
     );
-    expect(result).toEqual({});
+    expect(result).toEqual({ updatedRole: "ADMIN" });
     expect(setOrganizationAccessRoleMock).toHaveBeenCalledWith(
       ORG_A,
       "ident-target",
