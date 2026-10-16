@@ -35,9 +35,43 @@ enum AuthIdentityStatus {
 // Application-level roles within an organization. ADMIN means
 // administration of SARbase records — it implies nothing about SAR
 // command authority, operational competence, or launch authority.
+// MANAGER is delegation: it carries only the explicit capabilities on
+// the OrganizationAccess row, never account administration.
 enum OrgRole {
   MEMBER
+  MANAGER
   ADMIN
+}
+
+// Delegated capability a MANAGER may hold in one organization (issue
+// #84). Grants are deny-by-default and evaluated against the current
+// row on every request. ADMIN holds every capability implicitly; the
+// enum deliberately has no access/invitation/identity capability —
+// account administration is never delegable.
+enum OrgCapability {
+  // Callouts and incidents: create, edit, transitions, participants.
+  OPERATIONS_MANAGE
+  // Training events and attendance.
+  TRAINING_MANAGE
+  // Qualification definitions and member qualification records.
+  QUALIFICATIONS_MANAGE
+  // Review/approve member submissions — official verification.
+  QUALIFICATIONS_VERIFY
+  // Member records, statuses, units, availability, contact preferences.
+  MEMBERS_MANAGE
+  // Assets, storage locations, inventory, inspections, maintenance,
+  // defects, meters.
+  EQUIPMENT_MANAGE
+  // Vendors and routine expense entry/editing.
+  FINANCE_MANAGE
+  // Expense review transitions and reimbursement marking.
+  FINANCE_APPROVE
+  // Organization documents and attachment administration.
+  DOCUMENTS_MANAGE
+  // Operational notifications.
+  NOTIFICATIONS_MANAGE
+  // Organization reports and CSV exports.
+  REPORTS_EXPORT
 }
 
 // Administrative lifecycle for a qualification definition. INACTIVE
@@ -312,6 +346,10 @@ model OrganizationAccess {
   organizationId String
   authIdentityId String
   role           OrgRole  @default(MEMBER)
+  // Explicit capability grants — meaningful only while role is
+  // MANAGER. Cleared on every role change so a later promotion can
+  // never silently restore stale privileges.
+  capabilities   OrgCapability[]
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -328,6 +366,7 @@ model OrganizationAccess {
 // keeps its own history (MemberInvitationEvent, operational logs).
 enum OrganizationAccessAction {
   ROLE_CHANGED
+  CAPABILITIES_CHANGED
 }
 
 // The durable who/what/when behind "role changes are auditable"
@@ -350,6 +389,12 @@ model OrganizationAccessEvent {
   action               OrganizationAccessAction
   previousRole         OrgRole
   role                 OrgRole
+  // Capability sets before/after the change — populated for
+  // CAPABILITIES_CHANGED and on ROLE_CHANGED rows that entered or left
+  // MANAGER, so the audit trail explains the effective permissions.
+  previousCapabilities OrgCapability[]
+  capabilities         OrgCapability[]
+  reason               String?
   actorAuthIdentityId  String?
   createdAt            DateTime                 @default(now())
 

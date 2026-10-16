@@ -39,6 +39,7 @@ function ctxFor(organizationId: string, role: "ADMIN" | "MEMBER"): AuthContext {
         organizationId,
         authIdentityId: identity.id,
         role,
+        capabilities: [],
         createdAt: new Date(),
         updatedAt: new Date(),
       },

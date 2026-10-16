@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import type { MemberInvitation } from "@prisma/client";
+import type { MemberInvitation, OrgRole } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import { log, logExpected, summarizeError } from "@/lib/logging";
@@ -226,10 +226,14 @@ function isUniqueViolation(error: unknown): boolean {
 function buildInvitationEmail(input: {
   organizationName: string;
   memberDisplayName: string;
-  role: "MEMBER" | "ADMIN";
+  role: OrgRole;
 }) {
   const roleLine =
-    input.role === "ADMIN" ? "administrator access to" : "member access to";
+    input.role === "ADMIN"
+      ? "administrator access to"
+      : input.role === "MANAGER"
+        ? "manager access to"
+        : "member access to";
   return {
     subject: `You're invited to join ${input.organizationName} on SARbase`,
     bodyText: [

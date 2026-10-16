@@ -80,12 +80,21 @@ it cannot resolve a context even while a cookie remains valid.
 
 ### Roles
 
-`OrgRole = MEMBER | ADMIN`, evaluated per organization:
+`OrgRole = MEMBER | MANAGER | ADMIN`, evaluated per organization:
 
-- `ADMIN` — application administration only: org/unit/member CRUD and
-  identity linking for that organization. It implies **nothing** about
-  SAR command authority, operational competence, launch authority, or
-  readiness. SARbase does not practice search and rescue.
+- `ADMIN` — application administration only: org/unit/member CRUD,
+  identity linking, access grants, and capability assignments for that
+  organization. It implies **nothing** about SAR command authority,
+  operational competence, launch authority, or readiness. SARbase does
+  not practice search and rescue.
+- `MANAGER` — delegated operational administration (issue #84). A
+  manager holds exactly the explicit `OrgCapability` grants on their
+  `OrganizationAccess` row — deny-by-default. Capabilities can be
+  granted and revoked per organization; the registry in
+  `src/lib/auth/capabilities.ts` is the single source of truth.
+  Account administration (invitations, access grants, identity
+  linking, organization settings) is never delegable — no capability
+  covers it.
 - `MEMBER` — authenticated ordinary member. Currently proves identity
   and linked member context (see `/account`); it grants no admin
   capabilities. Future self-service features build on it.
@@ -133,6 +142,15 @@ Centralized helpers in `src/lib/auth/`:
   training events and their attendance (issue #9)
 - `linkedMembersWithAccess(ctx)` — the member records visible to this
   identity (access boundary; see below)
+- `hasOrgCapability` / `requireOrgCapability` /
+  `requireOrgCapabilityOrNotFound` — delegated-capability checks
+  (issue #84): ADMIN implies all; MANAGER holds its row's explicit
+  grants; MEMBER holds none
+- `isOrgStaff` / `requireOrgStaffOrNotFound` — the admin-workspace
+  shell gate (ADMIN or MANAGER); every destination enforces its own
+  capability beneath it
+- `orgCapabilities(ctx, orgId)` — the effective capability set for
+  navigation/UI filtering
 
 Every `/admin` server action follows this shape. For example
 `updateMemberAction(memberId, …)` resolves the member server-side and
@@ -162,12 +180,21 @@ status, pending invitations, and the audited change history.
   active administrator.
 - Every applied change writes an `OrganizationAccessEvent` row in the
   same transaction — organization, target identity, previous/new role,
-  actor, timestamp — so the history cannot exist without the change it
-  describes. Because authorization re-reads `OrganizationAccess` on
-  every request, a changed role takes effect immediately.
+  previous/new capability sets, actor, timestamp — so the history
+  cannot exist without the change it describes. Because authorization
+  re-reads `OrganizationAccess` on every request, a changed role or
+  capability takes effect immediately.
+- MANAGER transitions manage capability grants deterministically:
+  entering the role applies the documented standard set, and leaving
+  it (in either direction) clears every grant — a later re-promotion
+  starts from the standard set rather than silently restoring stale
+  privileges. Capability edits are audited as `CAPABILITIES_CHANGED`
+  events under the same advisory lock, and are refused on any
+  non-MANAGER row.
 - A pending invitation's role is never edited in place: revoke it and
   re-invite with the intended role (both steps are already audited by
-  `MemberInvitationEvent`).
+  `MemberInvitationEvent`). Invitations grant only MEMBER or ADMIN —
+  managers are assigned on the access screen, never by invitation.
 
 ## Initial administrator bootstrap
 

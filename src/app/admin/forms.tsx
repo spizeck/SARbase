@@ -8,6 +8,8 @@ import {
   useTransition,
 } from "react";
 
+import type { OrgRole } from "@prisma/client";
+
 import type { PhoneRegionOption } from "@/lib/contact";
 
 import type { ActionState } from "./actions";
@@ -520,11 +522,11 @@ export function InvitationActionButtons({
  */
 export interface RoleChangeUIState {
   /** The role awaiting confirmation, or null when no change is pending. */
-  intent: "MEMBER" | "ADMIN" | null;
+  intent: OrgRole | null;
 }
 
 export type RoleChangeUIEvent =
-  | { type: "open"; role: "MEMBER" | "ADMIN" }
+  | { type: "open"; role: OrgRole }
   | { type: "cancel" }
   | { type: "settled"; result: ActionState };
 
@@ -568,7 +570,7 @@ export function AccessRoleForm({
   isSelf,
 }: {
   action: BoundAction;
-  currentRole: "MEMBER" | "ADMIN";
+  currentRole: OrgRole;
   /** Who the change applies to — shown inside the confirmation. */
   targetLabel: string;
   /** True when the administrator is changing their own grant. */
@@ -576,6 +578,9 @@ export function AccessRoleForm({
 }) {
   const [state, formAction, pending] = useActionState(action, {});
   const [ui, dispatch] = useReducer(roleChangeUIReducer, { intent: null });
+  // Interim two-way toggle pending the full Manager UI: MANAGER rows
+  // offer promotion to administrator; the domain clears their
+  // capability grants on any role change regardless of direction.
   const nextRole = currentRole === "ADMIN" ? "MEMBER" : "ADMIN";
   const intentRole = ui.intent;
 
@@ -650,7 +655,12 @@ export function AccessRoleForm({
       {state.updatedRole && intentRole === null && (
         <p className="text-sm text-green-800" role="status">
           {targetLabel} is now{" "}
-          {state.updatedRole === "ADMIN" ? "an administrator" : "a member"}.
+          {state.updatedRole === "ADMIN"
+            ? "an administrator"
+            : state.updatedRole === "MANAGER"
+              ? "a manager"
+              : "a member"}
+          .
         </p>
       )}
       {state.notice && intentRole === null && (

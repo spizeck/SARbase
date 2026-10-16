@@ -37,11 +37,16 @@ vi.mock("./context", async (importOriginal) => ({
   getAuthContext: getAuthContextMock,
 }));
 
+import type { OrgCapability } from "@prisma/client";
+
 import {
   adminOrganizationIds,
   getAuthContextOrThrow,
   hasOrgAccess,
+  hasOrgCapability,
   isOrgAdmin,
+  isOrgStaff,
+  orgCapabilities,
   requireAuth,
   requireOrgAccess,
   requireOrgAdmin,
@@ -50,6 +55,9 @@ import {
   requireOrgAdminForCallout,
   requireOrgAdminForCalloutInvitation,
   requireOrgAdminOrNotFound,
+  requireOrgCapability,
+  requireOrgCapabilityOrNotFound,
+  requireOrgStaffOrNotFound,
 } from "./authorize";
 import {
   AuthenticationError,
@@ -60,11 +68,17 @@ import {
 const ORG_A = "org-a";
 const ORG_B = "org-b";
 
-function ctx(role: string | null, orgId = ORG_A): AuthContext {
+function ctx(
+  role: string | null,
+  orgId = ORG_A,
+  capabilities: OrgCapability[] = [],
+): AuthContext {
   return {
     identity: { id: "ident-1", status: "ACTIVE" },
     members: [],
-    access: role ? [{ id: "acc-1", organizationId: orgId, role }] : [],
+    access: role
+      ? [{ id: "acc-1", organizationId: orgId, role, capabilities }]
+      : [],
   } as unknown as AuthContext;
 }
 
@@ -273,5 +287,91 @@ describe("requireOrgAdminForCalloutInvitation", () => {
     await expect(
       requireOrgAdminForCalloutInvitation(ctx("ADMIN", ORG_B), "inv-a"),
     ).rejects.toBeInstanceOf(AuthorizationError);
+  });
+});
+
+describe("capability authorization (issue #84)", () => {
+  const CAP = "EQUIPMENT_MANAGE" as OrgCapability;
+  const OTHER_CAP = "FINANCE_APPROVE" as OrgCapability;
+
+  it("ADMIN holds every capability implicitly", () => {
+    expect(hasOrgCapability(ctx("ADMIN"), ORG_A, CAP)).toBe(true);
+    expect(hasOrgCapability(ctx("ADMIN"), ORG_A, OTHER_CAP)).toBe(true);
+  });
+
+  it("MANAGER holds exactly the granted capabilities", () => {
+    const manager = ctx("MANAGER", ORG_A, [CAP]);
+    expect(hasOrgCapability(manager, ORG_A, CAP)).toBe(true);
+    expect(hasOrgCapability(manager, ORG_A, OTHER_CAP)).toBe(false);
+  });
+
+  it("a MANAGER with no grants holds nothing", () => {
+    expect(hasOrgCapability(ctx("MANAGER"), ORG_A, CAP)).toBe(false);
+  });
+
+  it("MEMBER never holds capabilities", () => {
+    expect(hasOrgCapability(ctx("MEMBER"), ORG_A, CAP)).toBe(false);
+    expect(hasOrgCapability(ctx(null), ORG_A, CAP)).toBe(false);
+  });
+
+  it("stale capabilities on a non-MANAGER row grant nothing", () => {
+    // Domain logic clears grants on role change; even if a row were
+    // left inconsistent, a MEMBER/ADMIN row's stored capabilities are
+    // never consulted for MEMBER (deny-by-default).
+    const member = ctx("MEMBER", ORG_A, [CAP]);
+    expect(hasOrgCapability(member, ORG_A, CAP)).toBe(false);
+  });
+
+  it("capabilities are scoped to one organization", () => {
+    const manager = ctx("MANAGER", ORG_A, [CAP]);
+    expect(hasOrgCapability(manager, ORG_B, CAP)).toBe(false);
+    expect(() => requireOrgCapability(manager, ORG_B, CAP)).toThrow(
+      AuthorizationError,
+    );
+  });
+
+  it("requireOrgCapability throws the opaque AuthorizationError", () => {
+    expect(() => requireOrgCapability(ctx("MANAGER"), ORG_A, CAP)).toThrow(
+      AuthorizationError,
+    );
+    expect(() =>
+      requireOrgCapability(ctx("MANAGER", ORG_A, [CAP]), ORG_A, CAP),
+    ).not.toThrow();
+    expect(() => requireOrgCapability(ctx("ADMIN"), ORG_A, CAP)).not.toThrow();
+  });
+
+  it("isOrgStaff accepts ADMIN and MANAGER only", () => {
+    expect(isOrgStaff(ctx("ADMIN"), ORG_A)).toBe(true);
+    expect(isOrgStaff(ctx("MANAGER"), ORG_A)).toBe(true);
+    expect(isOrgStaff(ctx("MEMBER"), ORG_A)).toBe(false);
+    expect(isOrgStaff(ctx(null), ORG_A)).toBe(false);
+  });
+
+  it("orgCapabilities reports the effective set per role", () => {
+    expect(orgCapabilities(ctx("ADMIN"), ORG_A).length).toBeGreaterThan(0);
+    expect(orgCapabilities(ctx("MANAGER", ORG_A, [CAP]), ORG_A)).toEqual([CAP]);
+    expect(orgCapabilities(ctx("MEMBER"), ORG_A)).toEqual([]);
+    expect(orgCapabilities(ctx("ADMIN"), ORG_B)).toEqual([]);
+  });
+
+  it("requireOrgCapabilityOrNotFound 404s denied access", async () => {
+    getAuthContextMock.mockResolvedValue(ctx("MANAGER"));
+    await requireOrgCapabilityOrNotFound(ORG_A, CAP);
+    expect(notFoundMock).toHaveBeenCalled();
+
+    vi.clearAllMocks();
+    getAuthContextMock.mockResolvedValue(ctx("MANAGER", ORG_A, [CAP]));
+    await requireOrgCapabilityOrNotFound(ORG_A, CAP);
+    expect(notFoundMock).not.toHaveBeenCalled();
+  });
+
+  it("requireOrgStaffOrNotFound admits staff and rejects members", async () => {
+    getAuthContextMock.mockResolvedValue(ctx("MANAGER"));
+    await requireOrgStaffOrNotFound(ORG_A);
+    expect(notFoundMock).not.toHaveBeenCalled();
+
+    getAuthContextMock.mockResolvedValue(ctx("MEMBER"));
+    await requireOrgStaffOrNotFound(ORG_A);
+    expect(notFoundMock).toHaveBeenCalled();
   });
 });

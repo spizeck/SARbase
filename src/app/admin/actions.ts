@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { Prisma } from "@prisma/client";
+import { Prisma, type OrgRole } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import { updateOrganization } from "@/lib/domain/organization";
@@ -314,7 +314,7 @@ export interface ActionState {
    * access form uses it to close its confirmation and name the user
    * and new role in a success notice.
    */
-  updatedRole?: "MEMBER" | "ADMIN";
+  updatedRole?: OrgRole;
 }
 
 function zodErrors(error: {

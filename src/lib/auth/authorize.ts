@@ -1,8 +1,10 @@
 import { notFound, redirect } from "next/navigation";
+import type { OrgCapability } from "@prisma/client";
 
 import { log } from "@/lib/logging";
 import { prisma } from "@/lib/prisma";
 
+import { ORG_CAPABILITIES } from "./capabilities";
 import {
   AuthenticationError,
   AuthorizationError,
@@ -101,6 +103,101 @@ export function requireOrgAccess(
     logDenial("authz.org_access_denied", ctx, { organizationId });
     throw new AuthorizationError();
   }
+}
+
+/**
+ * Delegated-capability checks (issue #84). ADMIN holds every
+ * capability implicitly; MANAGER holds exactly the capabilities on its
+ * current OrganizationAccess row; MEMBER holds none. Grants are read
+ * from the verified session's access rows — evaluated against current
+ * database state on every request, so revocations apply immediately.
+ */
+export function hasOrgCapability(
+  ctx: AuthContext,
+  organizationId: string,
+  capability: OrgCapability,
+): boolean {
+  return ctx.access.some(
+    (a) =>
+      a.organizationId === organizationId &&
+      (a.role === "ADMIN" ||
+        (a.role === "MANAGER" && a.capabilities.includes(capability))),
+  );
+}
+
+/**
+ * Whether the caller can see the admin workspace at all — ADMIN or
+ * MANAGER. This only gates the shell; every destination enforces its
+ * own capability, and a MANAGER with no grants sees an empty shell.
+ */
+export function isOrgStaff(ctx: AuthContext, organizationId: string): boolean {
+  return ctx.access.some(
+    (a) =>
+      a.organizationId === organizationId &&
+      (a.role === "ADMIN" || a.role === "MANAGER"),
+  );
+}
+
+/** Effective capability set for UI/nav filtering. ADMIN → all. */
+export function orgCapabilities(
+  ctx: AuthContext,
+  organizationId: string,
+): OrgCapability[] {
+  const grant = ctx.access.find((a) => a.organizationId === organizationId);
+  if (!grant) return [];
+  if (grant.role === "ADMIN") return ORG_CAPABILITIES.slice();
+  if (grant.role === "MANAGER") return grant.capabilities;
+  return [];
+}
+
+/**
+ * Require an explicit capability grant (or ADMIN) in the given
+ * organization. `organizationId` remains an untrusted selector — it
+ * only selects WHICH grant must carry the capability.
+ */
+export function requireOrgCapability(
+  ctx: AuthContext,
+  organizationId: string,
+  capability: OrgCapability,
+): void {
+  if (!hasOrgCapability(ctx, organizationId, capability)) {
+    logDenial("authz.org_capability_denied", ctx, {
+      organizationId,
+      capability,
+    });
+    throw new AuthorizationError();
+  }
+}
+
+/** notFound() variant for pages — no existence disclosure. */
+export async function requireOrgCapabilityOrNotFound(
+  organizationId: string,
+  capability: OrgCapability,
+): Promise<AuthContext> {
+  const ctx = await requireAuth();
+  if (!hasOrgCapability(ctx, organizationId, capability)) {
+    logDenial("authz.org_capability_denied", ctx, {
+      organizationId,
+      capability,
+    });
+    notFound();
+  }
+  return ctx;
+}
+
+/**
+ * Staff-workspace gate (admin layout): ADMIN or MANAGER of the org.
+ * Member visitors get the same opaque 404 as an inaccessible org.
+ */
+export async function requireOrgStaffOrNotFound(
+  organizationId: string,
+): Promise<AuthContext> {
+  const ctx = await requireAuth();
+  if (!isOrgStaff(ctx, organizationId)) {
+    logDenial("authz.org_staff_denied", ctx, { organizationId });
+    notFound();
+  }
+  return ctx;
 }
 
 /** notFound() variant for pages — no existence disclosure. */

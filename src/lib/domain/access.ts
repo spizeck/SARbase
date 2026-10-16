@@ -1,5 +1,6 @@
-import type { OrgRole } from "@prisma/client";
+import type { OrgCapability, OrgRole } from "@prisma/client";
 
+import { STANDARD_MANAGER_CAPABILITIES } from "@/lib/auth/capabilities";
 import { log } from "@/lib/logging";
 import { prisma } from "@/lib/prisma";
 
@@ -42,9 +43,25 @@ export class LastAdministratorError extends Error {
   }
 }
 
+/**
+ * Capability grants can only be edited while the target is a MANAGER —
+ * granting capabilities to a MEMBER or ADMIN would be dead state that a
+ * later role change could silently activate.
+ */
+export class NotManagerError extends Error {
+  constructor() {
+    super(
+      "Capabilities can only be assigned to a manager. Change the account's role to Manager first.",
+    );
+    this.name = "NotManagerError";
+  }
+}
+
 export interface OrganizationAccessRow {
   authIdentityId: string;
   role: OrgRole;
+  /** Granted capabilities — meaningful only while role is MANAGER. */
+  capabilities: OrgCapability[];
   identityEmail: string | null;
   identityStatus: "ACTIVE" | "DISABLED";
   /** Display name of the member record linked to this identity, if any. */
@@ -84,6 +101,7 @@ export async function listOrganizationAccess(
     return {
       authIdentityId: row.authIdentityId,
       role: row.role,
+      capabilities: row.capabilities,
       identityEmail: row.authIdentity.email,
       identityStatus: row.authIdentity.status,
       memberDisplayName: member?.displayName ?? null,
@@ -168,13 +186,14 @@ export async function setOrganizationAccessRole(
 
     if (
       access.role === "ADMIN" &&
-      role === "MEMBER" &&
+      role !== "ADMIN" &&
       access.authIdentity.status === "ACTIVE"
     ) {
       // "Active administrator" means the grant exists AND the identity
       // can still sign in — a disabled account cannot exercise the
       // role, so it does not count as a surviving admin (and demoting
       // one is never the change that strands the organization).
+      // MANAGER never counts — it cannot administer access.
       const otherActiveAdmins = await tx.organizationAccess.count({
         where: {
           organizationId,
@@ -186,9 +205,16 @@ export async function setOrganizationAccessRole(
       if (otherActiveAdmins === 0) throw new LastAdministratorError();
     }
 
+    // Capability bookkeeping on role change (issue #84): entering
+    // MANAGER applies the documented standard set; leaving it clears
+    // every grant — a later re-promotion starts from the standard set
+    // again rather than silently restoring stale privileges.
+    const capabilities =
+      role === "MANAGER" ? [...STANDARD_MANAGER_CAPABILITIES] : [];
+
     await tx.organizationAccess.update({
       where: { id: access.id },
-      data: { role },
+      data: { role, capabilities },
     });
     await tx.organizationAccessEvent.create({
       data: {
@@ -197,6 +223,8 @@ export async function setOrganizationAccessRole(
         action: "ROLE_CHANGED",
         previousRole: access.role,
         role,
+        previousCapabilities: access.capabilities,
+        capabilities,
         actorAuthIdentityId,
       },
     });
@@ -212,6 +240,88 @@ export async function setOrganizationAccessRole(
       entityId: targetAuthIdentityId,
       organizationId,
       organizationRole: role,
+    });
+  }
+  return result;
+}
+
+/**
+ * Replace a MANAGER's capability grants (issue #84).
+ *
+ * Runs under the same per-organization advisory lock as role changes —
+ * a capability edit racing a role change cannot resurrect grants the
+ * role change just cleared (or grant capabilities onto a row that is
+ * no longer MANAGER). Idempotent by set equality: re-saving the
+ * current grants writes no audit row.
+ *
+ * Every grant is validated by the caller (typed OrgCapability values
+ * only — the action layer rejects unknown strings before this runs).
+ * Authorization is the CALLER's job: every caller must already hold
+ * ADMIN on `organizationId`.
+ */
+export async function setOrganizationAccessCapabilities(
+  organizationId: string,
+  targetAuthIdentityId: string,
+  capabilities: OrgCapability[],
+  actorAuthIdentityId: string,
+  reason?: string,
+): Promise<{ changed: boolean; previousCapabilities: OrgCapability[] }> {
+  const next = [...new Set(capabilities)].sort();
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(${"sarbase:org-access:" + organizationId}, 0)
+      )
+    `;
+
+    const access = await tx.organizationAccess.findUnique({
+      where: {
+        authIdentityId_organizationId: {
+          authIdentityId: targetAuthIdentityId,
+          organizationId,
+        },
+      },
+    });
+    if (!access) throw new OrganizationAccessNotFoundError();
+    if (access.role !== "MANAGER") throw new NotManagerError();
+
+    const previous = [...access.capabilities].sort();
+    if (
+      previous.length === next.length &&
+      previous.every((c, i) => c === next[i])
+    ) {
+      return { changed: false, previousCapabilities: access.capabilities };
+    }
+
+    await tx.organizationAccess.update({
+      where: { id: access.id },
+      data: { capabilities: next },
+    });
+    await tx.organizationAccessEvent.create({
+      data: {
+        organizationId,
+        targetAuthIdentityId,
+        action: "CAPABILITIES_CHANGED",
+        previousRole: access.role,
+        role: access.role,
+        previousCapabilities: access.capabilities,
+        capabilities: next,
+        reason: reason?.trim() || null,
+        actorAuthIdentityId,
+      },
+    });
+    return { changed: true, previousCapabilities: access.capabilities };
+  });
+
+  if (result.changed) {
+    log({
+      event: "auth.org_access_capabilities_changed",
+      subsystem: "auth",
+      actorId: actorAuthIdentityId,
+      entityType: "OrganizationAccess",
+      entityId: targetAuthIdentityId,
+      organizationId,
+      detail: { capabilities: next },
     });
   }
   return result;

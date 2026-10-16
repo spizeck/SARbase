@@ -22,7 +22,11 @@ export const metadata = { title: "Access & roles" };
 
 export const dynamic = "force-dynamic";
 
-const ROLE_LABELS = { ADMIN: "Administrator", MEMBER: "Member" } as const;
+const ROLE_LABELS = {
+  ADMIN: "Administrator",
+  MANAGER: "Manager",
+  MEMBER: "Member",
+} as const;
 
 /**
  * Organization access administration (issue #74): who can sign in to
