@@ -102,3 +102,44 @@
   --color-blue-900: #dbeafe;
   --color-blue-950: #eff6ff;
 }
+
+/*
+ * Themed native form controls.
+ *
+ * Tailwind's preflight sets `background-color: transparent` on <select>
+ * and its children. An author-specified background takes Chromium off
+ * the native `color-scheme` popup path: the expanded option list is
+ * then painted from each <option>'s own computed colors, so dark-mode
+ * text (inherited light) sat on the popup's default white surface —
+ * the white menu with unreadable options reported after #72. Binding
+ * the palette variables explicitly themes the popup rows in both
+ * directions, keeps disabled options distinguishable, and gives the
+ * checked row a neutral highlight instead of the OS accent blue.
+ * WebKit renders its own menu following the OS scheme — it ignores
+ * these declarations and stays readable.
+ */
+select,
+option,
+optgroup {
+  background-color: var(--color-white);
+  color: var(--color-neutral-900);
+}
+
+option:disabled,
+optgroup:disabled {
+  color: var(--color-neutral-500);
+}
+
+option:checked {
+  background-color: var(--color-neutral-200);
+}
+
+/*
+ * Checkboxes and radios painted by author classes (e.g. border-*)
+ * fall back to the UA accent color — bind it to the palette so the
+ * check mark stays readable in both themes.
+ */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--color-neutral-900);
+}
