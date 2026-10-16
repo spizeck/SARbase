@@ -3,6 +3,7 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, linkedMembersWithAccess } from "@/lib/auth/authorize";
 import { signOutAction } from "@/app/login/actions";
+import { AppearanceRadioGroup } from "@/components/theme";
 import {
   listMemberQualifications,
   expiryLabel,
@@ -125,6 +126,16 @@ export default async function AccountPage() {
         <p className="mt-1 text-sm text-neutral-900">
           {ctx.identity.email ?? "Account without email"}
         </p>
+      </section>
+
+      <section aria-labelledby="appearance-heading" className="mt-8">
+        <h2 id="appearance-heading" className="text-lg font-medium">
+          Appearance
+        </h2>
+        <p className="mt-1 text-sm text-neutral-600">
+          Choose a light or dark theme, or follow your device setting.
+        </p>
+        <AppearanceRadioGroup />
       </section>
 
       <section aria-labelledby="memberships-heading" className="mt-8">

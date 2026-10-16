@@ -1,5 +1,15 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /*
+   * A fixed dark overlay that does NOT participate in the dark remap —
+   * scrims must stay dark in both themes (issue #72).
+   */
+  --color-scrim: rgb(23 23 23 / 0.4);
+}
+
 /*
  * The global focus-visible outline is an accessibility requirement —
  * never remove it without providing a visible replacement (see
@@ -8,4 +18,87 @@
 :focus-visible {
   outline: 2px solid currentColor;
   outline-offset: 2px;
+}
+
+/*
+ * Dark theme (issue #72).
+ *
+ * The interface is authored against the default (light) palette —
+ * white surfaces, mid-neutral borders, dark-neutral text, light-tint
+ * status badges with deep-accent text. Instead of annotating every
+ * element with dark: variants, the `.dark` class rebinds the palette
+ * variables that Tailwind utilities reference at use time. Each shade
+ * maps to its lightness mirror (N -> 1000-N), so every authored
+ * foreground/background pair keeps its contrast ratio inverted —
+ * text-neutral-900-on-white becomes light-on-near-black,
+ * text-red-700-on-red-50 becomes light-red on deep red, and so on.
+ * Accent text shades land on their light counterparts (700 -> 300)
+ * to stay readable against darkened surfaces.
+ */
+.dark {
+  color-scheme: dark;
+
+  /* Neutrals — full-ramp mirror. */
+  --color-white: #0a0a0a;
+  --color-black: #fafafa;
+  --color-neutral-50: #0a0a0a;
+  --color-neutral-100: #171717;
+  --color-neutral-200: #262626;
+  --color-neutral-300: #404040;
+  --color-neutral-400: #525252;
+  --color-neutral-500: #737373;
+  --color-neutral-600: #a3a3a3;
+  --color-neutral-700: #d4d4d4;
+  --color-neutral-800: #e5e5e5;
+  --color-neutral-900: #f5f5f5;
+  --color-neutral-950: #fafafa;
+
+  /* Status accents — deep shades become light, light tints deepen. */
+  --color-red-50: #450a0a;
+  --color-red-100: #7f1d1d;
+  --color-red-200: #991b1b;
+  --color-red-300: #b91c1c;
+  --color-red-400: #dc2626;
+  --color-red-500: #ef4444;
+  --color-red-600: #f87171;
+  --color-red-700: #fca5a5;
+  --color-red-800: #fecaca;
+  --color-red-900: #fee2e2;
+  --color-red-950: #fef2f2;
+
+  --color-amber-50: #451a03;
+  --color-amber-100: #78350f;
+  --color-amber-200: #92400e;
+  --color-amber-300: #b45309;
+  --color-amber-400: #d97706;
+  --color-amber-500: #f59e0b;
+  --color-amber-600: #fbbf24;
+  --color-amber-700: #fcd34d;
+  --color-amber-800: #fde68a;
+  --color-amber-900: #fef3c7;
+  --color-amber-950: #fffbeb;
+
+  --color-green-50: #052e16;
+  --color-green-100: #14532d;
+  --color-green-200: #166534;
+  --color-green-300: #15803d;
+  --color-green-400: #16a34a;
+  --color-green-500: #22c55e;
+  --color-green-600: #4ade80;
+  --color-green-700: #86efac;
+  --color-green-800: #bbf7d0;
+  --color-green-900: #dcfce7;
+  --color-green-950: #f0fdf4;
+
+  --color-blue-50: #172554;
+  --color-blue-100: #1e3a8a;
+  --color-blue-200: #1e40af;
+  --color-blue-300: #1d4ed8;
+  --color-blue-400: #2563eb;
+  --color-blue-500: #3b82f6;
+  --color-blue-600: #60a5fa;
+  --color-blue-700: #93c5fd;
+  --color-blue-800: #bfdbfe;
+  --color-blue-900: #dbeafe;
+  --color-blue-950: #eff6ff;
 }

@@ -88,4 +88,42 @@ test.describe("authenticated session", () => {
     const body = await response.text();
     expect(body.length).toBeLessThan(4096);
   });
+
+  test("the appearance control exists in the header and applies a choice", async ({
+    page,
+  }) => {
+    // Any org workspace renders the shell header with the theme menu.
+    await page.goto("/org");
+    if (!/\/org\/[a-z0-9]+/i.test(page.url())) {
+      const orgLink = page
+        .getByRole("link")
+        .filter({ hasText: /Admin|Member/ })
+        .first();
+      if ((await orgLink.count()) === 0) {
+        test.skip(true, "smoke identity has no organization grant");
+        return;
+      }
+      await orgLink.click();
+    }
+    const trigger = page.getByRole("button", { name: /^Appearance:/ });
+    await expect(trigger).toBeVisible();
+    await trigger.click();
+    await page.getByRole("menuitemradio", { name: "Dark" }).click();
+    await expect(page.locator("html")).toHaveClass(/dark/);
+    await expect(trigger).toHaveAccessibleName("Appearance: Dark");
+  });
+
+  test("/account exposes the appearance setting", async ({ page }) => {
+    await page.goto("/account");
+    await expect(
+      page.getByRole("heading", { name: "Appearance" }),
+    ).toBeVisible();
+    const darkRadio = page.getByRole("radio", { name: /Dark/ });
+    await darkRadio.check();
+    await expect(darkRadio).toBeChecked();
+    await expect(page.locator("html")).toHaveClass(/dark/);
+    // Reset to system so the shared smoke identity's browser state does
+    // not leak a theme into other specs.
+    await page.getByRole("radio", { name: /System/ }).check();
+  });
 });
