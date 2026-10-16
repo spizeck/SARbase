@@ -66,6 +66,16 @@ export class SubmissionTargetError extends Error {
   }
 }
 
+/** The claimed definition was deactivated while the submission waited. */
+export class SubmissionDefinitionInactiveError extends Error {
+  constructor() {
+    super(
+      "This qualification definition is no longer active, so the claim cannot be approved. Reject the submission instead.",
+    );
+    this.name = "SubmissionDefinitionInactiveError";
+  }
+}
+
 export const MEMBER_SUBMISSION_STATUS_LABELS: Record<
   MemberSubmissionStatus,
   string
@@ -213,6 +223,19 @@ export async function reviewMemberSubmission(
       submission.kind === "QUALIFICATION_CLAIM" &&
       submission.qualificationDefinitionId
     ) {
+      // The ACTIVE check at submission time is not enough — the
+      // definition may have been deactivated while the claim waited in
+      // the queue. Approval must not mint a verified record under a
+      // retired definition; the reviewer rejects instead.
+      const definition = await tx.qualificationDefinition.findFirst({
+        where: {
+          id: submission.qualificationDefinitionId,
+          organizationId: submission.organizationId,
+          status: "ACTIVE",
+        },
+        select: { id: true },
+      });
+      if (!definition) throw new SubmissionDefinitionInactiveError();
       const record = await tx.memberQualification.create({
         data: {
           organizationId: submission.organizationId,

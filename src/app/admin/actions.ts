@@ -206,6 +206,7 @@ import {
 } from "@/lib/domain/invitations";
 import {
   reviewMemberSubmission,
+  SubmissionDefinitionInactiveError,
   SubmissionNotFoundError,
   SubmissionReviewNoteRequiredError,
   SubmissionStateError,
@@ -486,7 +487,8 @@ function mapDomainError(error: unknown): ActionState {
   if (
     error instanceof SubmissionStateError ||
     error instanceof SubmissionReviewNoteRequiredError ||
-    error instanceof SubmissionTargetError
+    error instanceof SubmissionTargetError ||
+    error instanceof SubmissionDefinitionInactiveError
   ) {
     // Own-org lifecycle facts — safe to surface.
     return { message: error.message };

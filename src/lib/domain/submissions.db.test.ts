@@ -27,6 +27,7 @@ import { updateMember, updateMemberContactDetails } from "./member";
 import {
   createMemberSubmission,
   reviewMemberSubmission,
+  SubmissionDefinitionInactiveError,
   SubmissionNotFoundError,
   SubmissionReviewNoteRequiredError,
   SubmissionStateError,
@@ -357,6 +358,48 @@ describe.skipIf(!hasDb)("member submissions (issue #71)", () => {
           adminA.id,
         ),
       ).rejects.toThrow(SubmissionNotFoundError);
+    });
+
+    it("approval refuses a definition deactivated while pending", async () => {
+      const submission = await makeClaim(memberA, definitionA.id);
+      const baseline = await prisma.memberQualification.count({
+        where: { memberId: memberA.id },
+      });
+      await prisma.qualificationDefinition.update({
+        where: { id: definitionA.id },
+        data: { status: "INACTIVE" },
+      });
+      try {
+        await expect(
+          reviewMemberSubmission(submission.id, "APPROVED", null, adminA.id),
+        ).rejects.toThrow(SubmissionDefinitionInactiveError);
+        // Nothing changed — still pending, no record created.
+        expect(
+          (
+            await prisma.memberSubmission.findUniqueOrThrow({
+              where: { id: submission.id },
+            })
+          ).status,
+        ).toBe("PENDING");
+        expect(
+          await prisma.memberQualification.count({
+            where: { memberId: memberA.id },
+          }),
+        ).toBe(baseline);
+        // Rejection remains available so the claim is never stranded.
+        const reviewed = await reviewMemberSubmission(
+          submission.id,
+          "REJECTED",
+          "Definition retired.",
+          adminA.id,
+        );
+        expect(reviewed.status).toBe("REJECTED");
+      } finally {
+        await prisma.qualificationDefinition.update({
+          where: { id: definitionA.id },
+          data: { status: "ACTIVE" },
+        });
+      }
     });
   });
 
