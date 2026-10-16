@@ -237,8 +237,11 @@ describe("ManagerCapabilitiesForm", () => {
     ].map((m) => m[1]);
     expect(ids.length).toBe(2);
     expect(new Set(ids).size).toBe(2);
-    // Each label associates with its own instance's input.
-    expect(new Set(labels)).toEqual(new Set(ids));
+    // Each label must target ITS OWN form's input — in document order
+    // each form renders its label immediately before its input, so a
+    // pairwise check catches swapped for/id pairs that a set
+    // comparison would miss.
+    expect(labels).toEqual(ids);
   });
 
   it("standard set is a documented subset of the registry", () => {
