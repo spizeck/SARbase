@@ -15,6 +15,7 @@ const {
   authIdentityFindManyMock,
   organizationAccessUpsertMock,
   memberSubmissionFindUniqueMock,
+  qualificationDefinitionFindFirstMock,
   submissionQueryRawMock,
   submissionUpdateMock,
   memberQualificationCreateMock,
@@ -37,6 +38,7 @@ const {
   authIdentityFindManyMock: vi.fn(),
   organizationAccessUpsertMock: vi.fn(),
   memberSubmissionFindUniqueMock: vi.fn(),
+  qualificationDefinitionFindFirstMock: vi.fn(),
   submissionQueryRawMock: vi.fn(),
   submissionUpdateMock: vi.fn(),
   memberQualificationCreateMock: vi.fn(),
@@ -88,6 +90,9 @@ vi.mock("@/lib/prisma", () => ({
         memberSubmission: {
           findUniqueOrThrow: memberSubmissionFindUniqueMock,
           update: submissionUpdateMock,
+        },
+        qualificationDefinition: {
+          findFirst: qualificationDefinitionFindFirstMock,
         },
         memberQualification: { create: memberQualificationCreateMock },
         memberQualificationAttachment: {
@@ -424,6 +429,10 @@ describe("member submission review (issue #71)", () => {
     memberSubmissionFindUniqueMock.mockResolvedValue(PENDING_CLAIM);
     // The row lock returns the id; the reload returns the pending row.
     submissionQueryRawMock.mockResolvedValue([{ id: "sub-a" }]);
+    // Approval re-checks the definition is still ACTIVE.
+    qualificationDefinitionFindFirstMock.mockResolvedValue({
+      id: "def-a",
+    });
     memberQualificationCreateMock.mockResolvedValue({ id: "mq-new" });
     submissionUpdateMock.mockResolvedValue({
       ...PENDING_CLAIM,
