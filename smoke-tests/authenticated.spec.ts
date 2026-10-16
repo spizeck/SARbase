@@ -104,13 +104,15 @@ test.describe("authenticated session", () => {
       await expect(
         page.getByRole("heading", { name: "Your organizations" }),
       ).toBeVisible();
+      // Match the exact role-badge text inside the link — an org named
+      // e.g. "Admin Team" must not masquerade as an admin grant.
       const adminLink = page
         .getByRole("link")
-        .filter({ hasText: "Admin" })
+        .filter({ has: page.getByText("Admin", { exact: true }) })
         .first();
       const memberLink = page
         .getByRole("link")
-        .filter({ hasText: "Member" })
+        .filter({ has: page.getByText("Member", { exact: true }) })
         .first();
       if (await adminLink.count()) {
         isAdmin = true;
