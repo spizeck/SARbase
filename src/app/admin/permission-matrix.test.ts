@@ -38,6 +38,7 @@ const MATRIX: Record<string, Guard[]> = {
   updateOrganizationAction: ["requireOrgAdmin"],
   setSetupChecklistDismissedAction: ["requireOrgAdmin"],
   setOrganizationAccessRoleAction: ["requireOrgAdmin"],
+  setOrganizationAccessCapabilitiesAction: ["requireOrgAdmin"],
 
   // People — MEMBERS_MANAGE for records; account/identity admin stays
   // Administrator-only even though it is member-scoped.
@@ -252,6 +253,7 @@ describe("permission matrix — every privileged action is deliberately guarded"
       "updateOrganizationAction",
       "setSetupChecklistDismissedAction",
       "setOrganizationAccessRoleAction",
+      "setOrganizationAccessCapabilitiesAction",
       "linkIdentityToMemberAction",
       "unlinkIdentityFromMemberAction",
       "createMemberInvitationAction",

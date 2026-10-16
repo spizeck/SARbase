@@ -3,9 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   AccessRoleForm,
+  ManagerCapabilitiesForm,
   preventSubmitWhilePending,
   roleChangeUIReducer,
 } from "./forms";
+import {
+  CAPABILITY_REGISTRY,
+  ORG_CAPABILITIES,
+  STANDARD_MANAGER_CAPABILITIES,
+} from "@/lib/auth/capabilities";
 
 /**
  * Regression coverage for the access-page role-change confirmation: the
@@ -129,7 +135,7 @@ describe("preventSubmitWhilePending", () => {
 });
 
 describe("AccessRoleForm", () => {
-  it("offers only the opposite of the member role and no open confirmation", () => {
+  it("offers the two non-current roles for a member and no open confirmation", () => {
     const html = renderToStaticMarkup(
       <AccessRoleForm
         action={noopAction}
@@ -139,11 +145,13 @@ describe("AccessRoleForm", () => {
       />,
     );
     expect(html).toContain("Change to Administrator");
+    expect(html).toContain("Change to Manager");
+    expect(html).not.toContain("Change to Member");
     expect(html).not.toContain("Confirm:");
     expect(html).not.toContain("will become a");
   });
 
-  it("offers only the opposite of the administrator role and no open confirmation", () => {
+  it("offers the two non-current roles for an administrator", () => {
     const html = renderToStaticMarkup(
       <AccessRoleForm
         action={noopAction}
@@ -153,7 +161,64 @@ describe("AccessRoleForm", () => {
       />,
     );
     expect(html).toContain("Change to Member");
+    expect(html).toContain("Change to Manager");
+    expect(html).not.toContain("Change to Administrator");
     expect(html).not.toContain("Confirm:");
-    expect(html).not.toContain("will become an");
+  });
+
+  it("offers Member and Administrator choices for a manager", () => {
+    const html = renderToStaticMarkup(
+      <AccessRoleForm
+        action={noopAction}
+        currentRole="MANAGER"
+        targetLabel="Pat Example"
+        isSelf={false}
+      />,
+    );
+    expect(html).toContain("Change to Member");
+    expect(html).toContain("Change to Administrator");
+    expect(html).not.toContain("Change to Manager");
+  });
+});
+
+describe("ManagerCapabilitiesForm", () => {
+  it("renders every registry capability grouped, with current grants checked", () => {
+    const granted = ["EQUIPMENT_MANAGE", "TRAINING_MANAGE"] as const;
+    const html = renderToStaticMarkup(
+      <ManagerCapabilitiesForm
+        action={noopAction}
+        granted={[...granted]}
+        targetLabel="Pat Example"
+      />,
+    );
+    // Every registered capability renders as a named checkbox.
+    for (const cap of ORG_CAPABILITIES) {
+      expect(html).toContain(`value="${cap}"`);
+    }
+    for (const def of CAPABILITY_REGISTRY) {
+      expect(html).toContain(def.label);
+      expect(html).toContain(def.description);
+    }
+    // The granted set is pre-checked; nothing else is.
+    expect(html).toContain('checked="" value="EQUIPMENT_MANAGE"');
+    expect(html).toContain('checked="" value="TRAINING_MANAGE"');
+    expect(html.match(/checked=""/g)?.length).toBe(2);
+    // Group legends and the administrator-only disclaimer render.
+    expect(html).toContain("Operations");
+    expect(html).toContain("Finance");
+    expect(html).toContain("administrator-only");
+    expect(html).toContain("Apply standard set");
+    // Nothing pending — the save button starts disabled with no review box.
+    expect(html).not.toContain("Review before saving");
+  });
+
+  it("standard set is a documented subset of the registry", () => {
+    // The form's "Apply standard set" button can only ever select
+    // registry entries — and the registry never includes account
+    // administration (there is no such capability key at all).
+    for (const cap of STANDARD_MANAGER_CAPABILITIES) {
+      expect(ORG_CAPABILITIES).toContain(cap);
+    }
+    expect(ORG_CAPABILITIES).not.toContain("ACCESS_MANAGE");
   });
 });

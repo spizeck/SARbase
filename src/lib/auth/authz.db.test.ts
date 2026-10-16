@@ -61,6 +61,7 @@ import {
 import {
   createMemberAction,
   createMemberInvitationAction,
+  setOrganizationAccessCapabilitiesAction,
   createMemberQualificationAction,
   createQualificationDefinitionAction,
   createUnitAction,
@@ -3077,6 +3078,29 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       // the existing values are preserved, not overwritten.
       expect(after.emergencyContactName).toBe(before.emergencyContactName);
       expect(after.emergencyContactPhone).toBe(before.emergencyContactPhone);
+    });
+
+    it("a manager cannot edit capability grants — that stays admin-only", async () => {
+      await manage([OrgCapability.MEMBERS_MANAGE]);
+      signInAs(managerUid);
+      expect(
+        await setOrganizationAccessCapabilitiesAction(
+          orgA.id,
+          managerIdentityId,
+          {},
+          form({ capabilities: [OrgCapability.FINANCE_APPROVE] }),
+        ),
+      ).toEqual({ message: "Not found." });
+      // The grant set is untouched.
+      const row = await prisma.organizationAccess.findUniqueOrThrow({
+        where: {
+          authIdentityId_organizationId: {
+            authIdentityId: managerIdentityId,
+            organizationId: orgA.id,
+          },
+        },
+      });
+      expect(row.capabilities).toEqual([OrgCapability.MEMBERS_MANAGE]);
     });
 
     it("a plain MEMBER cannot reach manager actions at all", async () => {

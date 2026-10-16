@@ -217,9 +217,12 @@ import {
 } from "@/lib/domain/submissions";
 import {
   setOrganizationAccessRole,
+  setOrganizationAccessCapabilities,
   LastAdministratorError,
+  NotManagerError,
   OrganizationAccessNotFoundError,
 } from "@/lib/domain/access";
+import { isOrgCapability } from "@/lib/auth/capabilities";
 import { StorageConfigError, StorageError } from "@/lib/storage/provider";
 import { getFileStorageProvider } from "@/lib/storage/resolve";
 import {
@@ -508,6 +511,10 @@ function mapDomainError(error: unknown): ActionState {
   }
   if (error instanceof LastAdministratorError) {
     // Own-org safety fact — safe to surface.
+    return { message: error.message };
+  }
+  if (error instanceof NotManagerError) {
+    // Own-org role-state fact — safe to surface.
     return { message: error.message };
   }
   if (error instanceof StorageConfigError) {
@@ -1077,6 +1084,52 @@ export async function setOrganizationAccessRoleAction(
     return { notice: "That account already has this role — nothing changed." };
   }
   return { updatedRole: parsed.data };
+}
+
+/**
+ * Replace a manager's capability grants (issue #84). Administrator-only
+ * forever — there is deliberately no delegable capability for it. The
+ * domain layer rejects non-MANAGER targets and races against role
+ * changes under the same advisory lock.
+ */
+export async function setOrganizationAccessCapabilitiesAction(
+  organizationId: string,
+  targetAuthIdentityId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  try {
+    requireOrgAdmin(ctx, organizationId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const capabilities = formData.getAll("capabilities");
+  if (!capabilities.every(isOrgCapability)) {
+    return { message: "Unknown capability — refresh the page and try again." };
+  }
+
+  let result;
+  try {
+    result = await setOrganizationAccessCapabilities(
+      organizationId,
+      targetAuthIdentityId,
+      capabilities,
+      ctx.identity.id,
+      typeof formData.get("reason") === "string"
+        ? (formData.get("reason") as string)
+        : undefined,
+    );
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  revalidatePath(`/admin/organizations/${organizationId}/access`);
+  if (!result.changed) {
+    return { notice: "No permission changes to save." };
+  }
+  return { notice: "Manager permissions updated." };
 }
 
 /* ------------------------------------------------------------------ */

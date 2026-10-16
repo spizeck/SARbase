@@ -8,7 +8,13 @@ import {
   useTransition,
 } from "react";
 
-import type { OrgRole } from "@prisma/client";
+import type { OrgCapability, OrgRole } from "@prisma/client";
+
+import {
+  CAPABILITY_REGISTRY,
+  STANDARD_MANAGER_CAPABILITIES,
+  type CapabilityGroup,
+} from "@/lib/auth/capabilities";
 
 import type { PhoneRegionOption } from "@/lib/contact";
 
@@ -587,11 +593,11 @@ export function AccessRoleForm({
 }) {
   const [state, formAction, pending] = useActionState(action, {});
   const [ui, dispatch] = useReducer(roleChangeUIReducer, { intent: null });
-  // Interim two-way toggle pending the full Manager UI: MANAGER rows
-  // offer promotion to administrator; the domain clears their
-  // capability grants on any role change regardless of direction.
-  const nextRole = currentRole === "ADMIN" ? "MEMBER" : "ADMIN";
   const intentRole = ui.intent;
+  // Roles offered for selection — every role except the current one.
+  const choices: OrgRole[] = (
+    ["MEMBER", "MANAGER", "ADMIN"] as OrgRole[]
+  ).filter((r) => r !== currentRole);
 
   useEffect(() => {
     dispatch({ type: "settled", result: state });
@@ -615,11 +621,22 @@ export function AccessRoleForm({
                 in this organization. This is SARbase recordkeeping access only
                 — it says nothing about operational or command authority.
               </p>
+            ) : intentRole === "MANAGER" ? (
+              <p>
+                <strong>{targetLabel}</strong> will become a{" "}
+                <strong>manager</strong>: they can work only in the operational
+                areas an administrator grants them — never invitations, sign-in
+                access, roles, or organization settings. They start with the
+                standard manager permissions, which you can tailor afterwards.
+              </p>
             ) : (
               <p>
                 <strong>{targetLabel}</strong> will become a{" "}
-                <strong>member</strong>: they lose all administrator
-                capabilities and keep only member self-service access.
+                <strong>member</strong>: they lose all staff access and keep
+                only member self-service.
+                {currentRole === "MANAGER"
+                  ? " Their manager permission grants are cleared and are not restored if they later become a manager again."
+                  : ""}
                 {isSelf
                   ? " You are changing your own access — you will no longer be able to administer this organization."
                   : ""}
@@ -631,14 +648,20 @@ export function AccessRoleForm({
               type="submit"
               disabled={pending}
               className={
-                intentRole === "ADMIN"
-                  ? "rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-700 disabled:opacity-50"
-                  : "rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+                currentRole === "ADMIN" || intentRole === "MEMBER"
+                  ? "rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+                  : "rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-700 disabled:opacity-50"
               }
             >
               {pending
                 ? "Saving…"
-                : `Confirm: make ${intentRole === "ADMIN" ? "administrator" : "member"}`}
+                : `Confirm: make ${
+                    intentRole === "ADMIN"
+                      ? "administrator"
+                      : intentRole === "MANAGER"
+                        ? "manager"
+                        : "member"
+                  }`}
             </button>
             <button
               type="button"
@@ -651,15 +674,23 @@ export function AccessRoleForm({
           </div>
         </form>
       ) : (
-        <button
-          type="button"
-          onClick={() => dispatch({ type: "open", role: nextRole })}
-          className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-800 hover:bg-neutral-100"
-        >
-          {currentRole === "ADMIN"
-            ? "Change to Member"
-            : "Change to Administrator"}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          {choices.map((role) => (
+            <button
+              key={role}
+              type="button"
+              onClick={() => dispatch({ type: "open", role })}
+              className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-800 hover:bg-neutral-100"
+            >
+              Change to{" "}
+              {role === "ADMIN"
+                ? "Administrator"
+                : role === "MANAGER"
+                  ? "Manager"
+                  : "Member"}
+            </button>
+          ))}
+        </div>
       )}
       {state.updatedRole && intentRole === null && (
         <p className="text-sm text-green-800" role="status">
@@ -688,6 +719,164 @@ export function AccessRoleForm({
         </p>
       ) : null}
     </div>
+  );
+}
+
+const CAPABILITY_GROUP_ORDER: CapabilityGroup[] = [
+  "Operations",
+  "People",
+  "Equipment",
+  "Finance",
+  "Documents",
+  "Reporting",
+];
+
+/**
+ * Manager capability editor (issue #84). Administrators tailor which
+ * operational areas a manager can work in; saving replaces the grant
+ * set wholesale and writes a CAPABILITIES_CHANGED audit event.
+ * Administrator-only abilities (invitations, access, roles, settings)
+ * are intentionally absent — no capability can delegate them.
+ */
+export function ManagerCapabilitiesForm({
+  action,
+  granted,
+  targetLabel,
+}: {
+  action: BoundAction;
+  /** The manager's current capability grants. */
+  granted: OrgCapability[];
+  /** Who the change applies to — shown in the change summary. */
+  targetLabel: string;
+}) {
+  const [state, formAction, pending] = useActionState(action, {});
+  const [selected, setSelected] = useState<Set<OrgCapability>>(
+    () => new Set(granted),
+  );
+
+  const grantedSet = new Set(granted);
+  const added = [...selected].filter((c) => !grantedSet.has(c));
+  const removed = [...grantedSet].filter((c) => !selected.has(c));
+  const dirty = added.length > 0 || removed.length > 0;
+  const labelFor = (key: OrgCapability) =>
+    CAPABILITY_REGISTRY.find((d) => d.key === key)?.label ?? key;
+
+  const toggle = (key: OrgCapability) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+
+  return (
+    <form
+      action={formAction}
+      onSubmit={(event) => preventSubmitWhilePending(pending, event)}
+      className="space-y-3"
+    >
+      {CAPABILITY_GROUP_ORDER.map((group) => {
+        const defs = CAPABILITY_REGISTRY.filter((d) => d.group === group);
+        if (defs.length === 0) return null;
+        return (
+          <fieldset key={group}>
+            <legend className="text-xs font-semibold tracking-wide text-neutral-500 uppercase">
+              {group}
+            </legend>
+            <ul className="mt-1 space-y-1.5">
+              {defs.map((def) => (
+                <li key={def.key}>
+                  <label className="flex items-start gap-2 text-sm text-neutral-800">
+                    <input
+                      type="checkbox"
+                      name="capabilities"
+                      value={def.key}
+                      checked={selected.has(def.key)}
+                      onChange={() => toggle(def.key)}
+                      className="mt-0.5 h-4 w-4 rounded border-neutral-300"
+                    />
+                    <span>
+                      <span className="font-medium">{def.label}</span>
+                      <span className="block text-xs text-neutral-500">
+                        {def.description}
+                      </span>
+                    </span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          </fieldset>
+        );
+      })}
+      <p className="text-xs text-neutral-500">
+        Account administration — invitations, sign-in access, roles, and
+        organization settings — stays administrator-only and cannot be
+        delegated.
+      </p>
+      {dirty && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-neutral-800">
+          <p className="font-medium">Review before saving</p>
+          <ul className="mt-1 list-disc pl-5">
+            {added.map((c) => (
+              <li key={c}>
+                <strong>{targetLabel}</strong> will gain: {labelFor(c)}
+              </li>
+            ))}
+            {removed.map((c) => (
+              <li key={c}>
+                <strong>{targetLabel}</strong> will lose: {labelFor(c)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div>
+        <label
+          htmlFor="capability-reason"
+          className="text-xs font-medium text-neutral-600"
+        >
+          Reason (optional — recorded in the access history)
+        </label>
+        <input
+          id="capability-reason"
+          type="text"
+          name="reason"
+          maxLength={200}
+          className={inputClass}
+          placeholder="e.g. Training coordinator duties"
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="submit"
+          disabled={pending || !dirty}
+          className={buttonClass}
+        >
+          {pending ? "Saving…" : "Save permissions"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setSelected(new Set(STANDARD_MANAGER_CAPABILITIES))}
+          disabled={pending}
+          className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-800 hover:bg-neutral-100 disabled:opacity-50"
+        >
+          Apply standard set
+        </button>
+      </div>
+      {state.notice && (
+        <p className="text-sm text-amber-800" role="status">
+          {state.notice}
+        </p>
+      )}
+      {state.message && (
+        <p className={errorClass} role="alert">
+          {state.message}
+        </p>
+      )}
+    </form>
   );
 }
 

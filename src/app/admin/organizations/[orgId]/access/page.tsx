@@ -14,9 +14,18 @@ import {
 } from "@/lib/domain/invitations";
 import { getOrganization } from "@/lib/domain/organization";
 import { instantExpiryLabel, relativeTimeLabel } from "@/lib/dates";
+import { CAPABILITY_REGISTRY, ORG_CAPABILITIES } from "@/lib/auth/capabilities";
+import type { OrgCapability } from "@prisma/client";
 
-import { setOrganizationAccessRoleAction } from "../../../actions";
-import { AccessRoleForm } from "../../../forms";
+import {
+  setOrganizationAccessCapabilitiesAction,
+  setOrganizationAccessRoleAction,
+} from "../../../actions";
+import { AccessRoleForm, ManagerCapabilitiesForm } from "../../../forms";
+
+function capabilityLabel(key: OrgCapability) {
+  return CAPABILITY_REGISTRY.find((d) => d.key === key)?.label ?? key;
+}
 
 export const metadata = { title: "Access & roles" };
 
@@ -92,9 +101,12 @@ export default async function OrganizationAccessPage({
       <p className="mt-1 text-sm text-neutral-600">
         Who can sign in to {organization.name} on SARbase, and what they can do
         here. An <strong>administrator</strong> manages records, members,
-        invitations, and other accounts&apos; roles — this is application access
-        only and says nothing about SAR operational or command authority. Role
-        changes apply immediately and are recorded below.
+        invitations, and other accounts&apos; roles. A <strong>manager</strong>{" "}
+        works only in the operational areas an administrator grants them below.
+        A <strong>member</strong> has self-service access. These are application
+        permissions only — they say nothing about SAR operational or command
+        authority. Role and permission changes apply immediately and are
+        recorded below.
       </p>
 
       <section aria-labelledby="accounts-heading" className="mt-6">
@@ -179,6 +191,25 @@ export default async function OrganizationAccessPage({
                         targetLabel={label}
                         isSelf={isSelf}
                       />
+                      {row.role === "MANAGER" && (
+                        <details className="mt-2">
+                          <summary className="cursor-pointer text-xs font-medium text-neutral-600 hover:text-neutral-900">
+                            Manager permissions ({row.capabilities.length} of{" "}
+                            {ORG_CAPABILITIES.length} granted)
+                          </summary>
+                          <div className="mt-2">
+                            <ManagerCapabilitiesForm
+                              action={setOrganizationAccessCapabilitiesAction.bind(
+                                null,
+                                orgId,
+                                row.authIdentityId,
+                              )}
+                              granted={row.capabilities}
+                              targetLabel={label}
+                            />
+                          </div>
+                        </details>
+                      )}
                     </td>
                   </tr>
                 );
@@ -259,14 +290,28 @@ export default async function OrganizationAccessPage({
                   {actorLabels.get(event.targetAuthIdentityId) ??
                     event.targetAuthIdentityId}
                 </span>
-                <span className="text-neutral-600">
-                  {" "}
-                  changed from{" "}
-                  {event.previousRole
-                    ? ROLE_HISTORY_LABELS[event.previousRole]
-                    : "none"}{" "}
-                  to {ROLE_HISTORY_LABELS[event.role]}
-                </span>
+                {event.action === "CAPABILITIES_CHANGED" ? (
+                  <span className="text-neutral-600">
+                    {" "}
+                    manager permissions changed (
+                    {event.previousCapabilities.length} →{" "}
+                    {event.capabilities.length} granted)
+                    {event.capabilities.length > 0
+                      ? `: ${event.capabilities
+                          .map((c) => capabilityLabel(c))
+                          .join(", ")}`
+                      : ""}
+                  </span>
+                ) : (
+                  <span className="text-neutral-600">
+                    {" "}
+                    changed from{" "}
+                    {event.previousRole
+                      ? ROLE_HISTORY_LABELS[event.previousRole]
+                      : "none"}{" "}
+                    to {ROLE_HISTORY_LABELS[event.role]}
+                  </span>
+                )}
                 <span className="text-neutral-500">
                   {" "}
                   · {relativeTimeLabel(event.createdAt)} · by{" "}
@@ -274,6 +319,7 @@ export default async function OrganizationAccessPage({
                     ? (actorLabels.get(event.actorAuthIdentityId) ??
                       "unknown account")
                     : "system"}
+                  {event.reason ? ` — “${event.reason}”` : ""}
                 </span>
               </li>
             ))}
