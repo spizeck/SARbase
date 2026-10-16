@@ -50,10 +50,10 @@ import {
   requireAuth,
   requireOrgAccess,
   requireOrgAdmin,
-  requireOrgAdminForMember,
-  requireOrgAdminForUnit,
-  requireOrgAdminForCallout,
-  requireOrgAdminForCalloutInvitation,
+  requireOrgCapabilityForMember,
+  requireOrgCapabilityForUnit,
+  requireOrgCapabilityForCallout,
+  requireOrgCapabilityForCalloutInvitation,
   requireOrgAdminOrNotFound,
   requireOrgCapability,
   requireOrgCapabilityOrNotFound,
@@ -163,14 +163,14 @@ describe("requireOrgAdminOrNotFound", () => {
   });
 });
 
-describe("requireOrgAdminForMember — scope derived from the record", () => {
+describe("requireOrgCapabilityForMember — scope derived from the record", () => {
   it("throws when the member is in another org, whatever the caller asked", async () => {
     memberFindUniqueMock.mockResolvedValue({
       id: "member-b",
       organizationId: ORG_B,
     });
     await expect(
-      requireOrgAdminForMember(ctx("ADMIN", ORG_A), "member-b"),
+      requireOrgCapabilityForMember(ctx("ADMIN", ORG_A), "member-b"),
     ).rejects.toBeInstanceOf(AuthorizationError);
     // The lookup used ONLY the supplied id as a selector.
     expect(memberFindUniqueMock).toHaveBeenCalledWith({
@@ -181,7 +181,7 @@ describe("requireOrgAdminForMember — scope derived from the record", () => {
   it("throws the same error for a nonexistent member (no existence leak)", async () => {
     memberFindUniqueMock.mockResolvedValue(null);
     await expect(
-      requireOrgAdminForMember(ctx("ADMIN", ORG_A), "missing"),
+      requireOrgCapabilityForMember(ctx("ADMIN", ORG_A), "missing"),
     ).rejects.toThrow("Not found or not permitted.");
   });
 
@@ -189,7 +189,7 @@ describe("requireOrgAdminForMember — scope derived from the record", () => {
     const member = { id: "member-a", organizationId: ORG_A };
     memberFindUniqueMock.mockResolvedValue(member);
     await expect(
-      requireOrgAdminForMember(ctx("ADMIN", ORG_A), "member-a"),
+      requireOrgCapabilityForMember(ctx("ADMIN", ORG_A), "member-a"),
     ).resolves.toBe(member);
   });
 
@@ -199,33 +199,33 @@ describe("requireOrgAdminForMember — scope derived from the record", () => {
       organizationId: ORG_A,
     });
     await expect(
-      requireOrgAdminForMember(ctx("MEMBER", ORG_A), "member-a"),
+      requireOrgCapabilityForMember(ctx("MEMBER", ORG_A), "member-a"),
     ).rejects.toBeInstanceOf(AuthorizationError);
   });
 });
 
-describe("requireOrgAdminForUnit", () => {
+describe("requireOrgCapabilityForUnit", () => {
   it("derives the org from the unit record, not the caller", async () => {
     unitFindUniqueMock.mockResolvedValue({ id: "u-b", organizationId: ORG_B });
     await expect(
-      requireOrgAdminForUnit(ctx("ADMIN", ORG_A), "u-b"),
+      requireOrgCapabilityForUnit(ctx("ADMIN", ORG_A), "u-b"),
     ).rejects.toBeInstanceOf(AuthorizationError);
 
     unitFindUniqueMock.mockResolvedValue({ id: "u-a", organizationId: ORG_A });
     await expect(
-      requireOrgAdminForUnit(ctx("ADMIN", ORG_A), "u-a"),
+      requireOrgCapabilityForUnit(ctx("ADMIN", ORG_A), "u-a"),
     ).resolves.toMatchObject({ id: "u-a" });
   });
 });
 
-describe("requireOrgAdminForCallout — scope derived from the record", () => {
+describe("requireOrgCapabilityForCallout — scope derived from the record", () => {
   it("denies a callout in another org, whatever the caller asked", async () => {
     calloutFindUniqueMock.mockResolvedValue({
       id: "co-b",
       organizationId: ORG_B,
     });
     await expect(
-      requireOrgAdminForCallout(ctx("ADMIN", ORG_A), "co-b"),
+      requireOrgCapabilityForCallout(ctx("ADMIN", ORG_A), "co-b"),
     ).rejects.toBeInstanceOf(AuthorizationError);
     expect(calloutFindUniqueMock).toHaveBeenCalledWith({
       where: { id: "co-b" },
@@ -235,7 +235,7 @@ describe("requireOrgAdminForCallout — scope derived from the record", () => {
   it("throws the same error for a nonexistent callout (no existence leak)", async () => {
     calloutFindUniqueMock.mockResolvedValue(null);
     await expect(
-      requireOrgAdminForCallout(ctx("ADMIN", ORG_A), "missing"),
+      requireOrgCapabilityForCallout(ctx("ADMIN", ORG_A), "missing"),
     ).rejects.toThrow("Not found or not permitted.");
   });
 
@@ -243,7 +243,7 @@ describe("requireOrgAdminForCallout — scope derived from the record", () => {
     const callout = { id: "co-a", organizationId: ORG_A };
     calloutFindUniqueMock.mockResolvedValue(callout);
     await expect(
-      requireOrgAdminForCallout(ctx("ADMIN", ORG_A), "co-a"),
+      requireOrgCapabilityForCallout(ctx("ADMIN", ORG_A), "co-a"),
     ).resolves.toBe(callout);
   });
 
@@ -253,19 +253,19 @@ describe("requireOrgAdminForCallout — scope derived from the record", () => {
       organizationId: ORG_A,
     });
     await expect(
-      requireOrgAdminForCallout(ctx("MEMBER", ORG_A), "co-a"),
+      requireOrgCapabilityForCallout(ctx("MEMBER", ORG_A), "co-a"),
     ).rejects.toBeInstanceOf(AuthorizationError);
   });
 });
 
-describe("requireOrgAdminForCalloutInvitation", () => {
+describe("requireOrgCapabilityForCalloutInvitation", () => {
   it("derives the org from the invitation record, not the caller", async () => {
     calloutInvitationFindUniqueMock.mockResolvedValue({
       id: "inv-b",
       organizationId: ORG_B,
     });
     await expect(
-      requireOrgAdminForCalloutInvitation(ctx("ADMIN", ORG_A), "inv-b"),
+      requireOrgCapabilityForCalloutInvitation(ctx("ADMIN", ORG_A), "inv-b"),
     ).rejects.toBeInstanceOf(AuthorizationError);
 
     calloutInvitationFindUniqueMock.mockResolvedValue({
@@ -273,7 +273,7 @@ describe("requireOrgAdminForCalloutInvitation", () => {
       organizationId: ORG_A,
     });
     await expect(
-      requireOrgAdminForCalloutInvitation(ctx("ADMIN", ORG_A), "inv-a"),
+      requireOrgCapabilityForCalloutInvitation(ctx("ADMIN", ORG_A), "inv-a"),
     ).resolves.toMatchObject({ id: "inv-a" });
   });
 
@@ -285,7 +285,7 @@ describe("requireOrgAdminForCalloutInvitation", () => {
       organizationId: ORG_A,
     });
     await expect(
-      requireOrgAdminForCalloutInvitation(ctx("ADMIN", ORG_B), "inv-a"),
+      requireOrgCapabilityForCalloutInvitation(ctx("ADMIN", ORG_B), "inv-a"),
     ).rejects.toBeInstanceOf(AuthorizationError);
   });
 });

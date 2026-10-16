@@ -111,7 +111,7 @@ async function memberOrgToday(memberId: string) {
  * Record a new availability statement for a member. Authorization is
  * the caller's job — this function assumes the caller already resolved
  * the member (self-service via a linked member + org access, or admin
- * via requireOrgAdminForMember).
+ * via requireOrgCapabilityForMember).
  *
  * `until`, when present, must not be before the organization's local
  * today — a statement cannot be recorded already expired.

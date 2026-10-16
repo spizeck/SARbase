@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
 import {
   getCalloutForAdmin,
   CALLOUT_RESPONSE_LABELS,
@@ -74,7 +76,10 @@ export default async function CalloutDetailPage({
   if (!callout || callout.organizationId !== orgId) {
     notFound();
   }
-  await requireOrgAdminOrNotFound(callout.organizationId);
+  await requireOrgCapabilityOrNotFound(
+    callout.organizationId,
+    OrgCapability.OPERATIONS_MANAGE,
+  );
 
   const coming = callout.invitations.filter(
     (i) => i.response === "COMING",

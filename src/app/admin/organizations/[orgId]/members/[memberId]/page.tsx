@@ -13,7 +13,13 @@ import {
   listMemberTraining,
   getMemberTrainingSummary,
 } from "@/lib/domain/training";
-import { requireAuth, isOrgAdmin } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import {
+  hasOrgCapability,
+  isOrgAdmin,
+  requireAuth,
+} from "@/lib/auth/authorize";
 import {
   getMemberInvitation,
   invitationDisplayState,
@@ -78,14 +84,15 @@ export default async function MemberPage({
 }) {
   const ctx = await requireAuth();
   const { orgId: urlOrgId, memberId } = await params;
-  // Both selectors are untrusted: resolve the record, then check ADMIN
-  // access to the member's REAL organizationId AND that the URL org
-  // matches it — a mismatched pair is the same opaque 404.
+  // Both selectors are untrusted: resolve the record, then check the
+  // MEMBERS_MANAGE capability on the member's REAL organizationId AND
+  // that the URL org matches it — a mismatched pair is the same opaque
+  // 404.
   const member = await getMember(memberId);
   if (
     !member ||
     member.organizationId !== urlOrgId ||
-    !isOrgAdmin(ctx, member.organizationId)
+    !hasOrgCapability(ctx, member.organizationId, OrgCapability.MEMBERS_MANAGE)
   )
     notFound();
 
@@ -107,12 +114,28 @@ export default async function MemberPage({
   const availabilityHistory = await listMemberAvailabilityHistory(member.id);
   const contactPreference = await getMemberContactPreference(member.id);
 
-  const memberAccessRole = member.authIdentityId
-    ? await getOrganizationAccessRole(orgId, member.authIdentityId)
-    : null;
-  const invitation = await getMemberInvitation(member.id);
+  // Identity/invitation data and the contact-change trail (which can
+  // contain sensitive field values) stay Administrator-only — a
+  // MEMBERS_MANAGE manager edits operational fields but never sees
+  // account access details (issue #84).
+  const isAdmin = isOrgAdmin(ctx, orgId);
+  // Qualification records on a member are a separate grant from member
+  // editing — a people-manager without QUALIFICATIONS_MANAGE can read
+  // them but sees no write controls or certificate files.
+  const canManageQualifications = hasOrgCapability(
+    ctx,
+    orgId,
+    OrgCapability.QUALIFICATIONS_MANAGE,
+  );
+  const memberAccessRole =
+    isAdmin && member.authIdentityId
+      ? await getOrganizationAccessRole(orgId, member.authIdentityId)
+      : null;
+  const invitation = isAdmin ? await getMemberInvitation(member.id) : null;
   // Issue #71 — contact-field audit trail (self-reported vs admin edits).
-  const contactChanges = await listMemberContactChanges(member.id);
+  const contactChanges = isAdmin
+    ? await listMemberContactChanges(member.id)
+    : [];
   const contactActorLabels = await resolveActorLabels(
     orgId,
     contactChanges.map((c) => c.actorAuthIdentityId),
@@ -214,6 +237,7 @@ export default async function MemberPage({
         <div className="mt-2">
           <MemberForm
             action={updateMemberAction.bind(null, member.id)}
+            showEmergencyContact={isAdmin}
             defaults={{
               displayName: member.displayName,
               email: member.email,
@@ -454,38 +478,42 @@ export default async function MemberPage({
                     {record.notes}
                   </p>
                 )}
-                <details className="mt-2">
-                  <summary className="cursor-pointer text-xs font-medium text-neutral-600 hover:text-neutral-900">
-                    Correct record
-                  </summary>
-                  <div className="mt-2">
-                    <MemberQualificationForm
-                      action={updateMemberQualificationAction.bind(
-                        null,
-                        record.id,
-                      )}
-                      definitionName={record.definition.name}
-                      defaults={{
-                        issuedOn: formatDateOnly(record.issuedOn),
-                        expiresOn: formatDateOnly(record.expiresOn),
-                        issuer: record.issuer,
-                        reference: record.reference,
-                        notes: record.notes,
-                      }}
-                      submitLabel="Save correction"
-                    />
-                  </div>
-                </details>
-                {/* Issue #16 — scanned certificates and supporting files.
-                    Qualification documents may contain personal data and
-                    stay ADMIN-only. */}
-                <AttachmentSection
-                  entityType="MEMBER_QUALIFICATION"
-                  entityId={record.id}
-                  organizationId={orgId}
-                  heading="Certificate files"
-                  compact
-                />
+                {canManageQualifications && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-xs font-medium text-neutral-600 hover:text-neutral-900">
+                      Correct record
+                    </summary>
+                    <div className="mt-2">
+                      <MemberQualificationForm
+                        action={updateMemberQualificationAction.bind(
+                          null,
+                          record.id,
+                        )}
+                        definitionName={record.definition.name}
+                        defaults={{
+                          issuedOn: formatDateOnly(record.issuedOn),
+                          expiresOn: formatDateOnly(record.expiresOn),
+                          issuer: record.issuer,
+                          reference: record.reference,
+                          notes: record.notes,
+                        }}
+                        submitLabel="Save correction"
+                      />
+                    </div>
+                  </details>
+                )}
+                {/* Issue #16/#84 — scanned certificates and supporting
+                    files may contain personal data: visible only to
+                    callers who can manage qualification records. */}
+                {canManageQualifications && (
+                  <AttachmentSection
+                    entityType="MEMBER_QUALIFICATION"
+                    entityId={record.id}
+                    organizationId={orgId}
+                    heading="Certificate files"
+                    compact
+                  />
+                )}
               </li>
             ))}
           </ul>
@@ -494,28 +522,29 @@ export default async function MemberPage({
             No qualification records yet.
           </p>
         )}
-        {activeDefinitions.length > 0 ? (
-          <div className="mt-3 rounded-md border border-neutral-200 p-4">
-            <h3 className="text-sm font-medium text-neutral-800">
-              Add qualification record
-            </h3>
-            <div className="mt-2">
-              <MemberQualificationForm
-                action={createMemberQualificationAction.bind(null, member.id)}
-                definitions={activeDefinitions.map((d) => ({
-                  id: d.id,
-                  name: d.name,
-                }))}
-                submitLabel="Add record"
-              />
+        {canManageQualifications &&
+          (activeDefinitions.length > 0 ? (
+            <div className="mt-3 rounded-md border border-neutral-200 p-4">
+              <h3 className="text-sm font-medium text-neutral-800">
+                Add qualification record
+              </h3>
+              <div className="mt-2">
+                <MemberQualificationForm
+                  action={createMemberQualificationAction.bind(null, member.id)}
+                  definitions={activeDefinitions.map((d) => ({
+                    id: d.id,
+                    name: d.name,
+                  }))}
+                  submitLabel="Add record"
+                />
+              </div>
             </div>
-          </div>
-        ) : (
-          <p className="mt-3 text-sm text-neutral-500">
-            Define qualifications on the organization page before adding member
-            records.
-          </p>
-        )}
+          ) : (
+            <p className="mt-3 text-sm text-neutral-500">
+              Define qualifications on the organization page before adding
+              member records.
+            </p>
+          ))}
       </section>
 
       <section aria-labelledby="training-heading" className="mt-8">
@@ -557,212 +586,217 @@ export default async function MemberPage({
         )}
       </section>
 
-      <section
-        aria-labelledby="login-heading"
-        className="mt-6 rounded-md border border-neutral-200 p-4"
-      >
-        <div className="flex items-center justify-between gap-3">
-          <h2
-            id="login-heading"
-            className="text-sm font-medium text-neutral-800"
-          >
-            Login account
-          </h2>
-          {invitation && (
-            <span
-              className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${inviteBadgeClass}`}
+      {isAdmin && (
+        <section
+          aria-labelledby="login-heading"
+          className="mt-6 rounded-md border border-neutral-200 p-4"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <h2
+              id="login-heading"
+              className="text-sm font-medium text-neutral-800"
             >
-              {MEMBER_INVITATION_STATE_LABELS[inviteState]}
-            </span>
-          )}
-        </div>
-
-        {member.authIdentityId ? (
-          <div className="mt-2">
-            <p className="text-sm text-neutral-600">
-              This member record is linked to a sign-in identity
-              {invitation?.acceptedByAuthIdentityId
-                ? " — the invitation was accepted"
-                : ""}
-              . Unlinking removes that identity&apos;s member context — it does
-              not remove the identity&apos;s organization access grants.
-            </p>
-            <p className="mt-2 text-sm text-neutral-600">
-              Organization role:{" "}
-              <span className="font-medium text-neutral-800">
-                {memberAccessRole === "ADMIN"
-                  ? "Administrator"
-                  : memberAccessRole === "MEMBER"
-                    ? "Member"
-                    : "None — no access grant"}
-              </span>{" "}
-              ·{" "}
-              <Link
-                href={`/admin/organizations/${orgId}/access`}
-                className="hover:underline"
+              Login account
+            </h2>
+            {invitation && (
+              <span
+                className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${inviteBadgeClass}`}
               >
-                Manage access &amp; roles
-              </Link>
-            </p>
-            <form
-              action={unlinkIdentityFromMemberAction.bind(null, member.id)}
-              className="mt-3"
-            >
-              <button
-                type="submit"
-                className="rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-800 hover:bg-neutral-50"
-              >
-                Unlink login identity
-              </button>
-            </form>
+                {MEMBER_INVITATION_STATE_LABELS[inviteState]}
+              </span>
+            )}
           </div>
-        ) : inviteState === "pending" && invitation ? (
-          <div className="mt-2">
-            <p className="text-sm text-neutral-600">
-              An invitation was sent to{" "}
-              <span className="font-medium text-neutral-800">
-                {invitation.email}
-              </span>{" "}
-              for {invitation.role === "ADMIN" ? "administrator" : "member"}{" "}
-              access. The recipient signs in or registers with that address to
-              accept.
-            </p>
-            <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-neutral-600">
-              <div>
-                <dt className="text-xs text-neutral-500">Sent</dt>
-                <dd>{relativeTimeLabel(invitation.createdAt)}</dd>
-              </div>
-              <div>
-                <dt className="text-xs text-neutral-500">Expires</dt>
-                <dd>
-                  {instantExpiryLabel(
-                    invitation.expiresAt,
-                    member.organization.timezone,
-                  )}
-                </dd>
-              </div>
-              {invitation.notification && (
+
+          {member.authIdentityId ? (
+            <div className="mt-2">
+              <p className="text-sm text-neutral-600">
+                This member record is linked to a sign-in identity
+                {invitation?.acceptedByAuthIdentityId
+                  ? " — the invitation was accepted"
+                  : ""}
+                . Unlinking removes that identity&apos;s member context — it
+                does not remove the identity&apos;s organization access grants.
+              </p>
+              <p className="mt-2 text-sm text-neutral-600">
+                Organization role:{" "}
+                <span className="font-medium text-neutral-800">
+                  {memberAccessRole === "ADMIN"
+                    ? "Administrator"
+                    : memberAccessRole === "MANAGER"
+                      ? "Manager"
+                      : memberAccessRole === "MEMBER"
+                        ? "Member"
+                        : "None — no access grant"}
+                </span>{" "}
+                ·{" "}
+                <Link
+                  href={`/admin/organizations/${orgId}/access`}
+                  className="hover:underline"
+                >
+                  Manage access &amp; roles
+                </Link>
+              </p>
+              <form
+                action={unlinkIdentityFromMemberAction.bind(null, member.id)}
+                className="mt-3"
+              >
+                <button
+                  type="submit"
+                  className="rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-800 hover:bg-neutral-50"
+                >
+                  Unlink login identity
+                </button>
+              </form>
+            </div>
+          ) : inviteState === "pending" && invitation ? (
+            <div className="mt-2">
+              <p className="text-sm text-neutral-600">
+                An invitation was sent to{" "}
+                <span className="font-medium text-neutral-800">
+                  {invitation.email}
+                </span>{" "}
+                for {invitation.role === "ADMIN" ? "administrator" : "member"}{" "}
+                access. The recipient signs in or registers with that address to
+                accept.
+              </p>
+              <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-neutral-600">
                 <div>
-                  <dt className="text-xs text-neutral-500">Latest send</dt>
+                  <dt className="text-xs text-neutral-500">Sent</dt>
+                  <dd>{relativeTimeLabel(invitation.createdAt)}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-neutral-500">Expires</dt>
                   <dd>
-                    {invitation.notification.status === "ACCEPTED"
-                      ? "Accepted by email provider"
-                      : invitation.notification.status === "FAILED"
-                        ? "Send failed"
-                        : invitation.notification.status === "SUPPRESSED"
-                          ? "Not sent"
-                          : "Sending"}
-                    {invitation.notification.attempts.at(-1)?.errorSummary
-                      ? ` — ${
-                          invitation.notification.attempts.at(-1)?.errorSummary
-                        }`
-                      : ""}
-                    {invitation.notification.attempts.at(-1)
-                      ?.providerMessageId ? (
-                      <span className="block text-xs text-neutral-400">
-                        Provider ref:{" "}
-                        {
-                          invitation.notification.attempts.at(-1)
-                            ?.providerMessageId
-                        }
-                      </span>
-                    ) : null}
+                    {instantExpiryLabel(
+                      invitation.expiresAt,
+                      member.organization.timezone,
+                    )}
                   </dd>
                 </div>
-              )}
-            </dl>
-            <div className="mt-3">
-              <InvitationActionButtons
-                resendAction={resendMemberInvitationAction.bind(
-                  null,
-                  invitation.id,
+                {invitation.notification && (
+                  <div>
+                    <dt className="text-xs text-neutral-500">Latest send</dt>
+                    <dd>
+                      {invitation.notification.status === "ACCEPTED"
+                        ? "Accepted by email provider"
+                        : invitation.notification.status === "FAILED"
+                          ? "Send failed"
+                          : invitation.notification.status === "SUPPRESSED"
+                            ? "Not sent"
+                            : "Sending"}
+                      {invitation.notification.attempts.at(-1)?.errorSummary
+                        ? ` — ${
+                            invitation.notification.attempts.at(-1)
+                              ?.errorSummary
+                          }`
+                        : ""}
+                      {invitation.notification.attempts.at(-1)
+                        ?.providerMessageId ? (
+                        <span className="block text-xs text-neutral-400">
+                          Provider ref:{" "}
+                          {
+                            invitation.notification.attempts.at(-1)
+                              ?.providerMessageId
+                          }
+                        </span>
+                      ) : null}
+                    </dd>
+                  </div>
                 )}
-                revokeAction={revokeMemberInvitationAction.bind(
-                  null,
-                  invitation.id,
-                )}
-              />
-            </div>
-            <p className="mt-2 text-xs text-neutral-500">
-              Resending issues a new link and invalidates the previous one.
-            </p>
-            <details className="mt-3">
-              <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
-                Link an existing sign-in identity instead
-              </summary>
-              <div className="mt-2">
-                <LinkIdentityForm
-                  action={linkIdentityToMemberAction.bind(null, member.id)}
+              </dl>
+              <div className="mt-3">
+                <InvitationActionButtons
+                  resendAction={resendMemberInvitationAction.bind(
+                    null,
+                    invitation.id,
+                  )}
+                  revokeAction={revokeMemberInvitationAction.bind(
+                    null,
+                    invitation.id,
+                  )}
                 />
               </div>
-            </details>
-          </div>
-        ) : (
-          <div className="mt-2">
-            <p className="mt-1 text-sm text-neutral-600">
-              {inviteState === "expired"
-                ? "The invitation expired before it was accepted."
-                : inviteState === "revoked"
-                  ? "The invitation was revoked."
-                  : inviteState === "accepted"
-                    ? "The invitation was accepted, but the sign-in identity was unlinked afterwards."
-                    : "No sign-in identity is linked and no invitation has been sent."}{" "}
-              Send an invitation to grant this member login access — they will
-              sign in or register to accept it.
-            </p>
-            <div className="mt-3">
-              <InviteMemberForm
-                action={createMemberInvitationAction.bind(null, member.id)}
-                defaultEmail={member.email}
-              />
+              <p className="mt-2 text-xs text-neutral-500">
+                Resending issues a new link and invalidates the previous one.
+              </p>
+              <details className="mt-3">
+                <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+                  Link an existing sign-in identity instead
+                </summary>
+                <div className="mt-2">
+                  <LinkIdentityForm
+                    action={linkIdentityToMemberAction.bind(null, member.id)}
+                  />
+                </div>
+              </details>
             </div>
-            <details className="mt-3">
-              <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
-                Link an existing sign-in identity instead
-              </summary>
-              <div className="mt-2">
-                <LinkIdentityForm
-                  action={linkIdentityToMemberAction.bind(null, member.id)}
+          ) : (
+            <div className="mt-2">
+              <p className="mt-1 text-sm text-neutral-600">
+                {inviteState === "expired"
+                  ? "The invitation expired before it was accepted."
+                  : inviteState === "revoked"
+                    ? "The invitation was revoked."
+                    : inviteState === "accepted"
+                      ? "The invitation was accepted, but the sign-in identity was unlinked afterwards."
+                      : "No sign-in identity is linked and no invitation has been sent."}{" "}
+                Send an invitation to grant this member login access — they will
+                sign in or register to accept it.
+              </p>
+              <div className="mt-3">
+                <InviteMemberForm
+                  action={createMemberInvitationAction.bind(null, member.id)}
+                  defaultEmail={member.email}
                 />
               </div>
-            </details>
-          </div>
-        )}
+              <details className="mt-3">
+                <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+                  Link an existing sign-in identity instead
+                </summary>
+                <div className="mt-2">
+                  <LinkIdentityForm
+                    action={linkIdentityToMemberAction.bind(null, member.id)}
+                  />
+                </div>
+              </details>
+            </div>
+          )}
 
-        {invitation && invitation.events.length > 0 && (
-          <details className="mt-4">
-            <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
-              Invitation history ({invitation.events.length})
-            </summary>
-            <ul className="mt-2 divide-y divide-neutral-200 rounded-md border border-neutral-200">
-              {invitation.events.map((event) => (
-                <li key={event.id} className="px-4 py-2 text-xs">
-                  <span className="font-medium text-neutral-900">
-                    {MEMBER_INVITATION_ACTION_LABELS[event.action] ??
-                      event.action}
-                  </span>
-                  <span className="text-neutral-500">
-                    {" "}
-                    · {relativeTimeLabel(event.createdAt)}
-                    {event.actorAuthIdentityId
-                      ? ` · ${
-                          inviteActorLabels.get(event.actorAuthIdentityId) ??
-                          "unknown account"
-                        }`
-                      : ""}
-                    {(() => {
-                      const detail = event.detail as { role?: string } | null;
-                      return detail?.role
-                        ? ` · ${detail.role === "ADMIN" ? "administrator" : "member"} role`
-                        : "";
-                    })()}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </details>
-        )}
-      </section>
+          {invitation && invitation.events.length > 0 && (
+            <details className="mt-4">
+              <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+                Invitation history ({invitation.events.length})
+              </summary>
+              <ul className="mt-2 divide-y divide-neutral-200 rounded-md border border-neutral-200">
+                {invitation.events.map((event) => (
+                  <li key={event.id} className="px-4 py-2 text-xs">
+                    <span className="font-medium text-neutral-900">
+                      {MEMBER_INVITATION_ACTION_LABELS[event.action] ??
+                        event.action}
+                    </span>
+                    <span className="text-neutral-500">
+                      {" "}
+                      · {relativeTimeLabel(event.createdAt)}
+                      {event.actorAuthIdentityId
+                        ? ` · ${
+                            inviteActorLabels.get(event.actorAuthIdentityId) ??
+                            "unknown account"
+                          }`
+                        : ""}
+                      {(() => {
+                        const detail = event.detail as { role?: string } | null;
+                        return detail?.role
+                          ? ` · ${detail.role === "ADMIN" ? "administrator" : "member"} role`
+                          : "";
+                      })()}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </section>
+      )}
     </div>
   );
 }

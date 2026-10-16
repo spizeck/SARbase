@@ -11,14 +11,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   getAuthContextMock,
-  requireAttachmentForAdminOrOwnerMock,
+  requireAttachmentForStaffOrOwnerMock,
   openAttachmentDownloadMock,
   reconcileAttachmentScanMock,
   getFileStorageProviderMock,
   attachmentFindUniqueOrThrowMock,
 } = vi.hoisted(() => ({
   getAuthContextMock: vi.fn(),
-  requireAttachmentForAdminOrOwnerMock: vi.fn(),
+  requireAttachmentForStaffOrOwnerMock: vi.fn(),
   openAttachmentDownloadMock: vi.fn(),
   reconcileAttachmentScanMock: vi.fn(),
   getFileStorageProviderMock: vi.fn(),
@@ -37,7 +37,7 @@ vi.mock("@/lib/auth/context", async (importOriginal) => ({
 }));
 vi.mock("@/lib/auth/authorize", async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  requireAttachmentForAdminOrOwner: requireAttachmentForAdminOrOwnerMock,
+  requireAttachmentForStaffOrOwner: requireAttachmentForStaffOrOwnerMock,
 }));
 vi.mock("@/lib/domain/attachments", async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -64,7 +64,7 @@ import { StorageError } from "@/lib/storage/provider";
 import { GET } from "./route";
 
 const ATTACHMENT_ID = "att_1";
-// requireAttachmentForAdminOrOwner returns the resolved attachment row; the
+// requireAttachmentForStaffOrOwner returns the resolved attachment row; the
 // route passes it straight to openAttachmentDownload.
 const attachment = { id: ATTACHMENT_ID, organizationId: "org_1" };
 const ctx = { identity: { id: "auth_1" }, members: [], access: [] };
@@ -91,7 +91,7 @@ async function expectError(response: Response, status: number, code: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   getAuthContextMock.mockResolvedValue(ctx);
-  requireAttachmentForAdminOrOwnerMock.mockResolvedValue(attachment);
+  requireAttachmentForStaffOrOwnerMock.mockResolvedValue(attachment);
   openAttachmentDownloadMock.mockResolvedValue({
     stream: new ReadableStream({
       start(controller) {
@@ -126,11 +126,11 @@ describe("GET /api/attachments/[attachmentId]/download", () => {
     getAuthContextMock.mockResolvedValue(null);
     await expectError(await callGet(), 401, "UNAUTHENTICATED");
     // The attachment is never resolved for an unauthenticated caller.
-    expect(requireAttachmentForAdminOrOwnerMock).not.toHaveBeenCalled();
+    expect(requireAttachmentForStaffOrOwnerMock).not.toHaveBeenCalled();
   });
 
   it("collapses foreign-org and fabricated ids to the same 404", async () => {
-    requireAttachmentForAdminOrOwnerMock.mockRejectedValue(
+    requireAttachmentForStaffOrOwnerMock.mockRejectedValue(
       new AuthorizationError(),
     );
     await expectError(await callGet(), 404, "NOT_FOUND");

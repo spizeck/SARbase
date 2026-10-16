@@ -8,7 +8,9 @@ import {
   MEMBER_SUBMISSION_STATUS_LABELS,
 } from "@/lib/domain/submissions";
 import { resolveActorLabels } from "@/lib/domain/actors";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
 import { formatDateOnly, relativeTimeLabel } from "@/lib/dates";
 import { formatBytes } from "@/app/admin/attachment-section";
 
@@ -31,7 +33,10 @@ export default async function ReviewsPage({
   params: Promise<{ orgId: string }>;
 }) {
   const { orgId } = await params;
-  await requireOrgAdminOrNotFound(orgId);
+  await requireOrgCapabilityOrNotFound(
+    orgId,
+    OrgCapability.QUALIFICATIONS_VERIFY,
+  );
   const organization = await getOrganization(orgId);
   if (!organization) notFound();
 

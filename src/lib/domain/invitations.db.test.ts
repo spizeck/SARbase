@@ -14,7 +14,7 @@ import {
   fakeFailure,
 } from "@/lib/notifications/fake";
 import {
-  requireOrgAdminForMember,
+  requireOrgCapabilityForMember,
   requireOrgAdminForMemberInvitation,
 } from "@/lib/auth/authorize";
 import { AuthorizationError, type AuthContext } from "@/lib/auth/context";
@@ -741,7 +741,7 @@ describe.skipIf(!hasDb)("member invitations", () => {
 
     // Org A admin resolves the member.
     await expect(
-      requireOrgAdminForMember(
+      requireOrgCapabilityForMember(
         ctxFor(adminA.id, [{ organizationId: orgA.id, role: "ADMIN" }]),
         member.id,
       ),
@@ -755,7 +755,7 @@ describe.skipIf(!hasDb)("member invitations", () => {
 
     // A MEMBER-only grant is not enough (elevated actions need ADMIN).
     await expect(
-      requireOrgAdminForMember(
+      requireOrgCapabilityForMember(
         ctxFor(memberOnlyA.id, [{ organizationId: orgA.id, role: "MEMBER" }]),
         member.id,
       ),
@@ -763,7 +763,7 @@ describe.skipIf(!hasDb)("member invitations", () => {
 
     // Admin of org B cannot act on org A's member or invitation.
     await expect(
-      requireOrgAdminForMember(
+      requireOrgCapabilityForMember(
         ctxFor(adminB.id, [{ organizationId: orgB.id, role: "ADMIN" }]),
         member.id,
       ),

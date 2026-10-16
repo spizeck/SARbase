@@ -1,7 +1,9 @@
 import Link from "next/link";
 
 import { prisma } from "@/lib/prisma";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
 import {
   isRetryableNotification,
   listOrganizationNotifications,
@@ -39,7 +41,10 @@ export default async function OrganizationNotificationsPage({
   const { orgId } = await params;
   // orgId from the URL is an untrusted selector — the grant comes from
   // the caller's OrganizationAccess rows.
-  await requireOrgAdminOrNotFound(orgId);
+  await requireOrgCapabilityOrNotFound(
+    orgId,
+    OrgCapability.NOTIFICATIONS_MANAGE,
+  );
 
   // The org exists — the admin grant already resolved it — so a missing
   // row here would be a genuine inconsistency.

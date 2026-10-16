@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { OrgCapability } from "@prisma/client";
 
 import { SetupChecklist } from "@/app/admin/setup-checklist";
 import { setSetupChecklistDismissedAction } from "@/app/admin/actions";
@@ -96,49 +97,107 @@ function SectionList({
   );
 }
 
-const WORKSPACES = [
+const WORKSPACES: {
+  name: string;
+  description: string;
+  capabilities: OrgCapability[];
+  href: (a: string) => string;
+}[] = [
   {
     name: "Operations",
     description: "Callouts, incidents, and training events.",
+    capabilities: ["OPERATIONS_MANAGE", "TRAINING_MANAGE"],
     href: (a: string) => `${a}/callouts`,
   },
   {
     name: "People",
     description: "Member records, units, and qualifications.",
+    capabilities: ["MEMBERS_MANAGE", "QUALIFICATIONS_MANAGE"],
     href: (a: string) => `${a}/members`,
   },
   {
     name: "Equipment",
     description: "Assets, inventory, locations, and maintenance.",
+    capabilities: ["EQUIPMENT_MANAGE"],
     href: (a: string) => `${a}/assets`,
   },
   {
     name: "Reporting",
     description: "Data exports and annual activity summaries.",
+    capabilities: ["REPORTS_EXPORT"],
     href: (a: string) => `${a}/reports`,
   },
 ];
 
+/**
+ * Staff dashboard — capability-filtered: an ADMIN sees everything,
+ * a MANAGER sees only the sections their grants cover. Visibility is
+ * UX only; every destination page enforces the same requirement.
+ */
 export async function AdminDashboard({
   orgId,
   adminRoot,
   timezone,
   orgToday,
+  capabilities,
+  isAdmin,
 }: {
   orgId: string;
   adminRoot: string;
   timezone: string;
   orgToday: Date;
+  capabilities: OrgCapability[];
+  isAdmin: boolean;
 }) {
   const [data, setup] = await Promise.all([
     getAdminDashboard(orgId, timezone),
-    getOrganizationSetup(orgId),
+    isAdmin ? getOrganizationSetup(orgId) : null,
   ]);
   const { counts } = data;
+  const can = (cap: OrgCapability) => capabilities.includes(cap);
+  const workspaces = WORKSPACES.filter((w) => w.capabilities.some(can));
+  const stats = [
+    {
+      href: `${adminRoot}/members`,
+      count: counts.members,
+      name: "Members",
+      cap: "MEMBERS_MANAGE" as OrgCapability,
+    },
+    {
+      href: `${adminRoot}/units`,
+      count: counts.units,
+      name: "Units",
+      cap: "MEMBERS_MANAGE" as OrgCapability,
+    },
+    {
+      href: `${adminRoot}/assets`,
+      count: counts.assets,
+      name: "Assets",
+      cap: "EQUIPMENT_MANAGE" as OrgCapability,
+    },
+    {
+      href: `${adminRoot}/inventory`,
+      count: counts.inventoryItems,
+      name: "Inventory items",
+      cap: "EQUIPMENT_MANAGE" as OrgCapability,
+    },
+    {
+      href: `${adminRoot}/locations`,
+      count: counts.storageLocations,
+      name: "Storage locations",
+      cap: "EQUIPMENT_MANAGE" as OrgCapability,
+    },
+    {
+      href: `${adminRoot}/qualifications`,
+      count: counts.qualificationDefinitions,
+      name: "Qualification definitions",
+      cap: "QUALIFICATIONS_MANAGE" as OrgCapability,
+    },
+  ].filter((s) => can(s.cap));
 
   return (
     <>
-      {setup && (
+      {isAdmin && setup && (
         <SetupChecklist
           setup={setup}
           dismissAction={setSetupChecklistDismissedAction.bind(
@@ -154,201 +213,191 @@ export async function AdminDashboard({
         />
       )}
 
-      <section aria-labelledby="overview-heading" className="mt-6">
-        <h2 id="overview-heading" className="sr-only">
-          Organization overview
-        </h2>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <StatCard
-            href={`${adminRoot}/members`}
-            count={counts.members}
-            name="Members"
-          />
-          <StatCard
-            href={`${adminRoot}/units`}
-            count={counts.units}
-            name="Units"
-          />
-          <StatCard
-            href={`${adminRoot}/assets`}
-            count={counts.assets}
-            name="Assets"
-          />
-          <StatCard
-            href={`${adminRoot}/inventory`}
-            count={counts.inventoryItems}
-            name="Inventory items"
-          />
-          <StatCard
-            href={`${adminRoot}/locations`}
-            count={counts.storageLocations}
-            name="Storage locations"
-          />
-          <StatCard
-            href={`${adminRoot}/qualifications`}
-            count={counts.qualificationDefinitions}
-            name="Qualification definitions"
-          />
-        </div>
-      </section>
+      {stats.length > 0 && (
+        <section aria-labelledby="overview-heading" className="mt-6">
+          <h2 id="overview-heading" className="sr-only">
+            Organization overview
+          </h2>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            {stats.map((s) => (
+              <StatCard
+                key={s.href}
+                href={s.href}
+                count={s.count}
+                name={s.name}
+              />
+            ))}
+          </div>
+        </section>
+      )}
 
       <div className="mt-6 grid gap-4 lg:grid-cols-2">
-        <SectionList
-          id="dash-callouts"
-          title="Recent callouts"
-          viewAllHref={`${adminRoot}/callouts`}
-          empty="No callouts recorded."
-        >
-          {data.recentCallouts.length > 0 && (
-            <ul className="divide-y divide-neutral-100">
-              {data.recentCallouts.map((c) => (
-                <li key={c.id}>
-                  <Link
-                    href={`${adminRoot}/callouts/${c.id}`}
-                    className="flex items-baseline justify-between gap-3 px-4 py-2.5 hover:bg-neutral-50"
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium text-neutral-900">
-                        {c.title}
+        {can("OPERATIONS_MANAGE") && (
+          <SectionList
+            id="dash-callouts"
+            title="Recent callouts"
+            viewAllHref={`${adminRoot}/callouts`}
+            empty="No callouts recorded."
+          >
+            {data.recentCallouts.length > 0 && (
+              <ul className="divide-y divide-neutral-100">
+                {data.recentCallouts.map((c) => (
+                  <li key={c.id}>
+                    <Link
+                      href={`${adminRoot}/callouts/${c.id}`}
+                      className="flex items-baseline justify-between gap-3 px-4 py-2.5 hover:bg-neutral-50"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium text-neutral-900">
+                          {c.title}
+                        </span>
+                        <span className="text-xs text-neutral-500">
+                          {formatInstantInZone(c.activatedAt, timezone)}
+                        </span>
                       </span>
-                      <span className="text-xs text-neutral-500">
-                        {formatInstantInZone(c.activatedAt, timezone)}
+                      <span className="shrink-0 text-xs text-neutral-500">
+                        {label(c.status)}
                       </span>
-                    </span>
-                    <span className="shrink-0 text-xs text-neutral-500">
-                      {label(c.status)}
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </SectionList>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </SectionList>
+        )}
 
-        <SectionList
-          id="dash-incidents"
-          title="Recent incidents"
-          viewAllHref={`${adminRoot}/incidents`}
-          empty="No incidents recorded."
-        >
-          {data.recentIncidents.length > 0 && (
-            <ul className="divide-y divide-neutral-100">
-              {data.recentIncidents.map((i) => (
-                <li key={i.id}>
-                  <Link
-                    href={`${adminRoot}/incidents/${i.id}`}
-                    className="flex items-baseline justify-between gap-3 px-4 py-2.5 hover:bg-neutral-50"
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium text-neutral-900">
-                        {i.reference} — {i.title}
+        {can("OPERATIONS_MANAGE") && (
+          <SectionList
+            id="dash-incidents"
+            title="Recent incidents"
+            viewAllHref={`${adminRoot}/incidents`}
+            empty="No incidents recorded."
+          >
+            {data.recentIncidents.length > 0 && (
+              <ul className="divide-y divide-neutral-100">
+                {data.recentIncidents.map((i) => (
+                  <li key={i.id}>
+                    <Link
+                      href={`${adminRoot}/incidents/${i.id}`}
+                      className="flex items-baseline justify-between gap-3 px-4 py-2.5 hover:bg-neutral-50"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium text-neutral-900">
+                          {i.reference} — {i.title}
+                        </span>
+                        <span className="text-xs text-neutral-500">
+                          {i.reportedAt
+                            ? formatInstantInZone(i.reportedAt, timezone)
+                            : "No report time recorded"}
+                        </span>
                       </span>
-                      <span className="text-xs text-neutral-500">
-                        {i.reportedAt
-                          ? formatInstantInZone(i.reportedAt, timezone)
-                          : "No report time recorded"}
+                      <span className="shrink-0 text-xs text-neutral-500">
+                        {label(i.status)}
                       </span>
-                    </span>
-                    <span className="shrink-0 text-xs text-neutral-500">
-                      {label(i.status)}
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </SectionList>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </SectionList>
+        )}
 
-        <SectionList
-          id="dash-training"
-          title="Upcoming training events"
-          viewAllHref={`${adminRoot}/training`}
-          empty="No scheduled training events."
-        >
-          {data.upcomingTraining.length > 0 && (
-            <ul className="divide-y divide-neutral-100">
-              {data.upcomingTraining.map((e) => (
-                <li key={e.id}>
-                  <Link
-                    href={`${adminRoot}/training/${e.id}`}
-                    className="flex items-baseline justify-between gap-3 px-4 py-2.5 hover:bg-neutral-50"
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium text-neutral-900">
-                        {e.title}
+        {can("TRAINING_MANAGE") && (
+          <SectionList
+            id="dash-training"
+            title="Upcoming training events"
+            viewAllHref={`${adminRoot}/training`}
+            empty="No scheduled training events."
+          >
+            {data.upcomingTraining.length > 0 && (
+              <ul className="divide-y divide-neutral-100">
+                {data.upcomingTraining.map((e) => (
+                  <li key={e.id}>
+                    <Link
+                      href={`${adminRoot}/training/${e.id}`}
+                      className="flex items-baseline justify-between gap-3 px-4 py-2.5 hover:bg-neutral-50"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium text-neutral-900">
+                          {e.title}
+                        </span>
+                        <span className="text-xs text-neutral-500">
+                          {formatDateOnly(e.date)}
+                          {e.unit ? ` · ${e.unit.name}` : ""}
+                        </span>
                       </span>
-                      <span className="text-xs text-neutral-500">
-                        {formatDateOnly(e.date)}
-                        {e.unit ? ` · ${e.unit.name}` : ""}
+                      <span className="shrink-0 text-xs text-neutral-500">
+                        {e.attendeeCount} recorded
                       </span>
-                    </span>
-                    <span className="shrink-0 text-xs text-neutral-500">
-                      {e.attendeeCount} recorded
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </SectionList>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </SectionList>
+        )}
 
-        <SectionList
-          id="dash-expiring"
-          title="Certifications expiring within 30 days"
-          viewAllHref={`${adminRoot}/expiring`}
-          empty="No tracked certifications expire within 30 days."
-        >
-          {data.expiringQualifications.length > 0 && (
-            <ul className="divide-y divide-neutral-100">
-              {data.expiringQualifications.slice(0, 5).map((q) => (
-                <li key={q.id}>
-                  <Link
-                    href={`${adminRoot}/members/${q.member.id}`}
-                    className="flex items-baseline justify-between gap-3 px-4 py-2.5 hover:bg-neutral-50"
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium text-neutral-900">
-                        {q.member.displayName}
+        {can("QUALIFICATIONS_MANAGE") && (
+          <SectionList
+            id="dash-expiring"
+            title="Certifications expiring within 30 days"
+            viewAllHref={`${adminRoot}/expiring`}
+            empty="No tracked certifications expire within 30 days."
+          >
+            {data.expiringQualifications.length > 0 && (
+              <ul className="divide-y divide-neutral-100">
+                {data.expiringQualifications.slice(0, 5).map((q) => (
+                  <li key={q.id}>
+                    <Link
+                      href={`${adminRoot}/members/${q.member.id}`}
+                      className="flex items-baseline justify-between gap-3 px-4 py-2.5 hover:bg-neutral-50"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium text-neutral-900">
+                          {q.member.displayName}
+                        </span>
+                        <span className="text-xs text-neutral-500">
+                          {q.definition.name}
+                        </span>
                       </span>
-                      <span className="text-xs text-neutral-500">
-                        {q.definition.name}
+                      <span className="shrink-0 text-xs text-neutral-500">
+                        {expiryLabel(q.expiresOn, orgToday)}
                       </span>
-                    </span>
-                    <span className="shrink-0 text-xs text-neutral-500">
-                      {expiryLabel(q.expiresOn, orgToday)}
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </SectionList>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </SectionList>
+        )}
       </div>
 
-      <section aria-labelledby="workspaces-heading" className="mt-8">
-        <h2
-          id="workspaces-heading"
-          className="text-sm font-semibold text-neutral-900"
-        >
-          Manage
-        </h2>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {WORKSPACES.map((w) => (
-            <Link
-              key={w.name}
-              href={w.href(adminRoot)}
-              className="rounded-lg border border-neutral-200 px-4 py-3 hover:border-neutral-300 hover:bg-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:ring-offset-2"
-            >
-              <span className="block text-sm font-medium text-neutral-900">
-                {w.name}
-              </span>
-              <span className="mt-1 block text-xs text-neutral-500">
-                {w.description}
-              </span>
-            </Link>
-          ))}
-        </div>
-      </section>
+      {workspaces.length > 0 && (
+        <section aria-labelledby="workspaces-heading" className="mt-8">
+          <h2
+            id="workspaces-heading"
+            className="text-sm font-semibold text-neutral-900"
+          >
+            Manage
+          </h2>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {workspaces.map((w) => (
+              <Link
+                key={w.name}
+                href={w.href(adminRoot)}
+                className="rounded-lg border border-neutral-200 px-4 py-3 hover:border-neutral-300 hover:bg-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:ring-offset-2"
+              >
+                <span className="block text-sm font-medium text-neutral-900">
+                  {w.name}
+                </span>
+                <span className="mt-1 block text-xs text-neutral-500">
+                  {w.description}
+                </span>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
     </>
   );
 }

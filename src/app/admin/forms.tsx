@@ -189,6 +189,7 @@ export function MemberForm({
   defaults,
   submitLabel,
   regions,
+  showEmergencyContact = true,
 }: {
   action: BoundAction;
   defaults?: {
@@ -201,6 +202,12 @@ export function MemberForm({
   submitLabel: string;
   /** Server-computed region list for the phone country selector. */
   regions: PhoneRegionOption[];
+  /**
+   * Emergency-contact fields are Administrator-only data (issue #84) —
+   * hidden from MEMBERS_MANAGE managers. The action ignores them for
+   * non-admin callers too; this flag only keeps them out of the DOM.
+   */
+  showEmergencyContact?: boolean;
 }) {
   const [state, formAction, pending] = useActionState(action, {});
   return (
@@ -247,39 +254,41 @@ export function MemberForm({
         defaultPhone={defaults?.phone}
         errors={state.fieldErrors?.phone}
       />
-      <fieldset className="space-y-3 border-t border-neutral-200 pt-3">
-        <legend className="text-sm font-medium text-neutral-800">
-          Emergency contact{" "}
-          <span className="font-normal text-neutral-500">(optional)</span>
-        </legend>
-        <div>
-          <label htmlFor="member-emergency-name" className={labelClass}>
-            Contact name
-          </label>
-          <input
-            id="member-emergency-name"
-            name="emergencyContactName"
-            type="text"
-            maxLength={120}
-            defaultValue={defaults?.emergencyContactName ?? undefined}
-            aria-invalid={Boolean(state.fieldErrors?.emergencyContactName)}
-            aria-describedby="member-emergency-name-error"
-            className={inputClass}
+      {showEmergencyContact && (
+        <fieldset className="space-y-3 border-t border-neutral-200 pt-3">
+          <legend className="text-sm font-medium text-neutral-800">
+            Emergency contact{" "}
+            <span className="font-normal text-neutral-500">(optional)</span>
+          </legend>
+          <div>
+            <label htmlFor="member-emergency-name" className={labelClass}>
+              Contact name
+            </label>
+            <input
+              id="member-emergency-name"
+              name="emergencyContactName"
+              type="text"
+              maxLength={120}
+              defaultValue={defaults?.emergencyContactName ?? undefined}
+              aria-invalid={Boolean(state.fieldErrors?.emergencyContactName)}
+              aria-describedby="member-emergency-name-error"
+              className={inputClass}
+            />
+            <FieldError
+              id="member-emergency-name-error"
+              errors={state.fieldErrors?.emergencyContactName}
+            />
+          </div>
+          <PhoneFields
+            idPrefix="member-emergency"
+            regions={regions}
+            defaultPhone={defaults?.emergencyContactPhone}
+            errors={state.fieldErrors?.emergencyContactPhone}
+            fieldName="emergencyContactPhone"
+            regionFieldName="emergencyContactPhoneRegion"
           />
-          <FieldError
-            id="member-emergency-name-error"
-            errors={state.fieldErrors?.emergencyContactName}
-          />
-        </div>
-        <PhoneFields
-          idPrefix="member-emergency"
-          regions={regions}
-          defaultPhone={defaults?.emergencyContactPhone}
-          errors={state.fieldErrors?.emergencyContactPhone}
-          fieldName="emergencyContactPhone"
-          regionFieldName="emergencyContactPhoneRegion"
-        />
-      </fieldset>
+        </fieldset>
+      )}
       {state.message && (
         <p className={errorClass} role="alert">
           {state.message}

@@ -1,7 +1,9 @@
 import { notFound, redirect } from "next/navigation";
 
 import { getAsset } from "@/lib/domain/assets";
-import { isOrgAdmin, requireAuth } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { hasOrgCapability, requireAuth } from "@/lib/auth/authorize";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +20,10 @@ export default async function LegacyAssetPage({
   const ctx = await requireAuth();
   const { assetId } = await params;
   const asset = await getAsset(assetId);
-  if (!asset || !isOrgAdmin(ctx, asset.organizationId)) notFound();
+  if (
+    !asset ||
+    !hasOrgCapability(ctx, asset.organizationId, OrgCapability.EQUIPMENT_MANAGE)
+  )
+    notFound();
   redirect(`/admin/organizations/${asset.organizationId}/assets/${asset.id}`);
 }

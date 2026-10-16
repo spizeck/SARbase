@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { isOrgAdmin, requireAuth } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { hasOrgCapability, requireAuth } from "@/lib/auth/authorize";
 import { getOrganizationDocument } from "@/lib/domain/attachments";
 import { attachmentScanLabel } from "@/lib/domain/malware-scan";
 import { resolveActorLabels } from "@/lib/domain/actors";
@@ -49,7 +51,7 @@ export default async function OrganizationDocumentPage({
   if (
     !document ||
     document.organizationId !== orgId ||
-    !isOrgAdmin(ctx, orgId)
+    !hasOrgCapability(ctx, orgId, OrgCapability.DOCUMENTS_MANAGE)
   ) {
     notFound();
   }

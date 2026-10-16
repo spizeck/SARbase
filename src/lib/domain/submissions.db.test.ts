@@ -11,8 +11,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { InMemoryFileStorageProvider } from "@/lib/storage/memory";
 import {
-  requireAttachmentForAdminOrOwner,
-  requireOrgAdminForMemberSubmission,
+  requireAttachmentForStaffOrOwner,
+  requireOrgCapabilityForMemberSubmission,
 } from "@/lib/auth/authorize";
 import { AuthorizationError, type AuthContext } from "@/lib/auth/context";
 
@@ -467,7 +467,7 @@ describe.skipIf(!hasDb)("member submissions (issue #71)", () => {
       const ctx = ctxFor(adminA.id, [
         { organizationId: orgA.id, role: "ADMIN" },
       ]);
-      const resolved = await requireOrgAdminForMemberSubmission(
+      const resolved = await requireOrgCapabilityForMemberSubmission(
         ctx,
         submission.id,
       );
@@ -480,7 +480,7 @@ describe.skipIf(!hasDb)("member submissions (issue #71)", () => {
         { organizationId: orgB.id, role: "ADMIN" },
       ]);
       await expect(
-        requireOrgAdminForMemberSubmission(ctx, submission.id),
+        requireOrgCapabilityForMemberSubmission(ctx, submission.id),
       ).rejects.toThrow(AuthorizationError);
     });
 
@@ -490,7 +490,7 @@ describe.skipIf(!hasDb)("member submissions (issue #71)", () => {
         { organizationId: orgA.id, role: "MEMBER" },
       ]);
       await expect(
-        requireOrgAdminForMemberSubmission(ctx, submission.id),
+        requireOrgCapabilityForMemberSubmission(ctx, submission.id),
       ).rejects.toThrow(AuthorizationError);
     });
 
@@ -508,7 +508,7 @@ describe.skipIf(!hasDb)("member submissions (issue #71)", () => {
         [{ organizationId: orgA.id, role: "MEMBER" }],
         [{ id: memberA.id, organizationId: orgA.id }],
       );
-      const resolved = await requireAttachmentForAdminOrOwner(
+      const resolved = await requireAttachmentForStaffOrOwner(
         ctx,
         attachment.id,
       );
@@ -537,7 +537,7 @@ describe.skipIf(!hasDb)("member submissions (issue #71)", () => {
         [{ id: otherMemberA.id, organizationId: orgA.id }],
       );
       await expect(
-        requireAttachmentForAdminOrOwner(ctx, attachment.id),
+        requireAttachmentForStaffOrOwner(ctx, attachment.id),
       ).rejects.toThrow(AuthorizationError);
     });
 
@@ -557,7 +557,7 @@ describe.skipIf(!hasDb)("member submissions (issue #71)", () => {
         [{ id: memberA.id, organizationId: orgA.id }],
       );
       await expect(
-        requireAttachmentForAdminOrOwner(ctx, attachment.id),
+        requireAttachmentForStaffOrOwner(ctx, attachment.id),
       ).rejects.toThrow(AuthorizationError);
     });
   });

@@ -1,5 +1,5 @@
 import { notFound, redirect } from "next/navigation";
-import type { OrgCapability } from "@prisma/client";
+import { OrgCapability } from "@prisma/client";
 
 import { log } from "@/lib/logging";
 import { prisma } from "@/lib/prisma";
@@ -229,8 +229,32 @@ export async function requireOrgAccessOrNotFound(
 
 /**
  * Resolve a Member by the caller-supplied id, derive its REAL
- * organizationId from the record, and require ADMIN access to that
- * org. The supplied organizationId (if any) is never consulted.
+ * organizationId from the record, and require the caller to hold the
+ * governing capability on that org (members.manage by default;
+ * callers from another domain pass theirs, e.g. QUALIFICATIONS_MANAGE
+ * for member-qualification writes). The supplied organizationId (if
+ * any) is never consulted.
+ */
+export async function requireOrgCapabilityForMember(
+  ctx: AuthContext,
+  memberId: string,
+  capability: OrgCapability = OrgCapability.MEMBERS_MANAGE,
+) {
+  const member = await prisma.member.findUnique({
+    where: { id: memberId },
+  });
+  if (!member || !hasOrgCapability(ctx, member.organizationId, capability)) {
+    logDenial("authz.member_scope_denied", ctx, { entityId: memberId });
+    throw new AuthorizationError();
+  }
+  return member;
+}
+
+/**
+ * The ADMIN-only member resolver — for operations that are never
+ * delegable: identity linking/unlinking and member invitations
+ * (account administration, issue #84). Same untrusted-selector rule,
+ * but the required grant is ADMIN, not a capability.
  */
 export async function requireOrgAdminForMember(
   ctx: AuthContext,
@@ -246,9 +270,15 @@ export async function requireOrgAdminForMember(
   return member;
 }
 
-export async function requireOrgAdminForUnit(ctx: AuthContext, unitId: string) {
+export async function requireOrgCapabilityForUnit(
+  ctx: AuthContext,
+  unitId: string,
+) {
   const unit = await prisma.unit.findUnique({ where: { id: unitId } });
-  if (!unit || !isOrgAdmin(ctx, unit.organizationId)) {
+  if (
+    !unit ||
+    !hasOrgCapability(ctx, unit.organizationId, OrgCapability.MEMBERS_MANAGE)
+  ) {
     logDenial("authz.unit_scope_denied", ctx, { entityId: unitId });
     throw new AuthorizationError();
   }
@@ -275,28 +305,42 @@ export function linkedMembersWithAccess(ctx: AuthContext) {
   return ctx.members.filter((m) => orgIds.has(m.organizationId));
 }
 
-export async function requireOrgAdminForDefinition(
+export async function requireOrgCapabilityForQualificationDefinition(
   ctx: AuthContext,
   definitionId: string,
 ) {
   const definition = await prisma.qualificationDefinition.findUnique({
     where: { id: definitionId },
   });
-  if (!definition || !isOrgAdmin(ctx, definition.organizationId)) {
+  if (
+    !definition ||
+    !hasOrgCapability(
+      ctx,
+      definition.organizationId,
+      OrgCapability.QUALIFICATIONS_MANAGE,
+    )
+  ) {
     logDenial("authz.definition_scope_denied", ctx, { entityId: definitionId });
     throw new AuthorizationError();
   }
   return definition;
 }
 
-export async function requireOrgAdminForQualification(
+export async function requireOrgCapabilityForQualification(
   ctx: AuthContext,
   qualificationId: string,
 ) {
   const record = await prisma.memberQualification.findUnique({
     where: { id: qualificationId },
   });
-  if (!record || !isOrgAdmin(ctx, record.organizationId)) {
+  if (
+    !record ||
+    !hasOrgCapability(
+      ctx,
+      record.organizationId,
+      OrgCapability.QUALIFICATIONS_MANAGE,
+    )
+  ) {
     logDenial("authz.qualification_scope_denied", ctx, {
       entityId: qualificationId,
     });
@@ -310,14 +354,17 @@ export async function requireOrgAdminForQualification(
  * event's own organizationId decides which grant must exist. Attendance
  * is managed through the event, so this covers it too.
  */
-export async function requireOrgAdminForTrainingEvent(
+export async function requireOrgCapabilityForTrainingEvent(
   ctx: AuthContext,
   eventId: string,
 ) {
   const event = await prisma.trainingEvent.findUnique({
     where: { id: eventId },
   });
-  if (!event || !isOrgAdmin(ctx, event.organizationId)) {
+  if (
+    !event ||
+    !hasOrgCapability(ctx, event.organizationId, OrgCapability.TRAINING_MANAGE)
+  ) {
     logDenial("authz.training_scope_denied", ctx, { entityId: eventId });
     throw new AuthorizationError();
   }
@@ -329,40 +376,53 @@ export async function requireOrgAdminForTrainingEvent(
  * caller-supplied id selects the record; the record's own
  * organizationId decides which grant must exist.
  */
-export async function requireOrgAdminForStorageLocation(
+export async function requireOrgCapabilityForStorageLocation(
   ctx: AuthContext,
   locationId: string,
 ) {
   const location = await prisma.storageLocation.findUnique({
     where: { id: locationId },
   });
-  if (!location || !isOrgAdmin(ctx, location.organizationId)) {
+  if (
+    !location ||
+    !hasOrgCapability(
+      ctx,
+      location.organizationId,
+      OrgCapability.EQUIPMENT_MANAGE,
+    )
+  ) {
     logDenial("authz.location_scope_denied", ctx, { entityId: locationId });
     throw new AuthorizationError();
   }
   return location;
 }
 
-export async function requireOrgAdminForAsset(
+export async function requireOrgCapabilityForAsset(
   ctx: AuthContext,
   assetId: string,
 ) {
   const asset = await prisma.asset.findUnique({ where: { id: assetId } });
-  if (!asset || !isOrgAdmin(ctx, asset.organizationId)) {
+  if (
+    !asset ||
+    !hasOrgCapability(ctx, asset.organizationId, OrgCapability.EQUIPMENT_MANAGE)
+  ) {
     logDenial("authz.asset_scope_denied", ctx, { entityId: assetId });
     throw new AuthorizationError();
   }
   return asset;
 }
 
-export async function requireOrgAdminForInventoryItem(
+export async function requireOrgCapabilityForInventoryItem(
   ctx: AuthContext,
   itemId: string,
 ) {
   const item = await prisma.inventoryItem.findUnique({
     where: { id: itemId },
   });
-  if (!item || !isOrgAdmin(ctx, item.organizationId)) {
+  if (
+    !item ||
+    !hasOrgCapability(ctx, item.organizationId, OrgCapability.EQUIPMENT_MANAGE)
+  ) {
     logDenial("authz.item_scope_denied", ctx, { entityId: itemId });
     throw new AuthorizationError();
   }
@@ -375,14 +435,21 @@ export async function requireOrgAdminForInventoryItem(
  * exist. Every issue #11 record carries a denormalized organizationId
  * guaranteed by composite FKs, so each of these is a single-row lookup.
  */
-export async function requireOrgAdminForInspectionDefinition(
+export async function requireOrgCapabilityForInspectionDefinition(
   ctx: AuthContext,
   definitionId: string,
 ) {
   const definition = await prisma.inspectionDefinition.findUnique({
     where: { id: definitionId },
   });
-  if (!definition || !isOrgAdmin(ctx, definition.organizationId)) {
+  if (
+    !definition ||
+    !hasOrgCapability(
+      ctx,
+      definition.organizationId,
+      OrgCapability.EQUIPMENT_MANAGE,
+    )
+  ) {
     logDenial("authz.inspection_definition_scope_denied", ctx, {
       entityId: definitionId,
     });
@@ -391,14 +458,21 @@ export async function requireOrgAdminForInspectionDefinition(
   return definition;
 }
 
-export async function requireOrgAdminForInspectionRecord(
+export async function requireOrgCapabilityForInspectionRecord(
   ctx: AuthContext,
   recordId: string,
 ) {
   const record = await prisma.inspectionRecord.findUnique({
     where: { id: recordId },
   });
-  if (!record || !isOrgAdmin(ctx, record.organizationId)) {
+  if (
+    !record ||
+    !hasOrgCapability(
+      ctx,
+      record.organizationId,
+      OrgCapability.EQUIPMENT_MANAGE,
+    )
+  ) {
     logDenial("authz.inspection_record_scope_denied", ctx, {
       entityId: recordId,
     });
@@ -407,14 +481,17 @@ export async function requireOrgAdminForInspectionRecord(
   return record;
 }
 
-export async function requireOrgAdminForMaintenancePlan(
+export async function requireOrgCapabilityForMaintenancePlan(
   ctx: AuthContext,
   planId: string,
 ) {
   const plan = await prisma.maintenancePlan.findUnique({
     where: { id: planId },
   });
-  if (!plan || !isOrgAdmin(ctx, plan.organizationId)) {
+  if (
+    !plan ||
+    !hasOrgCapability(ctx, plan.organizationId, OrgCapability.EQUIPMENT_MANAGE)
+  ) {
     logDenial("authz.maintenance_plan_scope_denied", ctx, {
       entityId: planId,
     });
@@ -423,14 +500,21 @@ export async function requireOrgAdminForMaintenancePlan(
   return plan;
 }
 
-export async function requireOrgAdminForMaintenanceRecord(
+export async function requireOrgCapabilityForMaintenanceRecord(
   ctx: AuthContext,
   recordId: string,
 ) {
   const record = await prisma.maintenanceRecord.findUnique({
     where: { id: recordId },
   });
-  if (!record || !isOrgAdmin(ctx, record.organizationId)) {
+  if (
+    !record ||
+    !hasOrgCapability(
+      ctx,
+      record.organizationId,
+      OrgCapability.EQUIPMENT_MANAGE,
+    )
+  ) {
     logDenial("authz.maintenance_record_scope_denied", ctx, {
       entityId: recordId,
     });
@@ -439,24 +523,34 @@ export async function requireOrgAdminForMaintenanceRecord(
   return record;
 }
 
-export async function requireOrgAdminForDefect(
+export async function requireOrgCapabilityForDefect(
   ctx: AuthContext,
   defectId: string,
 ) {
   const defect = await prisma.defect.findUnique({ where: { id: defectId } });
-  if (!defect || !isOrgAdmin(ctx, defect.organizationId)) {
+  if (
+    !defect ||
+    !hasOrgCapability(
+      ctx,
+      defect.organizationId,
+      OrgCapability.EQUIPMENT_MANAGE,
+    )
+  ) {
     logDenial("authz.defect_scope_denied", ctx, { entityId: defectId });
     throw new AuthorizationError();
   }
   return defect;
 }
 
-export async function requireOrgAdminForAssetMeter(
+export async function requireOrgCapabilityForAssetMeter(
   ctx: AuthContext,
   meterId: string,
 ) {
   const meter = await prisma.assetMeter.findUnique({ where: { id: meterId } });
-  if (!meter || !isOrgAdmin(ctx, meter.organizationId)) {
+  if (
+    !meter ||
+    !hasOrgCapability(ctx, meter.organizationId, OrgCapability.EQUIPMENT_MANAGE)
+  ) {
     logDenial("authz.meter_scope_denied", ctx, { entityId: meterId });
     throw new AuthorizationError();
   }
@@ -468,14 +562,21 @@ export async function requireOrgAdminForAssetMeter(
  * an untrusted selector; the record's own organizationId decides which
  * grant must exist.
  */
-export async function requireOrgAdminForNotification(
+export async function requireOrgCapabilityForNotification(
   ctx: AuthContext,
   notificationId: string,
 ) {
   const notification = await prisma.notification.findUnique({
     where: { id: notificationId },
   });
-  if (!notification || !isOrgAdmin(ctx, notification.organizationId)) {
+  if (
+    !notification ||
+    !hasOrgCapability(
+      ctx,
+      notification.organizationId,
+      OrgCapability.NOTIFICATIONS_MANAGE,
+    )
+  ) {
     logDenial("authz.notification_scope_denied", ctx, {
       entityId: notificationId,
     });
@@ -491,14 +592,21 @@ export async function requireOrgAdminForNotification(
  * the invitation variant resolves via the invitation's denormalized
  * organizationId.
  */
-export async function requireOrgAdminForCallout(
+export async function requireOrgCapabilityForCallout(
   ctx: AuthContext,
   calloutId: string,
 ) {
   const callout = await prisma.callout.findUnique({
     where: { id: calloutId },
   });
-  if (!callout || !isOrgAdmin(ctx, callout.organizationId)) {
+  if (
+    !callout ||
+    !hasOrgCapability(
+      ctx,
+      callout.organizationId,
+      OrgCapability.OPERATIONS_MANAGE,
+    )
+  ) {
     logDenial("authz.callout_scope_denied", ctx, { entityId: calloutId });
     throw new AuthorizationError();
   }
@@ -526,14 +634,21 @@ export async function requireOrgAdminForMemberInvitation(
   return invitation;
 }
 
-export async function requireOrgAdminForCalloutInvitation(
+export async function requireOrgCapabilityForCalloutInvitation(
   ctx: AuthContext,
   invitationId: string,
 ) {
   const invitation = await prisma.calloutInvitation.findUnique({
     where: { id: invitationId },
   });
-  if (!invitation || !isOrgAdmin(ctx, invitation.organizationId)) {
+  if (
+    !invitation ||
+    !hasOrgCapability(
+      ctx,
+      invitation.organizationId,
+      OrgCapability.OPERATIONS_MANAGE,
+    )
+  ) {
     logDenial("authz.callout_invitation_scope_denied", ctx, {
       entityId: invitationId,
     });
@@ -546,32 +661,42 @@ export async function requireOrgAdminForCalloutInvitation(
  * Issue #15 incident lookups — same rule: the caller-supplied id is an
  * untrusted selector; the record's own organizationId decides which
  * grant must exist. Incidents may carry sensitive data, so every
- * incident surface is ADMIN-only — there is deliberately no member-role
+ * incident surface is staff-only — there is deliberately no member-role
  * variant. Participant/note rows resolve through their denormalized
  * organizationId (composite-FK guaranteed).
  */
-export async function requireOrgAdminForIncident(
+export async function requireOrgCapabilityForIncident(
   ctx: AuthContext,
   incidentId: string,
 ) {
   const incident = await prisma.incident.findUnique({
     where: { id: incidentId },
   });
-  if (!incident || !isOrgAdmin(ctx, incident.organizationId)) {
+  if (
+    !incident ||
+    !hasOrgCapability(
+      ctx,
+      incident.organizationId,
+      OrgCapability.OPERATIONS_MANAGE,
+    )
+  ) {
     logDenial("authz.incident_scope_denied", ctx, { entityId: incidentId });
     throw new AuthorizationError();
   }
   return incident;
 }
 
-export async function requireOrgAdminForIncidentMember(
+export async function requireOrgCapabilityForIncidentMember(
   ctx: AuthContext,
   participationId: string,
 ) {
   const row = await prisma.incidentMember.findUnique({
     where: { id: participationId },
   });
-  if (!row || !isOrgAdmin(ctx, row.organizationId)) {
+  if (
+    !row ||
+    !hasOrgCapability(ctx, row.organizationId, OrgCapability.OPERATIONS_MANAGE)
+  ) {
     logDenial("authz.incident_member_scope_denied", ctx, {
       entityId: participationId,
     });
@@ -580,14 +705,17 @@ export async function requireOrgAdminForIncidentMember(
   return row;
 }
 
-export async function requireOrgAdminForIncidentAsset(
+export async function requireOrgCapabilityForIncidentAsset(
   ctx: AuthContext,
   participationId: string,
 ) {
   const row = await prisma.incidentAsset.findUnique({
     where: { id: participationId },
   });
-  if (!row || !isOrgAdmin(ctx, row.organizationId)) {
+  if (
+    !row ||
+    !hasOrgCapability(ctx, row.organizationId, OrgCapability.OPERATIONS_MANAGE)
+  ) {
     logDenial("authz.incident_asset_scope_denied", ctx, {
       entityId: participationId,
     });
@@ -596,14 +724,17 @@ export async function requireOrgAdminForIncidentAsset(
   return row;
 }
 
-export async function requireOrgAdminForIncidentNote(
+export async function requireOrgCapabilityForIncidentNote(
   ctx: AuthContext,
   noteId: string,
 ) {
   const note = await prisma.incidentNote.findUnique({
     where: { id: noteId },
   });
-  if (!note || !isOrgAdmin(ctx, note.organizationId)) {
+  if (
+    !note ||
+    !hasOrgCapability(ctx, note.organizationId, OrgCapability.OPERATIONS_MANAGE)
+  ) {
     logDenial("authz.incident_note_scope_denied", ctx, { entityId: noteId });
     throw new AuthorizationError();
   }
@@ -613,18 +744,27 @@ export async function requireOrgAdminForIncidentNote(
 /**
  * Issue #16 lookups — same rule: the caller-supplied id is an untrusted
  * selector; the record's own organizationId decides which grant must
- * exist. Attachment metadata, downloads, and organization documents are
- * all ADMIN-only — knowing an attachment id discloses nothing, and
- * every read/mutation passes through one of these helpers first.
+ * exist. Attachment mutations and organization documents require the
+ * domain's capability (DOCUMENTS_MANAGE for file-level control, or the
+ * target's domain capability for uploads/downloads) — knowing an
+ * attachment id discloses nothing, and every read/mutation passes
+ * through one of these helpers first.
  */
-export async function requireOrgAdminForAttachment(
+export async function requireOrgCapabilityForAttachment(
   ctx: AuthContext,
   attachmentId: string,
 ) {
   const attachment = await prisma.attachment.findUnique({
     where: { id: attachmentId },
   });
-  if (!attachment || !isOrgAdmin(ctx, attachment.organizationId)) {
+  if (
+    !attachment ||
+    !hasOrgCapability(
+      ctx,
+      attachment.organizationId,
+      OrgCapability.DOCUMENTS_MANAGE,
+    )
+  ) {
     logDenial("authz.attachment_scope_denied", ctx, {
       entityId: attachmentId,
     });
@@ -634,14 +774,35 @@ export async function requireOrgAdminForAttachment(
 }
 
 /**
+ * Which staff capability governs an attachment's linked target — the
+ * download gate follows the record the file belongs to (issue #84).
+ * DOCUMENTS_MANAGE also grants file-level control everywhere.
+ */
+const ATTACHMENT_LINK_CAPABILITIES = [
+  ["incidentLinks", OrgCapability.OPERATIONS_MANAGE],
+  ["incidentNoteLinks", OrgCapability.OPERATIONS_MANAGE],
+  ["qualificationLinks", OrgCapability.QUALIFICATIONS_MANAGE],
+  ["submissionLinks", OrgCapability.QUALIFICATIONS_VERIFY],
+  ["trainingLinks", OrgCapability.TRAINING_MANAGE],
+  ["assetLinks", OrgCapability.EQUIPMENT_MANAGE],
+  ["inspectionLinks", OrgCapability.EQUIPMENT_MANAGE],
+  ["maintenanceLinks", OrgCapability.EQUIPMENT_MANAGE],
+  ["defectLinks", OrgCapability.EQUIPMENT_MANAGE],
+  ["expenseLinks", OrgCapability.FINANCE_MANAGE],
+  ["documentVersions", OrgCapability.DOCUMENTS_MANAGE],
+] as const;
+
+/**
  * Issue #71 member-scope attachment access — evidence files on the
- * caller's OWN records. A non-admin may download an attachment only
- * when it is linked to a MemberSubmission they filed or a
+ * caller's OWN records — extended for issue #84: staff download an
+ * attachment when they hold the capability governing a record the file
+ * is linked to (or DOCUMENTS_MANAGE). A non-staff member may download
+ * only when the file is linked to a MemberSubmission they filed or a
  * MemberQualification on their own linked member record, in an
  * organization they currently hold access to. Same opaque denial as
  * every other scope check.
  */
-export async function requireAttachmentForAdminOrOwner(
+export async function requireAttachmentForStaffOrOwner(
   ctx: AuthContext,
   attachmentId: string,
 ) {
@@ -658,6 +819,14 @@ export async function requireAttachmentForAdminOrOwner(
           memberQualification: { select: { memberId: true } },
         },
       },
+      // One row per other link table — presence, not content, drives
+      // the capability set the caller may hold. submissionLinks and
+      // qualificationLinks already load member ids above.
+      ...Object.fromEntries(
+        ATTACHMENT_LINK_CAPABILITIES.filter(
+          ([key]) => key !== "submissionLinks" && key !== "qualificationLinks",
+        ).map(([key]) => [key, { select: { attachmentId: true }, take: 1 }]),
+      ),
     },
   });
   if (!attachment) {
@@ -666,7 +835,20 @@ export async function requireAttachmentForAdminOrOwner(
     });
     throw new AuthorizationError();
   }
-  if (isOrgAdmin(ctx, attachment.organizationId)) return attachment;
+  const targetCapabilities = new Set<OrgCapability>([
+    OrgCapability.DOCUMENTS_MANAGE,
+    ...ATTACHMENT_LINK_CAPABILITIES.filter(
+      ([key]) =>
+        (attachment[key as keyof typeof attachment] as unknown[]).length > 0,
+    ).map(([, capability]) => capability),
+  ]);
+  if (
+    [...targetCapabilities].some((capability) =>
+      hasOrgCapability(ctx, attachment.organizationId, capability),
+    )
+  ) {
+    return attachment;
+  }
 
   const ownMemberIds = new Set(linkedMembersWithAccess(ctx).map((m) => m.id));
   const isOwn =
@@ -690,7 +872,7 @@ export async function requireAttachmentForAdminOrOwner(
  * untrusted selector; the submission's own organizationId decides which
  * grant must exist.
  */
-export async function requireOrgAdminForMemberSubmission(
+export async function requireOrgCapabilityForMemberSubmission(
   ctx: AuthContext,
   submissionId: string,
 ) {
@@ -698,7 +880,14 @@ export async function requireOrgAdminForMemberSubmission(
     where: { id: submissionId },
     include: { member: { select: { displayName: true } } },
   });
-  if (!submission || !isOrgAdmin(ctx, submission.organizationId)) {
+  if (
+    !submission ||
+    !hasOrgCapability(
+      ctx,
+      submission.organizationId,
+      OrgCapability.QUALIFICATIONS_VERIFY,
+    )
+  ) {
     logDenial("authz.submission_scope_denied", ctx, {
       entityId: submissionId,
     });
@@ -707,14 +896,21 @@ export async function requireOrgAdminForMemberSubmission(
   return submission;
 }
 
-export async function requireOrgAdminForOrganizationDocument(
+export async function requireOrgCapabilityForOrganizationDocument(
   ctx: AuthContext,
   documentId: string,
 ) {
   const document = await prisma.organizationDocument.findUnique({
     where: { id: documentId },
   });
-  if (!document || !isOrgAdmin(ctx, document.organizationId)) {
+  if (
+    !document ||
+    !hasOrgCapability(
+      ctx,
+      document.organizationId,
+      OrgCapability.DOCUMENTS_MANAGE,
+    )
+  ) {
     logDenial("authz.document_scope_denied", ctx, { entityId: documentId });
     throw new AuthorizationError();
   }
@@ -724,30 +920,34 @@ export async function requireOrgAdminForOrganizationDocument(
 /**
  * Issue #17 lookups — same rule: the caller-supplied id is an untrusted
  * selector; the record's own organizationId decides which grant must
- * exist. Financial records are sensitive — every vendor/expense surface
- * is ADMIN-only, and a foreign or fabricated id is indistinguishable
- * from a missing one.
+ * exist. Financial records are sensitive — vendor/expense surfaces
+ * require FINANCE_MANAGE (or FINANCE_APPROVE for review decisions), and
+ * a foreign or fabricated id is indistinguishable from a missing one.
  */
-export async function requireOrgAdminForVendor(
+export async function requireOrgCapabilityForVendor(
   ctx: AuthContext,
   vendorId: string,
 ) {
   const vendor = await prisma.vendor.findUnique({ where: { id: vendorId } });
-  if (!vendor || !isOrgAdmin(ctx, vendor.organizationId)) {
+  if (
+    !vendor ||
+    !hasOrgCapability(ctx, vendor.organizationId, OrgCapability.FINANCE_MANAGE)
+  ) {
     logDenial("authz.vendor_scope_denied", ctx, { entityId: vendorId });
     throw new AuthorizationError();
   }
   return vendor;
 }
 
-export async function requireOrgAdminForExpense(
+export async function requireOrgCapabilityForExpense(
   ctx: AuthContext,
   expenseId: string,
+  capability: OrgCapability = OrgCapability.FINANCE_MANAGE,
 ) {
   const expense = await prisma.expense.findUnique({
     where: { id: expenseId },
   });
-  if (!expense || !isOrgAdmin(ctx, expense.organizationId)) {
+  if (!expense || !hasOrgCapability(ctx, expense.organizationId, capability)) {
     logDenial("authz.expense_scope_denied", ctx, { entityId: expenseId });
     throw new AuthorizationError();
   }
@@ -759,7 +959,7 @@ export async function requireOrgAdminForExpense(
  * organizationId on the link row decides the grant. `kind` selects
  * which typed link table holds the row.
  */
-export async function requireOrgAdminForExpenseContextLink(
+export async function requireOrgCapabilityForExpenseContextLink(
   ctx: AuthContext,
   kind: string,
   linkId: string,
@@ -777,7 +977,10 @@ export async function requireOrgAdminForExpenseContextLink(
             : kind === "INVENTORY_ITEM"
               ? await prisma.expenseInventoryItem.findUnique({ where })
               : null;
-  if (!link || !isOrgAdmin(ctx, link.organizationId)) {
+  if (
+    !link ||
+    !hasOrgCapability(ctx, link.organizationId, OrgCapability.FINANCE_MANAGE)
+  ) {
     logDenial("authz.expense_link_scope_denied", ctx, { entityId: linkId });
     throw new AuthorizationError();
   }
@@ -788,34 +991,35 @@ export async function requireOrgAdminForExpenseContextLink(
  * Upload/unlink target resolution. `entityType` arrives from the client
  * and selects WHICH record helper verifies the grant — the grant is
  * still derived from the record's own organizationId, never from the
- * selector. Unknown types fail closed.
+ * selector, and each entity type requires that domain's capability.
+ * Unknown types fail closed.
  */
-export async function requireOrgAdminForAttachmentTarget(
+export async function requireOrgCapabilityForAttachmentTarget(
   ctx: AuthContext,
   entityType: string,
   entityId: string,
 ) {
   switch (entityType) {
     case "INCIDENT":
-      return await requireOrgAdminForIncident(ctx, entityId);
+      return await requireOrgCapabilityForIncident(ctx, entityId);
     case "INCIDENT_NOTE":
-      return await requireOrgAdminForIncidentNote(ctx, entityId);
+      return await requireOrgCapabilityForIncidentNote(ctx, entityId);
     case "MEMBER_QUALIFICATION":
-      return await requireOrgAdminForQualification(ctx, entityId);
+      return await requireOrgCapabilityForQualification(ctx, entityId);
     case "MEMBER_SUBMISSION":
-      return await requireOrgAdminForMemberSubmission(ctx, entityId);
+      return await requireOrgCapabilityForMemberSubmission(ctx, entityId);
     case "TRAINING_EVENT":
-      return await requireOrgAdminForTrainingEvent(ctx, entityId);
+      return await requireOrgCapabilityForTrainingEvent(ctx, entityId);
     case "ASSET":
-      return await requireOrgAdminForAsset(ctx, entityId);
+      return await requireOrgCapabilityForAsset(ctx, entityId);
     case "INSPECTION_RECORD":
-      return await requireOrgAdminForInspectionRecord(ctx, entityId);
+      return await requireOrgCapabilityForInspectionRecord(ctx, entityId);
     case "MAINTENANCE_RECORD":
-      return await requireOrgAdminForMaintenanceRecord(ctx, entityId);
+      return await requireOrgCapabilityForMaintenanceRecord(ctx, entityId);
     case "DEFECT":
-      return await requireOrgAdminForDefect(ctx, entityId);
+      return await requireOrgCapabilityForDefect(ctx, entityId);
     case "EXPENSE":
-      return await requireOrgAdminForExpense(ctx, entityId);
+      return await requireOrgCapabilityForExpense(ctx, entityId);
     default:
       logDenial("authz.attachment_target_denied", ctx, { entityId });
       throw new AuthorizationError();

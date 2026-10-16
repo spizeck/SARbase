@@ -1,7 +1,9 @@
 import Link from "next/link";
 
 import { prisma } from "@/lib/prisma";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
 import {
   listOrganizationCallouts,
   CALLOUT_STATUS_LABELS,
@@ -38,7 +40,7 @@ export default async function OrganizationCalloutsPage({
   const { orgId } = await params;
   // orgId from the URL is an untrusted selector — the grant comes from
   // the caller's OrganizationAccess rows.
-  await requireOrgAdminOrNotFound(orgId);
+  await requireOrgCapabilityOrNotFound(orgId, OrgCapability.OPERATIONS_MANAGE);
 
   const organization = await prisma.organization.findUniqueOrThrow({
     where: { id: orgId },

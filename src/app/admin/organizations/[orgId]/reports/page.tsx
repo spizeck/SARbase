@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
 import { calendarDateInZone } from "@/lib/dates";
 import { getOrganization } from "@/lib/domain/organization";
 import {
@@ -317,7 +319,7 @@ export default async function ReportsPage({
   searchParams: Promise<{ year?: string; unit?: string }>;
 }) {
   const { orgId } = await params;
-  await requireOrgAdminOrNotFound(orgId);
+  await requireOrgCapabilityOrNotFound(orgId, OrgCapability.REPORTS_EXPORT);
   const { year: yearParam, unit: unitParam } = await searchParams;
 
   const organization = await getOrganization(orgId);

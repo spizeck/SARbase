@@ -1,7 +1,9 @@
 import Link from "next/link";
 
 import { prisma } from "@/lib/prisma";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
 import { listOrganizationDocuments } from "@/lib/domain/attachments";
 import { formatDateOnly } from "@/lib/dates";
 
@@ -31,7 +33,7 @@ export default async function OrganizationDocumentsPage({
   const { orgId } = await params;
   // orgId from the URL is an untrusted selector — the grant comes from
   // the caller's OrganizationAccess rows.
-  await requireOrgAdminOrNotFound(orgId);
+  await requireOrgCapabilityOrNotFound(orgId, OrgCapability.DOCUMENTS_MANAGE);
 
   const [organization, documents] = await Promise.all([
     prisma.organization.findUniqueOrThrow({ where: { id: orgId } }),

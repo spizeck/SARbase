@@ -28,6 +28,18 @@ const ROLE_LABELS = {
   MEMBER: "Member",
 } as const;
 
+const ROLE_HISTORY_LABELS = {
+  ADMIN: "administrator",
+  MANAGER: "manager",
+  MEMBER: "member",
+} as const;
+
+const ROLE_BADGE_CLASSES = {
+  ADMIN: "bg-amber-100 text-amber-800",
+  MANAGER: "bg-sky-100 text-sky-800",
+  MEMBER: "bg-neutral-100 text-neutral-600",
+} as const;
+
 /**
  * Organization access administration (issue #74): who can sign in to
  * this organization, with which application role, and the audited
@@ -151,11 +163,7 @@ export default async function OrganizationAccessPage({
                     </td>
                     <td className="px-4 py-2">
                       <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
-                          row.role === "ADMIN"
-                            ? "bg-amber-100 text-amber-800"
-                            : "bg-neutral-100 text-neutral-600"
-                        }`}
+                        className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${ROLE_BADGE_CLASSES[row.role]}`}
                       >
                         {ROLE_LABELS[row.role]}
                       </span>
@@ -209,8 +217,7 @@ export default async function OrganizationAccessPage({
                     {invitation.member.displayName}
                   </Link>
                   <span className="text-xs text-neutral-600">
-                    Invited as{" "}
-                    {invitation.role === "ADMIN" ? "administrator" : "member"} ·{" "}
+                    Invited as {ROLE_HISTORY_LABELS[invitation.role]} ·{" "}
                     {
                       MEMBER_INVITATION_STATE_LABELS[
                         invitationDisplayState(invitation)
@@ -255,10 +262,10 @@ export default async function OrganizationAccessPage({
                 <span className="text-neutral-600">
                   {" "}
                   changed from{" "}
-                  {event.previousRole === "ADMIN"
-                    ? "administrator"
-                    : "member"}{" "}
-                  to {event.role === "ADMIN" ? "administrator" : "member"}
+                  {event.previousRole
+                    ? ROLE_HISTORY_LABELS[event.previousRole]
+                    : "none"}{" "}
+                  to {ROLE_HISTORY_LABELS[event.role]}
                 </span>
                 <span className="text-neutral-500">
                   {" "}

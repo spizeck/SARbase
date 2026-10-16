@@ -3,7 +3,9 @@ import { notFound } from "next/navigation";
 
 import { getOrganization } from "@/lib/domain/organization";
 import { listStorageLocations, listAssets } from "@/lib/domain/assets";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
 
 import {
   createStorageLocationAction,
@@ -22,7 +24,7 @@ export default async function StorageLocationsPage({
 }) {
   const { orgId } = await params;
   // Untrusted URL selector — grant is checked against the real org.
-  await requireOrgAdminOrNotFound(orgId);
+  await requireOrgCapabilityOrNotFound(orgId, OrgCapability.EQUIPMENT_MANAGE);
   const organization = await getOrganization(orgId);
   if (!organization) notFound();
 

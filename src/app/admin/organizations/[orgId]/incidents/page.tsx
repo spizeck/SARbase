@@ -1,7 +1,9 @@
 import Link from "next/link";
 
 import { prisma } from "@/lib/prisma";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
 import {
   listOrganizationIncidents,
   INCIDENT_STATUS_LABELS,
@@ -30,7 +32,7 @@ export default async function OrganizationIncidentsPage({
   // orgId from the URL is an untrusted selector — the grant comes from
   // the caller's OrganizationAccess rows. Incidents may carry sensitive
   // data; the entire surface is ADMIN-only by design.
-  await requireOrgAdminOrNotFound(orgId);
+  await requireOrgCapabilityOrNotFound(orgId, OrgCapability.OPERATIONS_MANAGE);
 
   const organization = await prisma.organization.findUniqueOrThrow({
     where: { id: orgId },

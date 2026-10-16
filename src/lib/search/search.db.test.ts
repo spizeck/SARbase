@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import type { OrgCapability } from "@prisma/client";
+
 import type { AuthContext } from "@/lib/auth/context";
 import { prisma } from "@/lib/prisma";
 
@@ -20,7 +22,11 @@ function uniqueName(suffix: string) {
   return `${PREFIX}${counter}-${suffix}`;
 }
 
-function ctxFor(organizationId: string, role: "ADMIN" | "MEMBER"): AuthContext {
+function ctxFor(
+  organizationId: string,
+  role: "ADMIN" | "MEMBER" | "MANAGER",
+  capabilities: OrgCapability[] = [],
+): AuthContext {
   const identity = {
     id: `${PREFIX}identity-${role}-${organizationId}`,
     provider: "test",
@@ -39,7 +45,7 @@ function ctxFor(organizationId: string, role: "ADMIN" | "MEMBER"): AuthContext {
         organizationId,
         authIdentityId: identity.id,
         role,
-        capabilities: [],
+        capabilities,
         createdAt: new Date(),
         updatedAt: new Date(),
       },
@@ -750,6 +756,46 @@ describe.skipIf(!hasDb)("global organization search", () => {
       );
       expect(resultsOf(outcome, "incident")).toEqual([]);
       expect(outcome.totalCount).toBe(0);
+    });
+
+    it("a MANAGER searches only the domains their capabilities cover", async () => {
+      const outcome = await searchOrganizationRecords(
+        ctxFor(orgA, "MANAGER", ["MEMBERS_MANAGE"]),
+        orgA,
+        "Nadia",
+      );
+      // Members and units run; every other domain stays closed.
+      expect(resultsOf(outcome, "member").length).toBeGreaterThan(0);
+      for (const closed of [
+        "qualification",
+        "training",
+        "asset",
+        "incident",
+        "expense",
+        "document",
+        "attachment",
+      ] as const) {
+        expect(resultsOf(outcome, closed)).toEqual([]);
+      }
+    });
+
+    it("a MANAGER with no capabilities gets the same empty outcome as a member", async () => {
+      const outcome = await searchOrganizationRecords(
+        ctxFor(orgA, "MANAGER"),
+        orgA,
+        "Nadia",
+      );
+      expect(outcome.groups).toEqual([]);
+      expect(outcome.totalCount).toBe(0);
+    });
+
+    it("a MANAGER's capabilities in one org open nothing in another", async () => {
+      const outcome = await searchOrganizationRecords(
+        ctxFor(orgB, "MANAGER", ["MEMBERS_MANAGE"]),
+        orgA,
+        "Nadia",
+      );
+      expect(outcome.groups).toEqual([]);
     });
   });
 

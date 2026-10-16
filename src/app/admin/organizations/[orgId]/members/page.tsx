@@ -7,7 +7,12 @@ import {
   listOrganizationAvailability,
   AVAILABILITY_STATUS_LABELS,
 } from "@/lib/domain/availability";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import {
+  isOrgAdmin,
+  requireOrgCapabilityOrNotFound,
+} from "@/lib/auth/authorize";
 import {
   calendarDateInZone,
   formatDateOnly,
@@ -30,7 +35,10 @@ export default async function MembersPage({
   searchParams: Promise<{ unit?: string }>;
 }) {
   const { orgId } = await params;
-  await requireOrgAdminOrNotFound(orgId);
+  const ctx = await requireOrgCapabilityOrNotFound(
+    orgId,
+    OrgCapability.MEMBERS_MANAGE,
+  );
   const { unit: unitFilter } = await searchParams;
   const organization = await getOrganization(orgId);
   if (!organization) notFound();
@@ -204,6 +212,7 @@ export default async function MembersPage({
         <div className="mt-2">
           <MemberForm
             action={createMemberAction.bind(null, orgId)}
+            showEmergencyContact={isOrgAdmin(ctx, orgId)}
             submitLabel="Add member"
             regions={phoneRegionOptions()}
           />

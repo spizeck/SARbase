@@ -5,7 +5,9 @@ import { getOrganization } from "@/lib/domain/organization";
 import { listMembers } from "@/lib/domain/member";
 import { listTrainingEvents } from "@/lib/domain/training";
 import { dateOnlySchema } from "@/lib/domain/schemas";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
 import { formatDateOnly } from "@/lib/dates";
 
 import { createTrainingEventAction } from "../../../actions";
@@ -27,7 +29,7 @@ export default async function TrainingPage({
   }>;
 }) {
   const { orgId } = await params;
-  await requireOrgAdminOrNotFound(orgId);
+  await requireOrgCapabilityOrNotFound(orgId, OrgCapability.TRAINING_MANAGE);
   const {
     unit: trainingUnit,
     from: trainingFrom,

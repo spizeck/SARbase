@@ -53,8 +53,14 @@ vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 import { prisma } from "@/lib/prisma";
 import { getAuthContext } from "@/lib/auth/context";
 import { linkedMembersWithAccess } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+import {
+  setOrganizationAccessCapabilities,
+  setOrganizationAccessRole,
+} from "@/lib/domain/access";
 import {
   createMemberAction,
+  createMemberInvitationAction,
   createMemberQualificationAction,
   createQualificationDefinitionAction,
   createUnitAction,
@@ -368,6 +374,9 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
     await prisma.member.updateMany({
       where: { displayName: { startsWith: PREFIX } },
       data: { authIdentityId: null },
+    });
+    await prisma.organizationAccessEvent.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.organizationAccess.deleteMany({
       where: { authIdentity: { providerUid: { startsWith: PREFIX } } },
@@ -2868,6 +2877,220 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
         where: { id: mine.id },
       });
       expect(row.status).toBe("SUBMITTED");
+    });
+  });
+
+  // Issue #84 — end-to-end scenario coverage for the MANAGER role
+  // (scenarios A/B/C/E from the task brief). Server actions read the
+  // verified session's access rows fresh each call, so capability
+  // revocation is immediate and no session snapshot can leak grants.
+  describe("manager capabilities (issue #84)", () => {
+    let managerUid: string;
+    let managerIdentityId: string;
+    let managerBUid: string;
+    let managerBIdentityId: string;
+    let mgrEvent: { id: string };
+    let expenseA: { id: string };
+
+    const manage = (capabilities: OrgCapability[]) =>
+      setOrganizationAccessCapabilities(
+        orgA.id,
+        managerIdentityId,
+        capabilities,
+        adminAIdentityId,
+      );
+
+    beforeAll(async () => {
+      managerUid = uniq("uid-mgr-a");
+      managerBUid = uniq("uid-mgr-b");
+      const [mgr, mgrB] = await Promise.all(
+        [managerUid, managerBUid].map((uid) =>
+          prisma.authIdentity.create({
+            data: {
+              provider: "firebase",
+              providerUid: uid,
+              email: `${uniq("mgr")}@example.org`,
+              status: "ACTIVE",
+            },
+          }),
+        ),
+      );
+      managerIdentityId = mgr!.id;
+      managerBIdentityId = mgrB!.id;
+      // Both start as plain MEMBERs; promotion goes through the real
+      // domain path so the standard capability set is exercised.
+      await prisma.organizationAccess.createMany({
+        data: [
+          {
+            authIdentityId: managerIdentityId,
+            organizationId: orgA.id,
+            role: "MEMBER",
+          },
+          {
+            authIdentityId: managerBIdentityId,
+            organizationId: orgB.id,
+            role: "MEMBER",
+          },
+        ],
+      });
+      await setOrganizationAccessRole(
+        orgA.id,
+        managerIdentityId,
+        "MANAGER",
+        adminAIdentityId,
+      );
+      await setOrganizationAccessRole(
+        orgB.id,
+        managerBIdentityId,
+        "MANAGER",
+        adminAIdentityId,
+      );
+      await prisma.organizationAccess.update({
+        where: {
+          authIdentityId_organizationId: {
+            authIdentityId: managerBIdentityId,
+            organizationId: orgB.id,
+          },
+        },
+        data: { capabilities: [OrgCapability.MEMBERS_MANAGE] },
+      });
+
+      mgrEvent = await prisma.trainingEvent.create({
+        data: {
+          organizationId: orgA.id,
+          title: uniq("training-a"),
+          date: new Date("2026-06-01T00:00:00.000Z"),
+        },
+      });
+      const vendor = await prisma.vendor.create({
+        data: { organizationId: orgA.id, name: uniq("vendor-a") },
+      });
+      const expense = await createExpense(
+        orgA.id,
+        {
+          expenseDate: new Date("2026-03-01T00:00:00.000Z"),
+          amount: "10.00",
+          currency: "USD",
+          vendorId: vendor.id,
+          category: "Fuel",
+          reimbursementStatus: "NOT_REQUIRED",
+        },
+        adminAIdentityId,
+      );
+      expenseA = { id: expense.id };
+    });
+
+    it("scenario A: grants MANAGER only the equipment capability — asset edit works, invitation stays admin-only", async () => {
+      await manage([OrgCapability.EQUIPMENT_MANAGE]);
+      signInAs(managerUid);
+
+      expect(
+        await updateAssetAction(
+          assetA.id,
+          {},
+          form({ name: uniq("asset-renamed") }),
+        ),
+      ).toEqual({});
+
+      // Invitations are administrator-only — no capability can
+      // delegate them (issue #84).
+      expect(
+        await createMemberInvitationAction(memberA.id, {}, form({})),
+      ).toEqual({ message: "Not found." });
+      // An ungranted capability is deny-by-default.
+      expect(
+        await updateMemberAction(memberA.id, {}, form({ displayName: "x" })),
+      ).toEqual({ message: "Not found." });
+    });
+
+    it("scenario B: revoking the capability takes effect on the next request", async () => {
+      await manage([OrgCapability.EQUIPMENT_MANAGE]);
+      signInAs(managerUid);
+      expect(
+        await updateAssetAction(assetA.id, {}, form({ name: uniq("a") })),
+      ).toEqual({});
+
+      await manage([]);
+      expect(
+        await updateAssetAction(assetA.id, {}, form({ name: uniq("b") })),
+      ).toEqual({ message: "Not found." });
+    });
+
+    it("scenario C: TRAINING_MANAGE updates attendance but never reaches finance", async () => {
+      await manage([OrgCapability.TRAINING_MANAGE]);
+      signInAs(managerUid);
+
+      expect(
+        await setTrainingAttendanceAction(
+          mgrEvent.id,
+          {},
+          form({ memberIds: [memberA.id] }),
+        ),
+      ).toEqual({});
+      const attendance = await prisma.trainingAttendance.findFirstOrThrow({
+        where: { trainingEventId: mgrEvent.id },
+      });
+      expect(attendance.memberId).toBe(memberA.id);
+
+      expect(await updateExpenseAction(expenseA.id, {}, form({}))).toEqual({
+        message: "Not found.",
+      });
+      // Approval authority is a separate, ungranted capability.
+      expect(await transitionExpenseAction(expenseA.id, "SUBMITTED")).toEqual({
+        message: "Not found.",
+      });
+    });
+
+    it("scenario E: a manager in org B has no privileges in org A", async () => {
+      signInAs(managerBUid);
+      expect(
+        await updateMemberAction(memberA.id, {}, form({ displayName: "x" })),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await updateAssetAction(assetA.id, {}, form({ name: "x" })),
+      ).toEqual({ message: "Not found." });
+    });
+
+    it("MEMBERS_MANAGE edits member fields but cannot write emergency-contact data", async () => {
+      await manage([OrgCapability.MEMBERS_MANAGE]);
+      signInAs(managerUid);
+
+      const before = await prisma.member.findUniqueOrThrow({
+        where: { id: memberA.id },
+      });
+      const result = await updateMemberAction(
+        memberA.id,
+        {},
+        form({
+          displayName: uniq("member-updated"),
+          emergencyContactName: "CRAFTED-CONTACT",
+          emergencyContactPhone: "CRAFTED-PHONE",
+        }),
+      );
+      expect(result).toEqual({});
+
+      const after = await prisma.member.findUniqueOrThrow({
+        where: { id: memberA.id },
+      });
+      expect(after.displayName).toContain("member-updated");
+      // Sensitive fields are stripped server-side for non-admins —
+      // the existing values are preserved, not overwritten.
+      expect(after.emergencyContactName).toBe(before.emergencyContactName);
+      expect(after.emergencyContactPhone).toBe(before.emergencyContactPhone);
+    });
+
+    it("a plain MEMBER cannot reach manager actions at all", async () => {
+      signInAs(memberRoleUid);
+      expect(
+        await updateAssetAction(assetA.id, {}, form({ name: "x" })),
+      ).toEqual({ message: "Not found." });
+      expect(
+        await setTrainingAttendanceAction(
+          mgrEvent.id,
+          {},
+          form({ memberIds: [memberA.id] }),
+        ),
+      ).toEqual({ message: "Not found." });
     });
   });
 });

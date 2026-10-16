@@ -580,7 +580,11 @@ export default async function AccountPage() {
                   {orgName(a.organizationId)}
                 </span>
                 <span className="text-neutral-500">
-                  {a.role === "ADMIN" ? "Administrator" : "Member"}
+                  {a.role === "ADMIN"
+                    ? "Administrator"
+                    : a.role === "MANAGER"
+                      ? "Manager"
+                      : "Member"}
                 </span>
               </li>
             ))}

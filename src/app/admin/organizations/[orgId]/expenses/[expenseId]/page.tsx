@@ -2,7 +2,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { prisma } from "@/lib/prisma";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import {
+  hasOrgCapability,
+  requireOrgCapabilityOrNotFound,
+} from "@/lib/auth/authorize";
 import {
   getExpenseForAdmin,
   listOrganizationVendors,
@@ -62,7 +67,17 @@ export default async function ExpenseDetailPage({
   // indistinguishable from a nonexistent one (notFound, not 403).
   const detail = await getExpenseForAdmin(expenseId);
   if (!detail || detail.organizationId !== orgId) notFound();
-  await requireOrgAdminOrNotFound(detail.organizationId);
+  const ctx = await requireOrgCapabilityOrNotFound(
+    detail.organizationId,
+    OrgCapability.FINANCE_MANAGE,
+  );
+  // Review decisions and reimbursement marking are a separate grant —
+  // FINANCE_MANAGE entries/edit alone does not include them (issue #84).
+  const canApprove = hasOrgCapability(
+    ctx,
+    detail.organizationId,
+    OrgCapability.FINANCE_APPROVE,
+  );
 
   const organization = await prisma.organization.findUniqueOrThrow({
     where: { id: orgId },
@@ -194,21 +209,37 @@ export default async function ExpenseDetailPage({
   ];
 
   // Transitions offered must follow the lifecycle graph — the domain
-  // re-validates every edge anyway; this only shapes the UI.
+  // re-validates every edge anyway; this only shapes the UI. `review`
+  // marks decisions that require FINANCE_APPROVE; submit/reopen are
+  // routine FINANCE_MANAGE entry (issue #84).
   const transitions: {
     target: "DRAFT" | "SUBMITTED" | "APPROVED" | "REJECTED";
     label: string;
+    review: boolean;
   }[] = [];
   if (detail.status === "DRAFT") {
-    transitions.push({ target: "SUBMITTED", label: "Submit for review" });
+    transitions.push({
+      target: "SUBMITTED",
+      label: "Submit for review",
+      review: false,
+    });
   }
   if (detail.status === "SUBMITTED") {
-    transitions.push({ target: "APPROVED", label: "Approve" });
-    transitions.push({ target: "DRAFT", label: "Return to draft" });
+    transitions.push({ target: "APPROVED", label: "Approve", review: true });
+    transitions.push({
+      target: "DRAFT",
+      label: "Return to draft",
+      review: true,
+    });
   }
   if (detail.status === "REJECTED") {
-    transitions.push({ target: "DRAFT", label: "Reopen as draft" });
+    transitions.push({
+      target: "DRAFT",
+      label: "Reopen as draft",
+      review: false,
+    });
   }
+  const visibleTransitions = transitions.filter((t) => !t.review || canApprove);
 
   // Material edits on an approved or already-reimbursed expense must
   // carry a reason — the correction is audited, never silent.
@@ -497,7 +528,8 @@ export default async function ExpenseDetailPage({
         </dl>
       </section>
 
-      {(transitions.length > 0 || detail.status === "SUBMITTED") && (
+      {(visibleTransitions.length > 0 ||
+        (canApprove && detail.status === "SUBMITTED")) && (
         <section
           aria-labelledby="review-heading"
           className="mt-8 rounded-md border border-neutral-200 p-4"
@@ -513,14 +545,14 @@ export default async function ExpenseDetailPage({
             keeps the record and requires a reason.
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-3">
-            {transitions.map((t) => (
+            {visibleTransitions.map((t) => (
               <ExpenseTransitionButton
-                key={t.target}
+                key={`${t.target}:${t.label}`}
                 action={transitionExpenseAction.bind(null, detail.id, t.target)}
                 label={t.label}
               />
             ))}
-            {detail.status === "SUBMITTED" && (
+            {canApprove && detail.status === "SUBMITTED" && (
               <ExpenseRejectForm
                 action={rejectExpenseAction.bind(null, detail.id)}
               />
@@ -529,36 +561,38 @@ export default async function ExpenseDetailPage({
         </section>
       )}
 
-      <section
-        aria-labelledby="reimbursement-heading"
-        className="mt-8 rounded-md border border-neutral-200 p-4"
-      >
-        <h2
-          id="reimbursement-heading"
-          className="text-sm font-medium text-neutral-800"
+      {canApprove && (
+        <section
+          aria-labelledby="reimbursement-heading"
+          className="mt-8 rounded-md border border-neutral-200 p-4"
         >
-          Reimbursement
-        </h2>
-        {detail.paidByMember ? (
-          <p className="mt-1 text-xs text-neutral-500">
-            {detail.paidByMember.displayName} paid personally. Marking
-            reimbursed records the administrative fact that repayment happened —
-            SARbase never processes the payment.
-          </p>
-        ) : (
-          <p className="mt-1 text-xs text-neutral-500">
-            The organization paid this expense directly. Set a paying member on
-            the record if a volunteer actually paid out of pocket and needs
-            reimbursing.
-          </p>
-        )}
-        <div className="mt-3">
-          <ExpenseReimbursementForm
-            action={setExpenseReimbursementAction.bind(null, detail.id)}
-            current={detail.reimbursementStatus}
-          />
-        </div>
-      </section>
+          <h2
+            id="reimbursement-heading"
+            className="text-sm font-medium text-neutral-800"
+          >
+            Reimbursement
+          </h2>
+          {detail.paidByMember ? (
+            <p className="mt-1 text-xs text-neutral-500">
+              {detail.paidByMember.displayName} paid personally. Marking
+              reimbursed records the administrative fact that repayment happened
+              — SARbase never processes the payment.
+            </p>
+          ) : (
+            <p className="mt-1 text-xs text-neutral-500">
+              The organization paid this expense directly. Set a paying member
+              on the record if a volunteer actually paid out of pocket and needs
+              reimbursing.
+            </p>
+          )}
+          <div className="mt-3">
+            <ExpenseReimbursementForm
+              action={setExpenseReimbursementAction.bind(null, detail.id)}
+              current={detail.reimbursementStatus}
+            />
+          </div>
+        </section>
+      )}
 
       <section
         aria-labelledby="links-heading"

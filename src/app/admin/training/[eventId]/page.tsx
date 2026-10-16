@@ -1,7 +1,9 @@
 import { notFound, redirect } from "next/navigation";
 
 import { getTrainingEvent } from "@/lib/domain/training";
-import { isOrgAdmin, requireAuth } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { hasOrgCapability, requireAuth } from "@/lib/auth/authorize";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +20,10 @@ export default async function LegacyTrainingEventPage({
   const ctx = await requireAuth();
   const { eventId } = await params;
   const event = await getTrainingEvent(eventId);
-  if (!event || !isOrgAdmin(ctx, event.organizationId)) notFound();
+  if (
+    !event ||
+    !hasOrgCapability(ctx, event.organizationId, OrgCapability.TRAINING_MANAGE)
+  )
+    notFound();
   redirect(`/admin/organizations/${event.organizationId}/training/${event.id}`);
 }

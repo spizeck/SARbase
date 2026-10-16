@@ -3,7 +3,9 @@ import { notFound } from "next/navigation";
 
 import { getOrganization } from "@/lib/domain/organization";
 import { listQualificationDefinitions } from "@/lib/domain/qualification";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
 
 import {
   createQualificationDefinitionAction,
@@ -22,7 +24,10 @@ export default async function QualificationsPage({
   params: Promise<{ orgId: string }>;
 }) {
   const { orgId } = await params;
-  await requireOrgAdminOrNotFound(orgId);
+  await requireOrgCapabilityOrNotFound(
+    orgId,
+    OrgCapability.QUALIFICATIONS_MANAGE,
+  );
   const organization = await getOrganization(orgId);
   if (!organization) notFound();
 

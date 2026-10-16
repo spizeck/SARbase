@@ -7,14 +7,15 @@
  * a record the caller cannot see is never selected, so it can never
  * appear in a result, a snippet, or a count.
  *
- * Every registry entry is `adminOnly` today because every record
- * surface in SARbase is ADMIN-only (see docs/search.md — the MEMBER
- * role exposes only the member's own account data). The flag is the
- * seam for future member-visible domains; new record domains register
- * here without touching the orchestration in ./search.ts.
+ * Every registry entry carries the staff capability required to search
+ * it (see docs/search.md — the MEMBER role exposes only the member's
+ * own account data, so no domain runs for them). An ADMIN implicitly
+ * holds every capability; a manager searches only the domains their
+ * grants cover. New record domains register here without touching the
+ * orchestration in ./search.ts.
  */
 
-import type { Prisma } from "@prisma/client";
+import type { OrgCapability, Prisma } from "@prisma/client";
 
 import { formatDateOnly } from "@/lib/dates";
 import { formatMoney } from "@/lib/money";
@@ -63,8 +64,12 @@ export type DomainSearcher = (
 
 export interface SearchDomain {
   type: SearchResultType;
-  /** When true, only ADMIN access runs this domain. */
-  adminOnly: boolean;
+  /**
+   * Staff capability required to search this domain. ADMIN implicitly
+   * holds every capability; a manager only searches the domains their
+   * grants cover; a member runs nothing.
+   */
+  capability: OrgCapability;
   search: DomainSearcher;
 }
 
@@ -1479,20 +1484,44 @@ const searchAttachments: DomainSearcher = async ({
  * orchestration never changes.
  */
 export const SEARCH_DOMAINS: SearchDomain[] = [
-  { type: "member", adminOnly: true, search: searchMembers },
-  { type: "unit", adminOnly: true, search: searchUnits },
-  { type: "qualification", adminOnly: true, search: searchQualifications },
-  { type: "training", adminOnly: true, search: searchTraining },
-  { type: "asset", adminOnly: true, search: searchAssets },
-  { type: "inventory", adminOnly: true, search: searchInventory },
-  { type: "location", adminOnly: true, search: searchLocations },
-  { type: "inspection", adminOnly: true, search: searchInspections },
-  { type: "maintenance", adminOnly: true, search: searchMaintenance },
-  { type: "defect", adminOnly: true, search: searchDefects },
-  { type: "incident", adminOnly: true, search: searchIncidents },
-  { type: "callout", adminOnly: true, search: searchCallouts },
-  { type: "vendor", adminOnly: true, search: searchVendors },
-  { type: "expense", adminOnly: true, search: searchExpenses },
-  { type: "document", adminOnly: true, search: searchDocuments },
-  { type: "attachment", adminOnly: true, search: searchAttachments },
+  { type: "member", capability: "MEMBERS_MANAGE", search: searchMembers },
+  { type: "unit", capability: "MEMBERS_MANAGE", search: searchUnits },
+  {
+    type: "qualification",
+    capability: "QUALIFICATIONS_MANAGE",
+    search: searchQualifications,
+  },
+  { type: "training", capability: "TRAINING_MANAGE", search: searchTraining },
+  { type: "asset", capability: "EQUIPMENT_MANAGE", search: searchAssets },
+  {
+    type: "inventory",
+    capability: "EQUIPMENT_MANAGE",
+    search: searchInventory,
+  },
+  { type: "location", capability: "EQUIPMENT_MANAGE", search: searchLocations },
+  {
+    type: "inspection",
+    capability: "EQUIPMENT_MANAGE",
+    search: searchInspections,
+  },
+  {
+    type: "maintenance",
+    capability: "EQUIPMENT_MANAGE",
+    search: searchMaintenance,
+  },
+  { type: "defect", capability: "EQUIPMENT_MANAGE", search: searchDefects },
+  {
+    type: "incident",
+    capability: "OPERATIONS_MANAGE",
+    search: searchIncidents,
+  },
+  { type: "callout", capability: "OPERATIONS_MANAGE", search: searchCallouts },
+  { type: "vendor", capability: "FINANCE_MANAGE", search: searchVendors },
+  { type: "expense", capability: "FINANCE_MANAGE", search: searchExpenses },
+  { type: "document", capability: "DOCUMENTS_MANAGE", search: searchDocuments },
+  {
+    type: "attachment",
+    capability: "DOCUMENTS_MANAGE",
+    search: searchAttachments,
+  },
 ];

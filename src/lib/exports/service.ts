@@ -24,7 +24,7 @@
 import { Prisma } from "@prisma/client";
 
 import { AuthorizationError, type AuthContext } from "@/lib/auth/context";
-import { requireOrgAdmin } from "@/lib/auth/authorize";
+import { requireOrgCapability } from "@/lib/auth/authorize";
 import { calendarDateInZone, formatDateOnly } from "@/lib/dates";
 import { prisma } from "@/lib/prisma";
 import { InMemoryRateLimitStore } from "@/lib/rate-limit/memory-store";
@@ -62,9 +62,9 @@ export interface ExportResult {
  * Generate one CSV export. Returns null when the dataset key is unknown
  * (the route renders that identically to a denied/fake key: 404).
  *
- * Throws AuthorizationError for non-admin or foreign-org scope,
- * ExportFilterError for invalid/unsupported filters, and
- * ExportRateLimitedError when the budget is exhausted.
+ * Throws AuthorizationError for callers without REPORTS_EXPORT (or any
+ * foreign-org scope), ExportFilterError for invalid/unsupported
+ * filters, and ExportRateLimitedError when the budget is exhausted.
  */
 export async function runCsvExport(
   ctx: AuthContext,
@@ -72,7 +72,7 @@ export async function runCsvExport(
   datasetKey: string,
   params: URLSearchParams,
 ): Promise<ExportResult | null> {
-  requireOrgAdmin(ctx, organizationId);
+  requireOrgCapability(ctx, organizationId, "REPORTS_EXPORT");
   const dataset = getExportDataset(datasetKey);
   if (!dataset) return null;
   const filters = parseExportFilters(params, dataset.filters);

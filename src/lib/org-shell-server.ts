@@ -1,8 +1,9 @@
 import { notFound } from "next/navigation";
+import type { OrgCapability, OrgRole } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import { getOrganization } from "@/lib/domain/organization";
-import { isOrgAdmin } from "@/lib/auth/authorize";
+import { orgCapabilities } from "@/lib/auth/authorize";
 import type { AuthContext } from "@/lib/auth/context";
 import type { ShellOrganization } from "@/components/org-shell";
 
@@ -18,7 +19,8 @@ export async function getOrgShellProps(
 ): Promise<{
   orgId: string;
   orgName: string;
-  role: "ADMIN" | "MEMBER";
+  role: OrgRole;
+  capabilities: OrgCapability[];
   organizations: ShellOrganization[];
 }> {
   const organization = await getOrganization(orgId);
@@ -29,14 +31,17 @@ export async function getOrgShellProps(
     orderBy: { name: "asc" },
     select: { id: true, name: true },
   });
+  const role = (id: string): OrgRole =>
+    ctx.access.find((a) => a.organizationId === id)?.role ?? "MEMBER";
   return {
     orgId,
     orgName: organization.name,
-    role: isOrgAdmin(ctx, orgId) ? "ADMIN" : "MEMBER",
+    role: role(orgId),
+    capabilities: orgCapabilities(ctx, orgId),
     organizations: rows.map((o) => ({
       id: o.id,
       name: o.name,
-      role: isOrgAdmin(ctx, o.id) ? "ADMIN" : "MEMBER",
+      role: role(o.id),
     })),
   };
 }

@@ -1,7 +1,9 @@
 import { notFound, redirect } from "next/navigation";
 
 import { getMember } from "@/lib/domain/member";
-import { isOrgAdmin, requireAuth } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { hasOrgCapability, requireAuth } from "@/lib/auth/authorize";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +20,11 @@ export default async function LegacyMemberPage({
   const ctx = await requireAuth();
   const { memberId } = await params;
   const member = await getMember(memberId);
-  if (!member || !isOrgAdmin(ctx, member.organizationId)) notFound();
+  if (
+    !member ||
+    !hasOrgCapability(ctx, member.organizationId, OrgCapability.MEMBERS_MANAGE)
+  )
+    notFound();
   redirect(
     `/admin/organizations/${member.organizationId}/members/${member.id}`,
   );

@@ -2,7 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { getOrganization } from "@/lib/domain/organization";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
 
 import { createUnitAction, updateUnitAction } from "../../../actions";
 import { UnitCreateForm, UnitRenameForm } from "../../../forms";
@@ -17,7 +19,7 @@ export default async function UnitsPage({
   params: Promise<{ orgId: string }>;
 }) {
   const { orgId } = await params;
-  await requireOrgAdminOrNotFound(orgId);
+  await requireOrgCapabilityOrNotFound(orgId, OrgCapability.MEMBERS_MANAGE);
   const organization = await getOrganization(orgId);
   if (!organization) notFound();
 

@@ -3,7 +3,9 @@ import { notFound } from "next/navigation";
 
 import {
   isOrgAdmin,
+  isOrgStaff,
   linkedMembersWithAccess,
+  orgCapabilities,
   requireOrgAccessOrNotFound,
 } from "@/lib/auth/authorize";
 import { getOrganization } from "@/lib/domain/organization";
@@ -26,6 +28,8 @@ export default async function OrganizationDashboardPage({
   if (!organization) notFound();
 
   const admin = isOrgAdmin(ctx, orgId);
+  const staff = isOrgStaff(ctx, orgId);
+  const capabilities = orgCapabilities(ctx, orgId);
   const myMember = linkedMembersWithAccess(ctx).find(
     (m) => m.organizationId === orgId,
   );
@@ -41,7 +45,7 @@ export default async function OrganizationDashboardPage({
           </h1>
           <p className="mt-1 text-sm text-neutral-500">
             {organization.timezone}
-            {admin ? " · Administrator" : ""}
+            {admin ? " · Administrator" : staff ? " · Manager" : ""}
           </p>
         </div>
         {admin && (
@@ -54,12 +58,14 @@ export default async function OrganizationDashboardPage({
         )}
       </div>
 
-      {admin ? (
+      {staff ? (
         <AdminDashboard
           orgId={orgId}
           adminRoot={adminRoot}
           timezone={organization.timezone}
           orgToday={orgToday}
+          capabilities={capabilities}
+          isAdmin={admin}
         />
       ) : (
         <MemberDashboard

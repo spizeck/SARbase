@@ -6,7 +6,9 @@ import {
   listExpiringQualifications,
   expiryLabel,
 } from "@/lib/domain/qualification";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
 import { calendarDateInZone } from "@/lib/dates";
 
 export const metadata = { title: "Expiring certifications" };
@@ -21,7 +23,10 @@ export default async function ExpiringCertificationsPage({
   searchParams: Promise<{ expiring?: string }>;
 }) {
   const { orgId } = await params;
-  await requireOrgAdminOrNotFound(orgId);
+  await requireOrgCapabilityOrNotFound(
+    orgId,
+    OrgCapability.QUALIFICATIONS_MANAGE,
+  );
   const { expiring } = await searchParams;
   const organization = await getOrganization(orgId);
   if (!organization) notFound();

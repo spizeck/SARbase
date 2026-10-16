@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { Prisma, type OrgRole } from "@prisma/client";
+import { OrgCapability, Prisma, type OrgRole } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import { updateOrganization } from "@/lib/domain/organization";
@@ -75,35 +75,38 @@ import {
 import {
   requireAuth,
   requireOrgAdmin,
+  isOrgAdmin,
   requireOrgAdminForMember,
-  requireOrgAdminForUnit,
-  requireOrgAdminForDefinition,
-  requireOrgAdminForQualification,
-  requireOrgAdminForTrainingEvent,
-  requireOrgAdminForStorageLocation,
-  requireOrgAdminForAsset,
-  requireOrgAdminForInventoryItem,
-  requireOrgAdminForInspectionDefinition,
-  requireOrgAdminForInspectionRecord,
-  requireOrgAdminForMaintenancePlan,
-  requireOrgAdminForMaintenanceRecord,
-  requireOrgAdminForDefect,
-  requireOrgAdminForAssetMeter,
-  requireOrgAdminForNotification,
+  requireOrgCapability,
+  requireOrgCapabilityForMember,
+  requireOrgCapabilityForUnit,
+  requireOrgCapabilityForQualificationDefinition,
+  requireOrgCapabilityForQualification,
+  requireOrgCapabilityForTrainingEvent,
+  requireOrgCapabilityForStorageLocation,
+  requireOrgCapabilityForAsset,
+  requireOrgCapabilityForInventoryItem,
+  requireOrgCapabilityForInspectionDefinition,
+  requireOrgCapabilityForInspectionRecord,
+  requireOrgCapabilityForMaintenancePlan,
+  requireOrgCapabilityForMaintenanceRecord,
+  requireOrgCapabilityForDefect,
+  requireOrgCapabilityForAssetMeter,
+  requireOrgCapabilityForNotification,
   requireOrgAdminForMemberInvitation,
-  requireOrgAdminForMemberSubmission,
-  requireOrgAdminForCallout,
-  requireOrgAdminForCalloutInvitation,
-  requireOrgAdminForIncident,
-  requireOrgAdminForIncidentMember,
-  requireOrgAdminForIncidentAsset,
-  requireOrgAdminForIncidentNote,
-  requireOrgAdminForAttachment,
-  requireOrgAdminForAttachmentTarget,
-  requireOrgAdminForOrganizationDocument,
-  requireOrgAdminForVendor,
-  requireOrgAdminForExpense,
-  requireOrgAdminForExpenseContextLink,
+  requireOrgCapabilityForMemberSubmission,
+  requireOrgCapabilityForCallout,
+  requireOrgCapabilityForCalloutInvitation,
+  requireOrgCapabilityForIncident,
+  requireOrgCapabilityForIncidentMember,
+  requireOrgCapabilityForIncidentAsset,
+  requireOrgCapabilityForIncidentNote,
+  requireOrgCapabilityForAttachment,
+  requireOrgCapabilityForAttachmentTarget,
+  requireOrgCapabilityForOrganizationDocument,
+  requireOrgCapabilityForVendor,
+  requireOrgCapabilityForExpense,
+  requireOrgCapabilityForExpenseContextLink,
 } from "@/lib/auth/authorize";
 import {
   createTrainingEvent,
@@ -275,7 +278,7 @@ import { log, logExpected } from "@/lib/logging";
  *
  * AUTHORIZATION MODEL (issue #6): every action resolves the caller's
  * auth context from the verified session, then checks an explicit
- * OrganizationAccess ADMIN row for the REAL organization of the target.
+ * OrganizationAccess grant for the REAL organization of the target.
  * organizationId/memberId/unitId parameters are untrusted selectors —
  * they choose which record to act on, never which grant to honor. Where
  * an org id used to come from the caller, the record's own
@@ -581,7 +584,7 @@ export async function createUnitAction(
 ): Promise<ActionState> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(ctx, organizationId, OrgCapability.MEMBERS_MANAGE);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -616,7 +619,7 @@ export async function updateUnitAction(
   const ctx = await requireAuth();
   let unit;
   try {
-    unit = await requireOrgAdminForUnit(ctx, unitId);
+    unit = await requireOrgCapabilityForUnit(ctx, unitId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -651,19 +654,29 @@ export async function createMemberAction(
 ): Promise<ActionState> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(ctx, organizationId, OrgCapability.MEMBERS_MANAGE);
   } catch (error) {
     return mapDomainError(error);
   }
 
+  // Emergency-contact fields are Administrator-only data (issue #84):
+  // a MEMBERS_MANAGE manager records operational details but a crafted
+  // FormData cannot set sensitive contact fields.
+  const canEditSensitive = isOrgAdmin(ctx, organizationId);
   const parsed = memberInputSchema.safeParse({
     displayName: formData.get("displayName"),
     email: formData.get("email"),
     phone: formData.get("phone"),
     phoneRegion: formData.get("phoneRegion"),
-    emergencyContactName: formData.get("emergencyContactName"),
-    emergencyContactPhone: formData.get("emergencyContactPhone"),
-    emergencyContactPhoneRegion: formData.get("emergencyContactPhoneRegion"),
+    emergencyContactName: canEditSensitive
+      ? formData.get("emergencyContactName")
+      : null,
+    emergencyContactPhone: canEditSensitive
+      ? formData.get("emergencyContactPhone")
+      : null,
+    emergencyContactPhoneRegion: canEditSensitive
+      ? formData.get("emergencyContactPhoneRegion")
+      : null,
   });
   if (!parsed.success) return zodErrors(parsed.error);
 
@@ -681,24 +694,34 @@ export async function updateMemberAction(
   const ctx = await requireAuth();
   let member;
   try {
-    member = await requireOrgAdminForMember(ctx, memberId);
+    member = await requireOrgCapabilityForMember(ctx, memberId);
   } catch (error) {
     return mapDomainError(error);
   }
 
+  // Emergency-contact fields are Administrator-only data (issue #84):
+  // non-admin callers keep the member's stored values — a hidden input
+  // cannot wipe them and a crafted FormData cannot set them.
+  const canEditSensitive = isOrgAdmin(ctx, member.organizationId);
   const parsed = memberInputSchema.safeParse({
     displayName: formData.get("displayName"),
     email: formData.get("email"),
     phone: formData.get("phone"),
     phoneRegion: formData.get("phoneRegion"),
-    emergencyContactName: formData.get("emergencyContactName"),
-    emergencyContactPhone: formData.get("emergencyContactPhone"),
-    emergencyContactPhoneRegion: formData.get("emergencyContactPhoneRegion"),
+    emergencyContactName: canEditSensitive
+      ? formData.get("emergencyContactName")
+      : member.emergencyContactName,
+    emergencyContactPhone: canEditSensitive
+      ? formData.get("emergencyContactPhone")
+      : member.emergencyContactPhone,
+    emergencyContactPhoneRegion: canEditSensitive
+      ? formData.get("emergencyContactPhoneRegion")
+      : null,
   });
   if (!parsed.success) return zodErrors(parsed.error);
 
   try {
-    // Admin edits are audited on the same MemberContactChange trail as
+    // Staff edits are audited on the same MemberContactChange trail as
     // member self-edits (selfReported=false marks the distinction).
     await updateMember(memberId, parsed.data, {
       actorAuthIdentityId: ctx.identity.id,
@@ -722,7 +745,7 @@ export async function setMemberStatusAction(
   const ctx = await requireAuth();
   // Propagates the opaque AuthorizationError — a void action has no
   // error state to return.
-  const member = await requireOrgAdminForMember(ctx, memberId);
+  const member = await requireOrgCapabilityForMember(ctx, memberId);
 
   const parsed = memberStatusSchema.safeParse(status);
   if (!parsed.success) return;
@@ -743,7 +766,7 @@ export async function setMemberUnitsAction(
   const ctx = await requireAuth();
   let member;
   try {
-    member = await requireOrgAdminForMember(ctx, memberId);
+    member = await requireOrgCapabilityForMember(ctx, memberId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1058,7 +1081,7 @@ export async function setOrganizationAccessRoleAction(
 
 /* ------------------------------------------------------------------ */
 /* Member submission review (issue #71). The submissionId is an        */
-/* untrusted selector — requireOrgAdminForMemberSubmission derives the */
+/* untrusted selector — requireOrgCapabilityForMemberSubmission derives the */
 /* real organization from the row. Review is the ONLY path that turns  */
 /* a member claim into a verified record.                              */
 /* ------------------------------------------------------------------ */
@@ -1071,7 +1094,10 @@ export async function reviewMemberSubmissionAction(
   const ctx = await requireAuth();
   let submission;
   try {
-    submission = await requireOrgAdminForMemberSubmission(ctx, submissionId);
+    submission = await requireOrgCapabilityForMemberSubmission(
+      ctx,
+      submissionId,
+    );
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1112,7 +1138,11 @@ export async function createQualificationDefinitionAction(
 ): Promise<ActionState> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(
+      ctx,
+      organizationId,
+      OrgCapability.QUALIFICATIONS_MANAGE,
+    );
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1150,7 +1180,10 @@ export async function updateQualificationDefinitionAction(
   const ctx = await requireAuth();
   let definition;
   try {
-    definition = await requireOrgAdminForDefinition(ctx, definitionId);
+    definition = await requireOrgCapabilityForQualificationDefinition(
+      ctx,
+      definitionId,
+    );
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1190,7 +1223,10 @@ export async function setQualificationDefinitionStatusAction(
   const ctx = await requireAuth();
   // Propagates the opaque AuthorizationError — a void action has no
   // error state to return.
-  const definition = await requireOrgAdminForDefinition(ctx, definitionId);
+  const definition = await requireOrgCapabilityForQualificationDefinition(
+    ctx,
+    definitionId,
+  );
 
   const parsed = qualificationDefinitionStatusSchema.safeParse(status);
   if (!parsed.success) return;
@@ -1211,7 +1247,11 @@ export async function createMemberQualificationAction(
   const ctx = await requireAuth();
   let member;
   try {
-    member = await requireOrgAdminForMember(ctx, memberId);
+    member = await requireOrgCapabilityForMember(
+      ctx,
+      memberId,
+      OrgCapability.QUALIFICATIONS_MANAGE,
+    );
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1245,7 +1285,7 @@ export async function updateMemberQualificationAction(
   const ctx = await requireAuth();
   let record;
   try {
-    record = await requireOrgAdminForQualification(ctx, qualificationId);
+    record = await requireOrgCapabilityForQualification(ctx, qualificationId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1299,7 +1339,7 @@ export async function createTrainingEventAction(
 ): Promise<ActionState> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(ctx, organizationId, OrgCapability.TRAINING_MANAGE);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1325,7 +1365,7 @@ export async function updateTrainingEventAction(
   const ctx = await requireAuth();
   let event;
   try {
-    event = await requireOrgAdminForTrainingEvent(ctx, eventId);
+    event = await requireOrgCapabilityForTrainingEvent(ctx, eventId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1353,7 +1393,7 @@ export async function setTrainingEventStatusAction(
   const ctx = await requireAuth();
   // Propagates the opaque AuthorizationError — a void action has no
   // error state to return.
-  const event = await requireOrgAdminForTrainingEvent(ctx, eventId);
+  const event = await requireOrgCapabilityForTrainingEvent(ctx, eventId);
 
   const parsed = trainingEventStatusSchema.safeParse(status);
   if (!parsed.success) return;
@@ -1374,7 +1414,7 @@ export async function setTrainingAttendanceAction(
   const ctx = await requireAuth();
   let event;
   try {
-    event = await requireOrgAdminForTrainingEvent(ctx, eventId);
+    event = await requireOrgCapabilityForTrainingEvent(ctx, eventId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1404,7 +1444,7 @@ export async function setTrainingAttendanceAction(
 /* ------------------------------------------------------------------ */
 /* Assets, inventory, storage (issue #10) — ids are untrusted          */
 /* selectors; the real organization is resolved server-side from the   */
-/* target record. ADMIN-only: no member self-service exists here.      */
+/* target record. Staff-only: no member self-service exists here.     */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -1439,7 +1479,7 @@ export async function createStorageLocationAction(
 ): Promise<ActionState> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(ctx, organizationId, OrgCapability.EQUIPMENT_MANAGE);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1464,7 +1504,7 @@ export async function updateStorageLocationAction(
   const ctx = await requireAuth();
   let location;
   try {
-    location = await requireOrgAdminForStorageLocation(ctx, locationId);
+    location = await requireOrgCapabilityForStorageLocation(ctx, locationId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1584,7 +1624,7 @@ export async function createAssetAction(
 ): Promise<ActionState> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(ctx, organizationId, OrgCapability.EQUIPMENT_MANAGE);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1616,7 +1656,7 @@ export async function updateAssetAction(
   const ctx = await requireAuth();
   let asset;
   try {
-    asset = await requireOrgAdminForAsset(ctx, assetId);
+    asset = await requireOrgCapabilityForAsset(ctx, assetId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1666,7 +1706,7 @@ export async function createInventoryItemAction(
 ): Promise<ActionState> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(ctx, organizationId, OrgCapability.EQUIPMENT_MANAGE);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1691,7 +1731,7 @@ export async function updateInventoryItemAction(
   const ctx = await requireAuth();
   let item;
   try {
-    item = await requireOrgAdminForInventoryItem(ctx, itemId);
+    item = await requireOrgCapabilityForInventoryItem(ctx, itemId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1732,7 +1772,7 @@ export async function createInspectionDefinitionAction(
 ): Promise<ActionState> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(ctx, organizationId, OrgCapability.EQUIPMENT_MANAGE);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1771,7 +1811,7 @@ export async function updateInspectionDefinitionAction(
   const ctx = await requireAuth();
   let definition;
   try {
-    definition = await requireOrgAdminForInspectionDefinition(
+    definition = await requireOrgCapabilityForInspectionDefinition(
       ctx,
       definitionId,
     );
@@ -1810,7 +1850,7 @@ export async function setInspectionDefinitionStatusAction(
   status: string,
 ): Promise<void> {
   const ctx = await requireAuth();
-  const definition = await requireOrgAdminForInspectionDefinition(
+  const definition = await requireOrgCapabilityForInspectionDefinition(
     ctx,
     definitionId,
   );
@@ -1828,7 +1868,7 @@ export async function recordInspectionAction(
   const ctx = await requireAuth();
   let asset;
   try {
-    asset = await requireOrgAdminForAsset(ctx, assetId);
+    asset = await requireOrgCapabilityForAsset(ctx, assetId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1866,7 +1906,7 @@ export async function updateInspectionRecordAction(
   const ctx = await requireAuth();
   let record;
   try {
-    record = await requireOrgAdminForInspectionRecord(ctx, recordId);
+    record = await requireOrgCapabilityForInspectionRecord(ctx, recordId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1901,7 +1941,7 @@ export async function createMaintenancePlanAction(
   const ctx = await requireAuth();
   let asset;
   try {
-    asset = await requireOrgAdminForAsset(ctx, assetId);
+    asset = await requireOrgCapabilityForAsset(ctx, assetId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1943,7 +1983,7 @@ export async function updateMaintenancePlanAction(
   const ctx = await requireAuth();
   let plan;
   try {
-    plan = await requireOrgAdminForMaintenancePlan(ctx, planId);
+    plan = await requireOrgCapabilityForMaintenancePlan(ctx, planId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -1982,7 +2022,7 @@ export async function setMaintenancePlanStatusAction(
   status: string,
 ): Promise<void> {
   const ctx = await requireAuth();
-  const plan = await requireOrgAdminForMaintenancePlan(ctx, planId);
+  const plan = await requireOrgCapabilityForMaintenancePlan(ctx, planId);
   const parsed = maintenancePlanStatusSchema.safeParse(status);
   if (!parsed.success) return;
   await setMaintenancePlanStatus(planId, parsed.data);
@@ -1997,7 +2037,7 @@ export async function recordMaintenanceAction(
   const ctx = await requireAuth();
   let asset;
   try {
-    asset = await requireOrgAdminForAsset(ctx, assetId);
+    asset = await requireOrgCapabilityForAsset(ctx, assetId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2036,7 +2076,7 @@ export async function updateMaintenanceRecordAction(
   const ctx = await requireAuth();
   let record;
   try {
-    record = await requireOrgAdminForMaintenanceRecord(ctx, recordId);
+    record = await requireOrgCapabilityForMaintenanceRecord(ctx, recordId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2072,7 +2112,7 @@ export async function reportDefectAction(
   const ctx = await requireAuth();
   let asset;
   try {
-    asset = await requireOrgAdminForAsset(ctx, assetId);
+    asset = await requireOrgCapabilityForAsset(ctx, assetId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2105,7 +2145,7 @@ export async function updateDefectAction(
   const ctx = await requireAuth();
   let defect;
   try {
-    defect = await requireOrgAdminForDefect(ctx, defectId);
+    defect = await requireOrgCapabilityForDefect(ctx, defectId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2136,7 +2176,7 @@ export async function transitionDefectAction(
   const ctx = await requireAuth();
   let defect;
   try {
-    defect = await requireOrgAdminForDefect(ctx, defectId);
+    defect = await requireOrgCapabilityForDefect(ctx, defectId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2166,7 +2206,7 @@ export async function createAssetMeterAction(
   const ctx = await requireAuth();
   let asset;
   try {
-    asset = await requireOrgAdminForAsset(ctx, assetId);
+    asset = await requireOrgCapabilityForAsset(ctx, assetId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2201,7 +2241,7 @@ export async function updateAssetMeterAction(
   const ctx = await requireAuth();
   let meter;
   try {
-    meter = await requireOrgAdminForAssetMeter(ctx, meterId);
+    meter = await requireOrgCapabilityForAssetMeter(ctx, meterId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2233,7 +2273,7 @@ export async function setAssetMeterStatusAction(
   status: string,
 ): Promise<void> {
   const ctx = await requireAuth();
-  const meter = await requireOrgAdminForAssetMeter(ctx, meterId);
+  const meter = await requireOrgCapabilityForAssetMeter(ctx, meterId);
   const parsed = assetMeterStatusSchema.safeParse(status);
   if (!parsed.success) return;
   await setAssetMeterStatus(meterId, parsed.data);
@@ -2248,7 +2288,7 @@ export async function recordMeterReadingAction(
   const ctx = await requireAuth();
   let meter;
   try {
-    meter = await requireOrgAdminForAssetMeter(ctx, meterId);
+    meter = await requireOrgCapabilityForAssetMeter(ctx, meterId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2276,11 +2316,11 @@ export async function recordMeterReadingAction(
 /* ------------------------------------------------------------------ */
 /* Availability and contact preferences (issue #12)                    */
 /*                                                                     */
-/* Admin records availability statements on a member's behalf and      */
-/* edits their contact preferences. memberId is an untrusted selector  */
-/* — requireOrgAdminForMember resolves the record's real               */
-/* organizationId and demands an ADMIN grant there. Statements are     */
-/* append-only; admins create new rows, never rewrite history.         */
+/* Staff record availability statements on a member's behalf and edit  */
+/* their contact preferences. memberId is an untrusted selector —     */
+/* requireOrgCapabilityForMember resolves the record's real            */
+/* organizationId and demands MEMBERS_MANAGE there. Statements are     */
+/* append-only; staff create new rows, never rewrite history.          */
 /* ------------------------------------------------------------------ */
 
 export async function setMemberAvailabilityAction(
@@ -2291,7 +2331,7 @@ export async function setMemberAvailabilityAction(
   const ctx = await requireAuth();
   let member;
   try {
-    member = await requireOrgAdminForMember(ctx, memberId);
+    member = await requireOrgCapabilityForMember(ctx, memberId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2326,7 +2366,7 @@ export async function updateMemberContactPreferenceAction(
   const ctx = await requireAuth();
   let member;
   try {
-    member = await requireOrgAdminForMember(ctx, memberId);
+    member = await requireOrgCapabilityForMember(ctx, memberId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2354,7 +2394,7 @@ export async function updateMemberContactPreferenceAction(
 /* Notifications (issue #13)                                           */
 /*                                                                     */
 /* A compact admin surface: send one administrative test notification  */
-/* and retry failed requests. ADMIN-only; organizationId from the page */
+/* and retry failed requests. NOTIFICATIONS_MANAGE; the orgId from    */
 /* binding is still an untrusted selector checked against              */
 /* OrganizationAccess. This is administrative/testing tooling — it is  */
 /* deliberately NOT a callout or dispatch interface.                   */
@@ -2407,7 +2447,11 @@ export async function sendAdminNotificationAction(
 ): Promise<ActionState> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(
+      ctx,
+      organizationId,
+      OrgCapability.NOTIFICATIONS_MANAGE,
+    );
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2460,7 +2504,10 @@ export async function retryNotificationAction(
   const ctx = await requireAuth();
   let notification;
   try {
-    notification = await requireOrgAdminForNotification(ctx, notificationId);
+    notification = await requireOrgCapabilityForNotification(
+      ctx,
+      notificationId,
+    );
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2486,7 +2533,7 @@ export async function retryNotificationAction(
 /* ------------------------------------------------------------------ */
 /* Callouts (issue #14)                                                */
 /*                                                                     */
-/* ADMIN-only activation/close/recording of factual volunteer          */
+/* OPERATIONS_MANAGE activation/close/recording of factual volunteer  */
 /* responses. Every id arriving via a binding is an untrusted          */
 /* selector — authorization resolves the record's real organization.   */
 /* Nothing here judges sufficiency, readiness, or crew fitness: a      */
@@ -2510,7 +2557,7 @@ export async function activateCalloutAction(
 ): Promise<ActionState> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(ctx, organizationId, OrgCapability.OPERATIONS_MANAGE);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2574,7 +2621,7 @@ export async function closeCalloutAction(
   const ctx = await requireAuth();
   let callout;
   try {
-    callout = await requireOrgAdminForCallout(ctx, calloutId);
+    callout = await requireOrgCapabilityForCallout(ctx, calloutId);
     await closeCallout(callout.id, ctx.identity.id);
   } catch (error) {
     return mapDomainError(error);
@@ -2600,7 +2647,10 @@ export async function recordCalloutResponseAction(
   const ctx = await requireAuth();
   let invitation;
   try {
-    invitation = await requireOrgAdminForCalloutInvitation(ctx, invitationId);
+    invitation = await requireOrgCapabilityForCalloutInvitation(
+      ctx,
+      invitationId,
+    );
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2631,9 +2681,9 @@ export async function recordCalloutResponseAction(
 /* ------------------------------------------------------------------ */
 /* Incidents (issue #15)                                               */
 /*                                                                     */
-/* ADMIN-only administration of the durable incident record. Incidents */
-/* can carry sensitive casualty/personal information, so every path    */
-/* resolves the target record's real organization and requires ADMIN — */
+/* OPERATIONS_MANAGE administration of the durable incident record.    */
+/* Incidents can carry sensitive casualty/personal information, so     */
+/* every path resolves the target record's real organization first —   */
 /* there is no member-facing incident surface and the public /respond  */
 /* route never touches incident data. Every mutation is audited:       */
 /* timeline events for lifecycle/participant facts, typed before/after */
@@ -2683,7 +2733,7 @@ export async function createIncidentAction(
 ): Promise<ActionState> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(ctx, organizationId, OrgCapability.OPERATIONS_MANAGE);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2723,7 +2773,7 @@ export async function createIncidentFromCalloutAction(
   const ctx = await requireAuth();
   let callout;
   try {
-    callout = await requireOrgAdminForCallout(ctx, calloutId);
+    callout = await requireOrgCapabilityForCallout(ctx, calloutId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2762,7 +2812,7 @@ export async function transitionIncidentStatusAction(
   const ctx = await requireAuth();
   let incident;
   try {
-    incident = await requireOrgAdminForIncident(ctx, incidentId);
+    incident = await requireOrgCapabilityForIncident(ctx, incidentId);
     const limited = await checkIncidentRateLimit(
       incident.organizationId,
       ctx.identity.id,
@@ -2794,7 +2844,7 @@ export async function updateIncidentAction(
   const ctx = await requireAuth();
   let incident;
   try {
-    incident = await requireOrgAdminForIncident(ctx, incidentId);
+    incident = await requireOrgCapabilityForIncident(ctx, incidentId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2829,7 +2879,7 @@ export async function linkIncidentCalloutAction(
   const ctx = await requireAuth();
   let incident;
   try {
-    incident = await requireOrgAdminForIncident(ctx, incidentId);
+    incident = await requireOrgCapabilityForIncident(ctx, incidentId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2867,7 +2917,7 @@ export async function addIncidentMemberAction(
   const ctx = await requireAuth();
   let incident;
   try {
-    incident = await requireOrgAdminForIncident(ctx, incidentId);
+    incident = await requireOrgCapabilityForIncident(ctx, incidentId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2899,7 +2949,7 @@ export async function removeIncidentMemberAction(
   const ctx = await requireAuth();
   let row;
   try {
-    row = await requireOrgAdminForIncidentMember(ctx, participationId);
+    row = await requireOrgCapabilityForIncidentMember(ctx, participationId);
     const limited = await checkIncidentRateLimit(
       row.organizationId,
       ctx.identity.id,
@@ -2924,7 +2974,7 @@ export async function addIncidentAssetAction(
   const ctx = await requireAuth();
   let incident;
   try {
-    incident = await requireOrgAdminForIncident(ctx, incidentId);
+    incident = await requireOrgCapabilityForIncident(ctx, incidentId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -2956,7 +3006,7 @@ export async function removeIncidentAssetAction(
   const ctx = await requireAuth();
   let row;
   try {
-    row = await requireOrgAdminForIncidentAsset(ctx, participationId);
+    row = await requireOrgCapabilityForIncidentAsset(ctx, participationId);
     const limited = await checkIncidentRateLimit(
       row.organizationId,
       ctx.identity.id,
@@ -2981,7 +3031,7 @@ export async function addIncidentNoteAction(
   const ctx = await requireAuth();
   let incident;
   try {
-    incident = await requireOrgAdminForIncident(ctx, incidentId);
+    incident = await requireOrgCapabilityForIncident(ctx, incidentId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -3017,7 +3067,7 @@ export async function correctIncidentNoteAction(
   const ctx = await requireAuth();
   let note;
   try {
-    note = await requireOrgAdminForIncidentNote(ctx, noteId);
+    note = await requireOrgCapabilityForIncidentNote(ctx, noteId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -3158,7 +3208,7 @@ export async function uploadAttachmentAction(
   }
   let target;
   try {
-    target = await requireOrgAdminForAttachmentTarget(
+    target = await requireOrgCapabilityForAttachmentTarget(
       ctx,
       entityType,
       entityId,
@@ -3245,7 +3295,7 @@ export async function prepareAttachmentUploadAction(
   }
   let target;
   try {
-    target = await requireOrgAdminForAttachmentTarget(
+    target = await requireOrgCapabilityForAttachmentTarget(
       ctx,
       entityType,
       entityId,
@@ -3299,7 +3349,7 @@ export async function finalizeAttachmentUploadAction(
   }
   let target;
   try {
-    target = await requireOrgAdminForAttachmentTarget(
+    target = await requireOrgCapabilityForAttachmentTarget(
       ctx,
       entityType,
       entityId,
@@ -3341,7 +3391,7 @@ export async function prepareDocumentUploadAction(
 ): Promise<PreparedUploadResult> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(ctx, organizationId, OrgCapability.DOCUMENTS_MANAGE);
   } catch (error) {
     return { status: "error", error: mapDomainError(error) };
   }
@@ -3379,7 +3429,7 @@ export async function finalizeDocumentCreateAction(
 ): Promise<ActionState> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(ctx, organizationId, OrgCapability.DOCUMENTS_MANAGE);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -3416,7 +3466,10 @@ export async function prepareDocumentVersionAction(
   const ctx = await requireAuth();
   let document;
   try {
-    document = await requireOrgAdminForOrganizationDocument(ctx, documentId);
+    document = await requireOrgCapabilityForOrganizationDocument(
+      ctx,
+      documentId,
+    );
   } catch (error) {
     return { status: "error", error: mapDomainError(error) };
   }
@@ -3447,7 +3500,10 @@ export async function finalizeDocumentVersionAction(
   const ctx = await requireAuth();
   let document;
   try {
-    document = await requireOrgAdminForOrganizationDocument(ctx, documentId);
+    document = await requireOrgCapabilityForOrganizationDocument(
+      ctx,
+      documentId,
+    );
   } catch (error) {
     return mapDomainError(error);
   }
@@ -3492,7 +3548,7 @@ export async function unlinkAttachmentAction(
   }
   let target;
   try {
-    target = await requireOrgAdminForAttachmentTarget(
+    target = await requireOrgCapabilityForAttachmentTarget(
       ctx,
       entityType,
       entityId,
@@ -3537,7 +3593,7 @@ export async function deleteAttachmentAction(
   const ctx = await requireAuth();
   let attachment;
   try {
-    attachment = await requireOrgAdminForAttachment(ctx, attachmentId);
+    attachment = await requireOrgCapabilityForAttachment(ctx, attachmentId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -3585,7 +3641,7 @@ export async function recheckAttachmentScanAction(
   const ctx = await requireAuth();
   let attachment;
   try {
-    attachment = await requireOrgAdminForAttachment(ctx, attachmentId);
+    attachment = await requireOrgCapabilityForAttachment(ctx, attachmentId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -3637,7 +3693,7 @@ export async function createOrganizationDocumentAction(
 ): Promise<ActionState> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(ctx, organizationId, OrgCapability.DOCUMENTS_MANAGE);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -3686,7 +3742,10 @@ export async function addDocumentVersionAction(
   const ctx = await requireAuth();
   let document;
   try {
-    document = await requireOrgAdminForOrganizationDocument(ctx, documentId);
+    document = await requireOrgCapabilityForOrganizationDocument(
+      ctx,
+      documentId,
+    );
   } catch (error) {
     return mapDomainError(error);
   }
@@ -3731,7 +3790,10 @@ export async function updateOrganizationDocumentAction(
   const ctx = await requireAuth();
   let document;
   try {
-    document = await requireOrgAdminForOrganizationDocument(ctx, documentId);
+    document = await requireOrgCapabilityForOrganizationDocument(
+      ctx,
+      documentId,
+    );
   } catch (error) {
     return mapDomainError(error);
   }
@@ -3766,7 +3828,10 @@ export async function setOrganizationDocumentStatusAction(
   const ctx = await requireAuth();
   let document;
   try {
-    document = await requireOrgAdminForOrganizationDocument(ctx, documentId);
+    document = await requireOrgCapabilityForOrganizationDocument(
+      ctx,
+      documentId,
+    );
   } catch (error) {
     return mapDomainError(error);
   }
@@ -3785,7 +3850,7 @@ export async function setOrganizationDocumentStatusAction(
 /* ------------------------------------------------------------------ */
 /* Issue #17 — vendors, expenses, receipts, reimbursements              */
 /*                                                                     */
-/* Lightweight financial recordkeeping, ADMIN-only end to end. Every   */
+/* Lightweight financial recordkeeping — FINANCE_MANAGE/APPROVE.      */
 /* mutation resolves the record's own organization before checking the */
 /* grant, so a foreign or fabricated id fails opaquely ("Not found."). */
 /* Receipt files ride the shared attachment actions above — the        */
@@ -3853,7 +3918,7 @@ export async function createVendorAction(
 ): Promise<ActionState> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(ctx, organizationId, OrgCapability.FINANCE_MANAGE);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -3880,7 +3945,7 @@ export async function updateVendorAction(
   const ctx = await requireAuth();
   let vendor;
   try {
-    vendor = await requireOrgAdminForVendor(ctx, vendorId);
+    vendor = await requireOrgCapabilityForVendor(ctx, vendorId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -3909,7 +3974,7 @@ export async function setVendorStatusAction(
   const ctx = await requireAuth();
   let vendor;
   try {
-    vendor = await requireOrgAdminForVendor(ctx, vendorId);
+    vendor = await requireOrgCapabilityForVendor(ctx, vendorId);
     const limited = await checkExpenseRateLimit(
       vendor.organizationId,
       ctx.identity.id,
@@ -3935,7 +4000,7 @@ export async function createExpenseAction(
 ): Promise<ActionState> {
   const ctx = await requireAuth();
   try {
-    requireOrgAdmin(ctx, organizationId);
+    requireOrgCapability(ctx, organizationId, OrgCapability.FINANCE_MANAGE);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -3971,7 +4036,7 @@ export async function updateExpenseAction(
   const ctx = await requireAuth();
   let expense;
   try {
-    expense = await requireOrgAdminForExpense(ctx, expenseId);
+    expense = await requireOrgCapabilityForExpense(ctx, expenseId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -3999,7 +4064,12 @@ export async function updateExpenseAction(
   return {};
 }
 
-/** Submit / approve / reject / return-to-draft — audited transitions. */
+/**
+ * Submit / approve / reject / return-to-draft — audited transitions.
+ * Submitting a draft and reopening a rejected record are routine entry
+ * (FINANCE_MANAGE); review decisions — approve, reject, return for
+ * rework — require FINANCE_APPROVE (issue #84).
+ */
 export async function transitionExpenseAction(
   expenseId: string,
   target: string,
@@ -4008,14 +4078,24 @@ export async function transitionExpenseAction(
   const ctx = await requireAuth();
   let expense;
   try {
-    expense = await requireOrgAdminForExpense(ctx, expenseId);
+    const parsed = expenseTransitionSchema.safeParse(target);
+    if (!parsed.success) return { message: "Invalid transition." };
+    expense = await requireOrgCapabilityForExpense(ctx, expenseId);
+    const review =
+      parsed.data !== "SUBMITTED" &&
+      !(parsed.data === "DRAFT" && expense.status === "REJECTED");
+    if (review) {
+      requireOrgCapability(
+        ctx,
+        expense.organizationId,
+        OrgCapability.FINANCE_APPROVE,
+      );
+    }
     const limited = await checkExpenseRateLimit(
       expense.organizationId,
       ctx.identity.id,
     );
     if (limited) return limited;
-    const parsed = expenseTransitionSchema.safeParse(target);
-    if (!parsed.success) return { message: "Invalid transition." };
     await transitionExpenseStatus(
       expense.id,
       parsed.data,
@@ -4058,7 +4138,11 @@ export async function setExpenseReimbursementAction(
   const ctx = await requireAuth();
   let expense;
   try {
-    expense = await requireOrgAdminForExpense(ctx, expenseId);
+    expense = await requireOrgCapabilityForExpense(
+      ctx,
+      expenseId,
+      OrgCapability.FINANCE_APPROVE,
+    );
   } catch (error) {
     return mapDomainError(error);
   }
@@ -4095,7 +4179,7 @@ export async function addExpenseLinkAction(
   const ctx = await requireAuth();
   let expense;
   try {
-    expense = await requireOrgAdminForExpense(ctx, expenseId);
+    expense = await requireOrgCapabilityForExpense(ctx, expenseId);
   } catch (error) {
     return mapDomainError(error);
   }
@@ -4139,7 +4223,11 @@ export async function removeExpenseLinkAction(
   try {
     const parsed = expenseContextLinkKindSchema.safeParse(kind);
     if (!parsed.success) return { message: "Not found." };
-    link = await requireOrgAdminForExpenseContextLink(ctx, parsed.data, linkId);
+    link = await requireOrgCapabilityForExpenseContextLink(
+      ctx,
+      parsed.data,
+      linkId,
+    );
     const limited = await checkExpenseRateLimit(
       link.organizationId,
       ctx.identity.id,

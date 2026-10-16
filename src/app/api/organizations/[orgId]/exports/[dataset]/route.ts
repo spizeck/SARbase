@@ -17,7 +17,7 @@ import {
  * attachment`, `nosniff`) and `private, no-store` so generated exports
  * are never shared-cached.
  *
- * Authorization is org-scoped ADMIN: the orgId and dataset key in the
+ * Authorization is org-scoped REPORTS_EXPORT: the orgId and dataset
  * URL are untrusted selectors — a foreign org, a non-admin caller, or
  * an unknown dataset key all collapse to the same opaque 404.
  */

@@ -1,8 +1,16 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
+import type { OrgRole } from "@prisma/client";
+
 import { prisma } from "@/lib/prisma";
-import { isOrgAdmin, requireAuth } from "@/lib/auth/authorize";
+import { requireAuth } from "@/lib/auth/authorize";
+
+const ROLE_LABELS: Record<OrgRole, string> = {
+  ADMIN: "Admin",
+  MANAGER: "Manager",
+  MEMBER: "Member",
+};
 
 export const metadata = { title: "Organizations" };
 export const dynamic = "force-dynamic";
@@ -65,7 +73,12 @@ export default async function OrganizationsPage() {
                   </span>
                 </span>
                 <span className="shrink-0 rounded-full border border-neutral-300 px-2.5 py-0.5 text-xs font-medium text-neutral-600">
-                  {isOrgAdmin(ctx, org.id) ? "Admin" : "Member"}
+                  {
+                    ROLE_LABELS[
+                      ctx.access.find((a) => a.organizationId === org.id)
+                        ?.role ?? "MEMBER"
+                    ]
+                  }
                 </span>
               </Link>
             </li>

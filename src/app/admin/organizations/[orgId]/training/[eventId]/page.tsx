@@ -9,7 +9,9 @@ import { listMembers } from "@/lib/domain/member";
 import { getOrganization } from "@/lib/domain/organization";
 import { listUnits } from "@/lib/domain/unit";
 import { formatDateOnly } from "@/lib/dates";
-import { requireAuth, isOrgAdmin } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { hasOrgCapability, requireAuth } from "@/lib/auth/authorize";
 
 import {
   updateTrainingEventAction,
@@ -37,7 +39,7 @@ export default async function TrainingEventPage({
   if (
     !event ||
     event.organizationId !== urlOrgId ||
-    !isOrgAdmin(ctx, event.organizationId)
+    !hasOrgCapability(ctx, event.organizationId, OrgCapability.TRAINING_MANAGE)
   )
     notFound();
 
@@ -47,8 +49,8 @@ export default async function TrainingEventPage({
     listUnits(orgId),
     listMembers(orgId),
   ]);
-  // Immutable attendance edit history (issue #9 audit) — shown to org
-  // admins only; this page already notFound()s for anyone else.
+  // Immutable attendance edit history (issue #9 audit) — shown to
+  // training staff only; this page already notFound()s for anyone else.
   const attendanceChanges = await listTrainingAttendanceChanges(event.id);
   const attendedIds = event.attendances.map((a) => a.memberId);
   const isCancelled = event.status === "CANCELLED";

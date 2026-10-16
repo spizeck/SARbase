@@ -1,7 +1,9 @@
 import Link from "next/link";
 
 import { prisma } from "@/lib/prisma";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
 import { dateOnlySchema } from "@/lib/domain/schemas";
 import {
   listOrganizationExpenses,
@@ -65,7 +67,7 @@ export default async function OrganizationExpensesPage({
   // orgId from the URL is an untrusted selector — the grant comes from
   // the caller's OrganizationAccess rows. Financial records are
   // sensitive; the entire surface is ADMIN-only by design.
-  await requireOrgAdminOrNotFound(orgId);
+  await requireOrgCapabilityOrNotFound(orgId, OrgCapability.FINANCE_MANAGE);
 
   const {
     vendor: vendorFilter,

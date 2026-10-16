@@ -23,7 +23,9 @@ import {
   dateDueLabel,
 } from "@/lib/domain/maintenance";
 import { formatDateOnly } from "@/lib/dates";
-import { requireAuth, isOrgAdmin } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { hasOrgCapability, requireAuth } from "@/lib/auth/authorize";
 
 import {
   updateAssetAction,
@@ -93,7 +95,7 @@ export default async function AssetPage({
   if (
     !asset ||
     asset.organizationId !== urlOrgId ||
-    !isOrgAdmin(ctx, asset.organizationId)
+    !hasOrgCapability(ctx, asset.organizationId, OrgCapability.EQUIPMENT_MANAGE)
   )
     notFound();
 

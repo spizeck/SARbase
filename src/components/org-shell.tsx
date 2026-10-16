@@ -10,6 +10,8 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import type { OrgCapability, OrgRole } from "@prisma/client";
+
 import { signOutAction } from "@/app/login/actions";
 import { orgNavGroups } from "@/lib/org-nav";
 
@@ -18,8 +20,14 @@ import { ThemeMenu } from "./theme";
 export interface ShellOrganization {
   id: string;
   name: string;
-  role: "ADMIN" | "MEMBER";
+  role: OrgRole;
 }
+
+/** Short switcher badge for staff roles; members show no badge. */
+const ROLE_BADGE: Partial<Record<OrgRole, string>> = {
+  ADMIN: "Admin",
+  MANAGER: "Manager",
+};
 
 const PINNED_KEY = "sarbase-nav-pinned";
 const NAV_EVENT = "sarbase-nav-pinned-change";
@@ -92,24 +100,30 @@ function ChevronDownIcon() {
 /**
  * The organization workspace shell: a persistent, grouped sidebar on
  * desktop that collapses to a top-bar hamburger (the same overlay
- * drawer mobile always uses). Navigation visibility is role-aware for
- * UX only — every admin destination enforces its own server grant.
+ * drawer mobile always uses). Navigation visibility is role- and
+ * capability-aware for UX only — every destination enforces its own
+ * server-side grant.
  */
 export function OrgShell({
   orgId,
   orgName,
   role,
+  capabilities,
   organizations,
   children,
 }: {
   orgId: string;
   orgName: string;
-  role: "ADMIN" | "MEMBER";
+  role: OrgRole;
+  capabilities: OrgCapability[];
   organizations: ShellOrganization[];
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const groups = orgNavGroups(orgId, role === "ADMIN");
+  const groups = orgNavGroups(orgId, capabilities, {
+    isAdmin: role === "ADMIN",
+    isStaff: role !== "MEMBER",
+  });
 
   // Desktop pinning; below lg the sidebar is always the overlay drawer.
   const [pinned, setPinned] = useNavPinned();
@@ -274,9 +288,9 @@ export function OrgShell({
                         }`}
                       >
                         <span className="truncate">{org.name}</span>
-                        {org.role === "ADMIN" && (
+                        {ROLE_BADGE[org.role] && (
                           <span className="ml-3 shrink-0 text-xs text-neutral-500">
-                            Admin
+                            {ROLE_BADGE[org.role]}
                           </span>
                         )}
                       </Link>

@@ -622,7 +622,8 @@ function replayResult(
  * the concurrent-create race protection.
  *
  * Authorization is the CALLER's job — this function trusts that the
- * caller already established ADMIN access to `organizationId`. The
+ * caller already established staff access (NOTIFICATIONS_MANAGE or
+ * ADMIN) to `organizationId`. The
  * composite member FK still guarantees a member from another
  * organization can never be attached even if a caller gets it wrong.
  */
@@ -786,7 +787,7 @@ export function listOrganizationNotifications(
 
 /**
  * A single notification with attempts for admin inspection. Org scoping
- * is the caller's job (requireOrgAdminForNotification resolves the
+ * is the caller's job (requireOrgCapabilityForNotification resolves the
  * record's real organization before granting).
  */
 export function getNotificationForAdmin(notificationId: string) {

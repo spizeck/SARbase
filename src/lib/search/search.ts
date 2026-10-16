@@ -12,7 +12,7 @@
  * only: organization, actor, query-length bucket, counts, duration.
  */
 
-import { isOrgAdmin, hasOrgAccess } from "@/lib/auth/authorize";
+import { hasOrgAccess, hasOrgCapability } from "@/lib/auth/authorize";
 import type { AuthContext } from "@/lib/auth/context";
 import { log, summarizeError } from "@/lib/logging";
 
@@ -36,6 +36,21 @@ export const SEARCH_SCAN_LIMIT = 50;
 export interface SearchOptions {
   /** Restrict to one result type (validated against the registry). */
   type?: string;
+}
+
+/**
+ * The result types a caller may search in this organization — the
+ * domains whose capability they hold. Used by the search page to render
+ * only reachable type filters; `searchOrganizationRecords` enforces the
+ * same gate on every query.
+ */
+export function searchableTypes(
+  ctx: AuthContext,
+  organizationId: string,
+): SearchResultType[] {
+  return SEARCH_DOMAINS.filter((d) =>
+    hasOrgCapability(ctx, organizationId, d.capability),
+  ).map((d) => d.type);
 }
 
 function emptyOutcome(
@@ -72,17 +87,19 @@ export async function searchOrganizationRecords(
     return emptyOutcome(raw, query.normalized, query.tokens, false);
   }
 
-  // Role gate at the data boundary: every registered domain is
-  // adminOnly today, so a non-admin gets an honestly empty outcome —
-  // the same shape as "no matches", never an existence signal.
-  const admin = isOrgAdmin(ctx, organizationId);
+  // Capability gate at the data boundary: a domain only runs when the
+  // caller holds its staff capability in THIS organization. A caller
+  // with no matching grants gets an honestly empty outcome — the same
+  // shape as "no matches", never an existence signal.
   const typeFilter = SEARCH_RESULT_TYPES.includes(
     options.type as SearchResultType,
   )
     ? (options.type as SearchResultType)
     : undefined;
   const domains = SEARCH_DOMAINS.filter(
-    (d) => (admin || !d.adminOnly) && (!typeFilter || d.type === typeFilter),
+    (d) =>
+      hasOrgCapability(ctx, organizationId, d.capability) &&
+      (!typeFilter || d.type === typeFilter),
   );
   if (!hasOrgAccess(ctx, organizationId) || domains.length === 0) {
     return emptyOutcome(raw, query.normalized, query.tokens, true);

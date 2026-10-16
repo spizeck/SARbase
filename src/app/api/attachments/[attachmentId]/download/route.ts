@@ -1,6 +1,6 @@
 import { ApiError, withApiObservability } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth/context";
-import { requireAttachmentForAdminOrOwner } from "@/lib/auth/authorize";
+import { requireAttachmentForStaffOrOwner } from "@/lib/auth/authorize";
 import {
   AttachmentDeletedError,
   attachmentContentDisposition,
@@ -21,7 +21,7 @@ import { StorageError } from "@/lib/storage/provider";
  * Files are PRIVATE — there is no public URL shape for stored objects
  * and no signed URLs are issued or persisted. Every request streams the
  * bytes through this route AFTER the attachment row is resolved and
- * authorization is verified: an ADMIN grant on the attachment's own
+ * authorization is verified: the capability covering the attachment's
  * organizationId, or — issue #71 — membership scope when the file is
  * linked to the caller's OWN submission or qualification record. An
  * attachment id outside the caller's scope is indistinguishable from a
@@ -59,7 +59,7 @@ async function handleGet(_request: Request, context: RouteContext) {
 
   let attachment;
   try {
-    attachment = await requireAttachmentForAdminOrOwner(ctx, attachmentId);
+    attachment = await requireAttachmentForStaffOrOwner(ctx, attachmentId);
   } catch {
     // AuthorizationError deliberately collapses to a generic 404 — no
     // existence disclosure for foreign-org or fabricated ids.

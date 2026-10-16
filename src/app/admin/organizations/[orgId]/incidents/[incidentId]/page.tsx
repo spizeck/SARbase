@@ -2,7 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { prisma } from "@/lib/prisma";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
 import {
   getIncidentForAdmin,
   INCIDENT_STATUS_LABELS,
@@ -62,7 +64,10 @@ export default async function IncidentDetailPage({
   if (!incident || incident.organizationId !== orgId) {
     notFound();
   }
-  await requireOrgAdminOrNotFound(incident.organizationId);
+  await requireOrgCapabilityOrNotFound(
+    incident.organizationId,
+    OrgCapability.OPERATIONS_MANAGE,
+  );
 
   const tz = incident.organization.timezone;
   const fmt = (d: Date | null | undefined) => formatInstantInZone(d, tz);

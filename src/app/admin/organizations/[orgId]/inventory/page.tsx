@@ -10,7 +10,9 @@ import {
   locationPathMap,
 } from "@/lib/domain/assets";
 import { listOrganizationVendors } from "@/lib/domain/expenses";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
+import { OrgCapability } from "@prisma/client";
+
+import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
 
 import {
   createInventoryItemAction,
@@ -37,7 +39,7 @@ export default async function InventoryPage({
 }) {
   const { orgId } = await params;
   // Untrusted URL selector — grant is checked against the real org.
-  await requireOrgAdminOrNotFound(orgId);
+  await requireOrgCapabilityOrNotFound(orgId, OrgCapability.EQUIPMENT_MANAGE);
   const organization = await getOrganization(orgId);
   if (!organization) notFound();
 

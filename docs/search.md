@@ -34,11 +34,10 @@ This shape was chosen deliberately:
 ### Registry seam
 
 `SEARCH_DOMAINS` in `src/lib/search/domains.ts` is the extension point.
-A domain entry is `{ type, adminOnly, search }` — an isolated searcher
-plus a role flag. New record types register here: write a searcher,
-append a registry entry. No orchestration, routing, or UI change is
-required. The `adminOnly` flag is also the seam for future
-member-visible domains.
+A domain entry is `{ type, capability, search }` — an isolated searcher
+plus the staff capability required to run it (issue #84). New record
+types register here: write a searcher, append a registry entry. No
+orchestration, routing, or UI change is required.
 
 ## PostgreSQL features
 
@@ -135,24 +134,26 @@ pagination. Type filtering (`?type=`) restricts to one domain.
 
 ## Authorization model
 
-Every registered domain is `adminOnly` today, matching the application:
-every record surface under `/admin` is ADMIN-gated, and the MEMBER role
-exposes only the member's own account data on `/account`. Therefore:
+Every registered domain carries a staff capability (issue #84),
+matching the application: every record surface under `/admin` is
+capability-gated, and the MEMBER role exposes only the member's own
+account data on `/account`. Therefore:
 
 - The search page (`/admin/organizations/{orgId}/search`) sits behind
-  `requireOrgAdminOrNotFound`, the same gate as every admin page.
+  `requireOrgStaffOrNotFound` — ADMIN or MANAGER; a member gets the
+  same opaque 404 as any admin page.
 - `searchOrganizationRecords` independently filters the registry by
-  role — a MEMBER caller gets an honestly empty outcome, not an error
-  and not partial leakage.
+  capability — a domain only runs when the caller holds its capability
+  in this organization. A caller with no matching grants gets an
+  honestly empty outcome, not an error and not partial leakage.
 - A caller with no `OrganizationAccess` row for the org gets the same
   empty outcome — indistinguishable from "no matches".
-- Incident records, incident notes, attachment metadata, and document
-  metadata are searched only under the admin domains, consistent with
-  their existing ADMIN-only surfaces.
+- The type filter pills on the page render only the types the caller
+  may search (`searchableTypes`), mirroring the server-side filter.
 
-Member email is searchable for ADMINs only (the admin member page
-already displays it). Member phone is not searched. Contact details are
-never shown in result subtitles.
+Member email is searchable only to callers with MEMBERS_MANAGE (the
+member page already displays it to them). Member phone is not searched.
+Contact details are never shown in result subtitles.
 
 ## Domains and fields searched
 

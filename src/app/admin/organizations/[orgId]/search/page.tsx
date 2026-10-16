@@ -2,8 +2,11 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { getOrganization } from "@/lib/domain/organization";
-import { requireOrgAdminOrNotFound } from "@/lib/auth/authorize";
-import { searchOrganizationRecords } from "@/lib/search/search";
+import { requireOrgStaffOrNotFound } from "@/lib/auth/authorize";
+import {
+  searchOrganizationRecords,
+  searchableTypes,
+} from "@/lib/search/search";
 import { SEARCH_MIN_QUERY_LENGTH } from "@/lib/search/query";
 import {
   SEARCH_RESULT_TYPES,
@@ -92,9 +95,10 @@ export default async function SearchPage({
   const { q, type } = await searchParams;
   // orgId is an untrusted selector — the grant is checked against the
   // caller's OrganizationAccess rows, same as every admin page.
-  const ctx = await requireOrgAdminOrNotFound(orgId);
+  const ctx = await requireOrgStaffOrNotFound(orgId);
   const organization = await getOrganization(orgId);
   if (!organization) notFound();
+  const allowedTypes = searchableTypes(ctx, orgId);
 
   const hasQuery = typeof q === "string" && q.trim().length > 0;
   const outcome = hasQuery
@@ -178,20 +182,22 @@ export default async function SearchPage({
           >
             All
           </Link>
-          {SEARCH_RESULT_TYPES.map((t) => (
-            <Link
-              key={t}
-              href={typeHref(t)}
-              aria-current={activeType === t ? "true" : undefined}
-              className={`rounded-md border px-3 py-1 ${
-                activeType === t
-                  ? "border-neutral-900 font-medium text-neutral-900"
-                  : "border-neutral-300 text-neutral-600 hover:bg-neutral-50"
-              }`}
-            >
-              {SEARCH_RESULT_TYPE_LABELS[t]}
-            </Link>
-          ))}
+          {SEARCH_RESULT_TYPES.filter((t) => allowedTypes.includes(t)).map(
+            (t) => (
+              <Link
+                key={t}
+                href={typeHref(t)}
+                aria-current={activeType === t ? "true" : undefined}
+                className={`rounded-md border px-3 py-1 ${
+                  activeType === t
+                    ? "border-neutral-900 font-medium text-neutral-900"
+                    : "border-neutral-300 text-neutral-600 hover:bg-neutral-50"
+                }`}
+              >
+                {SEARCH_RESULT_TYPE_LABELS[t]}
+              </Link>
+            ),
+          )}
         </nav>
       )}
 
