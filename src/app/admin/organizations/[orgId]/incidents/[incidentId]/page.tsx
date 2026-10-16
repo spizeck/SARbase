@@ -4,7 +4,10 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { OrgCapability } from "@prisma/client";
 
-import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
+import {
+  hasOrgCapability,
+  requireOrgCapabilityOrNotFound,
+} from "@/lib/auth/authorize";
 import {
   getIncidentForAdmin,
   INCIDENT_STATUS_LABELS,
@@ -64,9 +67,21 @@ export default async function IncidentDetailPage({
   if (!incident || incident.organizationId !== orgId) {
     notFound();
   }
-  await requireOrgCapabilityOrNotFound(
+  const ctx = await requireOrgCapabilityOrNotFound(
     incident.organizationId,
     OrgCapability.OPERATIONS_MANAGE,
+  );
+  // Member and asset pages need their own capabilities — degrade names
+  // to text for operations-only managers (issue #90).
+  const canViewMembers = hasOrgCapability(
+    ctx,
+    incident.organizationId,
+    OrgCapability.MEMBERS_MANAGE,
+  );
+  const canViewEquipment = hasOrgCapability(
+    ctx,
+    incident.organizationId,
+    OrgCapability.EQUIPMENT_MANAGE,
   );
 
   const tz = incident.organization.timezone;
@@ -301,12 +316,18 @@ export default async function IncidentDetailPage({
                 className="flex items-center justify-between gap-3 px-4 py-2 text-sm"
               >
                 <span>
-                  <Link
-                    href={`/admin/members/${p.member.id}`}
-                    className="font-medium text-neutral-900 hover:underline"
-                  >
-                    {p.member.displayName}
-                  </Link>
+                  {canViewMembers ? (
+                    <Link
+                      href={`/admin/organizations/${orgId}/members/${p.member.id}`}
+                      className="font-medium text-neutral-900 hover:underline"
+                    >
+                      {p.member.displayName}
+                    </Link>
+                  ) : (
+                    <span className="font-medium text-neutral-900">
+                      {p.member.displayName}
+                    </span>
+                  )}
                   {p.roleNote && (
                     <span className="text-neutral-500"> — {p.roleNote}</span>
                   )}
@@ -354,12 +375,18 @@ export default async function IncidentDetailPage({
                 className="flex items-center justify-between gap-3 px-4 py-2 text-sm"
               >
                 <span>
-                  <Link
-                    href={`/admin/assets/${p.asset.id}`}
-                    className="font-medium text-neutral-900 hover:underline"
-                  >
-                    {p.asset.name}
-                  </Link>
+                  {canViewEquipment ? (
+                    <Link
+                      href={`/admin/assets/${p.asset.id}`}
+                      className="font-medium text-neutral-900 hover:underline"
+                    >
+                      {p.asset.name}
+                    </Link>
+                  ) : (
+                    <span className="font-medium text-neutral-900">
+                      {p.asset.name}
+                    </span>
+                  )}
                   {p.note && (
                     <span className="text-neutral-500"> — {p.note}</span>
                   )}

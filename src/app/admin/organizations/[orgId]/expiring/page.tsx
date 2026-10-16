@@ -8,7 +8,10 @@ import {
 } from "@/lib/domain/qualification";
 import { OrgCapability } from "@prisma/client";
 
-import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
+import {
+  hasOrgCapability,
+  requireOrgCapabilityOrNotFound,
+} from "@/lib/auth/authorize";
 import { calendarDateInZone } from "@/lib/dates";
 
 export const metadata = { title: "Expiring certifications" };
@@ -23,7 +26,7 @@ export default async function ExpiringCertificationsPage({
   searchParams: Promise<{ expiring?: string }>;
 }) {
   const { orgId } = await params;
-  await requireOrgCapabilityOrNotFound(
+  const ctx = await requireOrgCapabilityOrNotFound(
     orgId,
     OrgCapability.QUALIFICATIONS_MANAGE,
   );
@@ -37,6 +40,13 @@ export default async function ExpiringCertificationsPage({
     : 30;
   // "Today" is the organization's own local calendar date.
   const today = calendarDateInZone(organization.timezone);
+  // Member pages need MEMBERS_MANAGE — degrade names to text for
+  // qualification-only managers (issue #90).
+  const canViewMembers = hasOrgCapability(
+    ctx,
+    orgId,
+    OrgCapability.MEMBERS_MANAGE,
+  );
   const expiringRecords = await listExpiringQualifications(orgId, {
     withinDays: expiryWindow,
     today,
@@ -97,12 +107,18 @@ export default async function ExpiringCertificationsPage({
               className="flex items-center justify-between gap-3 px-4 py-2 text-sm"
             >
               <span>
-                <Link
-                  href={`/admin/organizations/${orgId}/members/${record.member.id}`}
-                  className="font-medium text-neutral-900 hover:underline"
-                >
-                  {record.member.displayName}
-                </Link>
+                {canViewMembers ? (
+                  <Link
+                    href={`/admin/organizations/${orgId}/members/${record.member.id}`}
+                    className="font-medium text-neutral-900 hover:underline"
+                  >
+                    {record.member.displayName}
+                  </Link>
+                ) : (
+                  <span className="font-medium text-neutral-900">
+                    {record.member.displayName}
+                  </span>
+                )}
                 <span className="text-neutral-600">
                   {" "}
                   — {record.definition.name}

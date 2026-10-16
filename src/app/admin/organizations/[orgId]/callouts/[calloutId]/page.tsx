@@ -3,7 +3,10 @@ import { notFound } from "next/navigation";
 
 import { OrgCapability } from "@prisma/client";
 
-import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
+import {
+  hasOrgCapability,
+  requireOrgCapabilityOrNotFound,
+} from "@/lib/auth/authorize";
 import {
   getCalloutForAdmin,
   CALLOUT_RESPONSE_LABELS,
@@ -76,9 +79,16 @@ export default async function CalloutDetailPage({
   if (!callout || callout.organizationId !== orgId) {
     notFound();
   }
-  await requireOrgCapabilityOrNotFound(
+  const ctx = await requireOrgCapabilityOrNotFound(
     callout.organizationId,
     OrgCapability.OPERATIONS_MANAGE,
+  );
+  // Member pages need MEMBERS_MANAGE — degrade names to text for
+  // operations-only managers (issue #90).
+  const canViewMembers = hasOrgCapability(
+    ctx,
+    callout.organizationId,
+    OrgCapability.MEMBERS_MANAGE,
   );
 
   const coming = callout.invitations.filter(
@@ -198,12 +208,18 @@ export default async function CalloutDetailPage({
             return (
               <li key={invitation.id} className="px-4 py-3 text-sm">
                 <div className="flex items-center justify-between gap-3">
-                  <Link
-                    href={`/admin/members/${invitation.member.id}`}
-                    className="font-medium text-neutral-900 hover:underline"
-                  >
-                    {invitation.member.displayName}
-                  </Link>
+                  {canViewMembers ? (
+                    <Link
+                      href={`/admin/organizations/${orgId}/members/${invitation.member.id}`}
+                      className="font-medium text-neutral-900 hover:underline"
+                    >
+                      {invitation.member.displayName}
+                    </Link>
+                  ) : (
+                    <span className="font-medium text-neutral-900">
+                      {invitation.member.displayName}
+                    </span>
+                  )}
                   <span
                     className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${
                       invitation.response

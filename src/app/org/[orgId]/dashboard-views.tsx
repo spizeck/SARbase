@@ -100,32 +100,35 @@ function SectionList({
 const WORKSPACES: {
   name: string;
   description: string;
-  capabilities: OrgCapability[];
-  href: (a: string) => string;
+  /** Destinations in preference order — the card links the first one
+   *  the caller can actually open. */
+  destinations: { capability: OrgCapability; path: string }[];
 }[] = [
   {
     name: "Operations",
     description: "Callouts, incidents, and training events.",
-    capabilities: ["OPERATIONS_MANAGE", "TRAINING_MANAGE"],
-    href: (a: string) => `${a}/callouts`,
+    destinations: [
+      { capability: "OPERATIONS_MANAGE", path: "/callouts" },
+      { capability: "TRAINING_MANAGE", path: "/training" },
+    ],
   },
   {
     name: "People",
     description: "Member records, units, and qualifications.",
-    capabilities: ["MEMBERS_MANAGE", "QUALIFICATIONS_MANAGE"],
-    href: (a: string) => `${a}/members`,
+    destinations: [
+      { capability: "MEMBERS_MANAGE", path: "/members" },
+      { capability: "QUALIFICATIONS_MANAGE", path: "/qualifications" },
+    ],
   },
   {
     name: "Equipment",
     description: "Assets, inventory, locations, and maintenance.",
-    capabilities: ["EQUIPMENT_MANAGE"],
-    href: (a: string) => `${a}/assets`,
+    destinations: [{ capability: "EQUIPMENT_MANAGE", path: "/assets" }],
   },
   {
     name: "Reporting",
     description: "Data exports and annual activity summaries.",
-    capabilities: ["REPORTS_EXPORT"],
-    href: (a: string) => `${a}/reports`,
+    destinations: [{ capability: "REPORTS_EXPORT", path: "/reports" }],
   },
 ];
 
@@ -155,7 +158,14 @@ export async function AdminDashboard({
   ]);
   const { counts } = data;
   const can = (cap: OrgCapability) => capabilities.includes(cap);
-  const workspaces = WORKSPACES.filter((w) => w.capabilities.some(can));
+  const workspaces = WORKSPACES.map((w) => ({
+    name: w.name,
+    description: w.description,
+    href: w.destinations.find((d) => can(d.capability))?.path,
+  })).filter((w): w is typeof w & { href: string } => Boolean(w.href));
+  // Member record pages are their own capability — dashboard links to
+  // them must degrade to text for callers without MEMBERS_MANAGE.
+  const canViewMembers = can("MEMBERS_MANAGE");
   const stats = [
     {
       href: `${adminRoot}/members`,
@@ -348,22 +358,38 @@ export async function AdminDashboard({
               <ul className="divide-y divide-neutral-100">
                 {data.expiringQualifications.slice(0, 5).map((q) => (
                   <li key={q.id}>
-                    <Link
-                      href={`${adminRoot}/members/${q.member.id}`}
-                      className="flex items-baseline justify-between gap-3 px-4 py-2.5 hover:bg-neutral-50"
-                    >
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-medium text-neutral-900">
-                          {q.member.displayName}
+                    {canViewMembers ? (
+                      <Link
+                        href={`${adminRoot}/members/${q.member.id}`}
+                        className="flex items-baseline justify-between gap-3 px-4 py-2.5 hover:bg-neutral-50"
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium text-neutral-900">
+                            {q.member.displayName}
+                          </span>
+                          <span className="text-xs text-neutral-500">
+                            {q.definition.name}
+                          </span>
                         </span>
-                        <span className="text-xs text-neutral-500">
-                          {q.definition.name}
+                        <span className="shrink-0 text-xs text-neutral-500">
+                          {expiryLabel(q.expiresOn, orgToday)}
+                        </span>
+                      </Link>
+                    ) : (
+                      <span className="flex items-baseline justify-between gap-3 px-4 py-2.5">
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium text-neutral-900">
+                            {q.member.displayName}
+                          </span>
+                          <span className="text-xs text-neutral-500">
+                            {q.definition.name}
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-xs text-neutral-500">
+                          {expiryLabel(q.expiresOn, orgToday)}
                         </span>
                       </span>
-                      <span className="shrink-0 text-xs text-neutral-500">
-                        {expiryLabel(q.expiresOn, orgToday)}
-                      </span>
-                    </Link>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -372,7 +398,7 @@ export async function AdminDashboard({
         )}
       </div>
 
-      {workspaces.length > 0 && (
+      {workspaces.length > 0 ? (
         <section aria-labelledby="workspaces-heading" className="mt-8">
           <h2
             id="workspaces-heading"
@@ -384,7 +410,7 @@ export async function AdminDashboard({
             {workspaces.map((w) => (
               <Link
                 key={w.name}
-                href={w.href(adminRoot)}
+                href={`${adminRoot}${w.href}`}
                 className="rounded-lg border border-neutral-200 px-4 py-3 hover:border-neutral-300 hover:bg-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:ring-offset-2"
               >
                 <span className="block text-sm font-medium text-neutral-900">
@@ -396,6 +422,22 @@ export async function AdminDashboard({
               </Link>
             ))}
           </div>
+        </section>
+      ) : (
+        <section className="mt-8 rounded-lg border border-neutral-200 p-5">
+          <p className="text-sm text-neutral-600">
+            {isAdmin
+              ? "This organization has no staff workspaces yet."
+              : "You are a manager with no assigned permissions yet — an administrator can grant them on the Access & roles page. Until then, your member self-service lives on your account page."}
+          </p>
+          <p className="mt-3 text-sm">
+            <Link
+              href="/account"
+              className="font-medium text-neutral-900 underline underline-offset-2 hover:text-neutral-600"
+            >
+              Go to your account
+            </Link>
+          </p>
         </section>
       )}
     </>

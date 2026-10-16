@@ -10,7 +10,10 @@ import {
 import { resolveActorLabels } from "@/lib/domain/actors";
 import { OrgCapability } from "@prisma/client";
 
-import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
+import {
+  hasOrgCapability,
+  requireOrgCapabilityOrNotFound,
+} from "@/lib/auth/authorize";
 import { formatDateOnly, relativeTimeLabel } from "@/lib/dates";
 import { formatBytes } from "@/app/admin/attachment-section";
 
@@ -33,12 +36,19 @@ export default async function ReviewsPage({
   params: Promise<{ orgId: string }>;
 }) {
   const { orgId } = await params;
-  await requireOrgCapabilityOrNotFound(
+  const ctx = await requireOrgCapabilityOrNotFound(
     orgId,
     OrgCapability.QUALIFICATIONS_VERIFY,
   );
   const organization = await getOrganization(orgId);
   if (!organization) notFound();
+  // Member records need MEMBERS_MANAGE — a verify-only reviewer sees
+  // names as text rather than links that dead-end in a 404 (issue #90).
+  const canViewMembers = hasOrgCapability(
+    ctx,
+    orgId,
+    OrgCapability.MEMBERS_MANAGE,
+  );
 
   const { pending, reviewed } = await listOrganizationSubmissions(orgId);
 
@@ -108,12 +118,18 @@ export default async function ReviewsPage({
                 </div>
                 <p className="mt-0.5 text-xs text-neutral-500">
                   From{" "}
-                  <Link
-                    href={`/admin/organizations/${orgId}/members/${submission.member.id}`}
-                    className="font-medium text-neutral-700 underline"
-                  >
-                    {submission.member.displayName}
-                  </Link>
+                  {canViewMembers ? (
+                    <Link
+                      href={`/admin/organizations/${orgId}/members/${submission.member.id}`}
+                      className="font-medium text-neutral-700 underline"
+                    >
+                      {submission.member.displayName}
+                    </Link>
+                  ) : (
+                    <span className="font-medium text-neutral-700">
+                      {submission.member.displayName}
+                    </span>
+                  )}
                   {" · "}
                   {actorName(submission.submittedByAuthIdentityId)
                     ? `signed in as ${actorName(submission.submittedByAuthIdentityId)}`

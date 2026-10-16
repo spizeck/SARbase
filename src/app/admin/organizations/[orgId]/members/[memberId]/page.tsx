@@ -127,6 +127,13 @@ export default async function MemberPage({
     orgId,
     OrgCapability.QUALIFICATIONS_MANAGE,
   );
+  // Training-event pages need TRAINING_MANAGE — degrade event names to
+  // text for members-only managers (issue #90).
+  const canViewTraining = hasOrgCapability(
+    ctx,
+    orgId,
+    OrgCapability.TRAINING_MANAGE,
+  );
   const memberAccessRole =
     isAdmin && member.authIdentityId
       ? await getOrganizationAccessRole(orgId, member.authIdentityId)
@@ -563,12 +570,18 @@ export default async function MemberPage({
                 key={attendance.id}
                 className="flex items-center justify-between gap-3 px-4 py-2 text-sm"
               >
-                <Link
-                  href={`/admin/organizations/${orgId}/training/${attendance.event.id}`}
-                  className="font-medium text-neutral-900 hover:underline"
-                >
-                  {attendance.event.title}
-                </Link>
+                {canViewTraining ? (
+                  <Link
+                    href={`/admin/organizations/${orgId}/training/${attendance.event.id}`}
+                    className="font-medium text-neutral-900 hover:underline"
+                  >
+                    {attendance.event.title}
+                  </Link>
+                ) : (
+                  <span className="font-medium text-neutral-900">
+                    {attendance.event.title}
+                  </span>
+                )}
                 <span className="flex items-center gap-3 text-neutral-600">
                   {attendance.event.durationMinutes != null && (
                     <span>{attendance.event.durationMinutes} min</span>

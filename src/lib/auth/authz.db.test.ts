@@ -1,3 +1,6 @@
+import { Writable } from "node:stream";
+
+import { renderToPipeableStream, renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 /**
@@ -52,7 +55,12 @@ vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
 import { prisma } from "@/lib/prisma";
 import { getAuthContext } from "@/lib/auth/context";
-import { linkedMembersWithAccess } from "@/lib/auth/authorize";
+import {
+  isOrgAdmin,
+  linkedMembersWithAccess,
+  orgCapabilities,
+} from "@/lib/auth/authorize";
+import { calendarDateInZone } from "@/lib/dates";
 import { OrgCapability } from "@prisma/client";
 import {
   setOrganizationAccessCapabilities,
@@ -128,6 +136,10 @@ import {
 } from "@/app/account/actions";
 import TrainingEventPage from "@/app/admin/organizations/[orgId]/training/[eventId]/page";
 import AssetPage from "@/app/admin/organizations/[orgId]/assets/[assetId]/page";
+import ReviewsPage from "@/app/admin/organizations/[orgId]/reviews/page";
+import ExpiringCertificationsPage from "@/app/admin/organizations/[orgId]/expiring/page";
+import OrganizationDashboardPage from "@/app/org/[orgId]/page";
+import { AdminDashboard } from "@/app/org/[orgId]/dashboard-views";
 
 const hasDb = Boolean(process.env.DATABASE_URL);
 const PREFIX = "authztest-";
@@ -447,6 +459,9 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
       data: { leadMemberId: null },
     });
     await prisma.trainingEvent.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.memberSubmission.deleteMany({
       where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.memberQualification.deleteMany({
@@ -3115,6 +3130,183 @@ describe.skipIf(!hasDb)("organization-scoped authorization", () => {
           form({ memberIds: [memberA.id] }),
         ),
       ).toEqual({ message: "Not found." });
+    });
+  });
+
+  describe("capability-aware links (issue #90)", () => {
+    let linkMgrUid: string;
+    let linkMgrIdentityId: string;
+    let leadEvent: { id: string };
+    let submission: { id: string };
+    let expiringRecord: { id: string };
+    let memberAName: string;
+
+    const manage = (capabilities: OrgCapability[]) =>
+      setOrganizationAccessCapabilities(
+        orgA.id,
+        linkMgrIdentityId,
+        capabilities,
+        adminAIdentityId,
+      );
+
+    let memberHref: string;
+
+    beforeAll(async () => {
+      memberHref = `/admin/organizations/${orgA.id}/members/${memberA.id}`;
+      linkMgrUid = uniq("uid-mgr-links");
+      const identity = await prisma.authIdentity.create({
+        data: {
+          provider: "firebase",
+          providerUid: linkMgrUid,
+          email: `${uniq("mgr-links")}@example.org`,
+          status: "ACTIVE",
+        },
+      });
+      linkMgrIdentityId = identity.id;
+      await prisma.organizationAccess.create({
+        data: {
+          authIdentityId: linkMgrIdentityId,
+          organizationId: orgA.id,
+          role: "MANAGER",
+          capabilities: [],
+        },
+      });
+      memberAName = (
+        await prisma.member.findUniqueOrThrow({ where: { id: memberA.id } })
+      ).displayName;
+
+      const definition = await prisma.qualificationDefinition.create({
+        data: { organizationId: orgA.id, name: uniq("def-links") },
+      });
+      expiringRecord = await prisma.memberQualification.create({
+        data: {
+          organizationId: orgA.id,
+          memberId: memberA.id,
+          definitionId: definition.id,
+          expiresOn: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000),
+        },
+      });
+      submission = await prisma.memberSubmission.create({
+        data: {
+          organizationId: orgA.id,
+          memberId: memberA.id,
+          kind: "QUALIFICATION_CLAIM",
+          details: uniq("claim"),
+          qualificationDefinitionId: definition.id,
+          submittedByAuthIdentityId: linkMgrIdentityId,
+        },
+      });
+      leadEvent = await prisma.trainingEvent.create({
+        data: {
+          organizationId: orgA.id,
+          title: uniq("training-lead"),
+          date: new Date("2026-06-15T00:00:00.000Z"),
+          leadMemberId: memberA.id,
+        },
+      });
+    });
+
+    // The dashboard page resolves ctx→capabilities in real code, but
+    // AdminDashboard is an async server component — renderToStaticMarkup
+    // can't await nested async children, so these tests resolve the
+    // props through the same helpers the page uses and render the
+    // resolved tree.
+    const renderDashboard = async () => {
+      const ctx = await getAuthContext();
+      if (!ctx) throw new Error("expected a signed-in context");
+      const organization = await prisma.organization.findUniqueOrThrow({
+        where: { id: orgA.id },
+      });
+      const element = await AdminDashboard({
+        orgId: orgA.id,
+        adminRoot: `/admin/organizations/${orgA.id}`,
+        timezone: organization.timezone,
+        orgToday: calendarDateInZone(organization.timezone),
+        capabilities: orgCapabilities(ctx, orgA.id),
+        isAdmin: isOrgAdmin(ctx, orgA.id),
+      });
+      return renderToStaticMarkup(element);
+    };
+
+    it("TRAINING_MANAGE-only manager gets the training workspace, not callouts", async () => {
+      await manage([OrgCapability.TRAINING_MANAGE]);
+      signInAs(linkMgrUid);
+      // Page-level access still resolves for a staff member.
+      await expect(
+        OrganizationDashboardPage({
+          params: Promise.resolve({ orgId: orgA.id }),
+        }),
+      ).resolves.toBeTruthy();
+      const html = await renderDashboard();
+      const adminRoot = `/admin/organizations/${orgA.id}`;
+      expect(html).toContain(`${adminRoot}/training`);
+      expect(html).not.toContain(`${adminRoot}/callouts`);
+      expect(html).not.toContain(`${adminRoot}/members`);
+    });
+
+    it("a zero-capability manager sees guidance instead of a blank dashboard", async () => {
+      await manage([]);
+      signInAs(linkMgrUid);
+      const html = await renderDashboard();
+      expect(html).toContain("no assigned permissions");
+      expect(html).not.toContain(`/admin/organizations/${orgA.id}/callouts`);
+    });
+
+    it("QUALIFICATIONS_VERIFY-only reviewer sees names as text on the review queue", async () => {
+      await manage([OrgCapability.QUALIFICATIONS_VERIFY]);
+      signInAs(linkMgrUid);
+      expect(submission.id).toBeTruthy();
+      const html = renderToStaticMarkup(
+        await ReviewsPage({ params: Promise.resolve({ orgId: orgA.id }) }),
+      );
+      expect(html).toContain(memberAName);
+      expect(html).not.toContain(memberHref);
+    });
+
+    it("QUALIFICATIONS_MANAGE-only manager sees expiring names without member links", async () => {
+      await manage([OrgCapability.QUALIFICATIONS_MANAGE]);
+      signInAs(linkMgrUid);
+      expect(expiringRecord.id).toBeTruthy();
+      const html = renderToStaticMarkup(
+        await ExpiringCertificationsPage({
+          params: Promise.resolve({ orgId: orgA.id }),
+          searchParams: Promise.resolve({}),
+        }),
+      );
+      expect(html).toContain(memberAName);
+      expect(html).not.toContain(memberHref);
+    });
+
+    it("TRAINING_MANAGE-only manager sees the lead member name as text", async () => {
+      await manage([OrgCapability.TRAINING_MANAGE]);
+      signInAs(linkMgrUid);
+      // The page suspends in a child — pipeable stream resolves all
+      // suspense boundaries before completing.
+      const element = await TrainingEventPage({
+        params: Promise.resolve({ orgId: orgA.id, eventId: leadEvent.id }),
+      });
+      const html = await new Promise<string>((resolve, reject) => {
+        let out = "";
+        const { pipe } = renderToPipeableStream(element, {
+          onAllReady() {
+            pipe(
+              new Writable({
+                write(chunk, _encoding, callback) {
+                  out += chunk.toString();
+                  callback();
+                },
+                final(callback) {
+                  resolve(out);
+                  callback();
+                },
+              }),
+            );
+          },
+          onError: reject,
+        });
+      });
+      expect(html).toContain(memberAName);
+      expect(html).not.toContain(memberHref);
     });
   });
 });

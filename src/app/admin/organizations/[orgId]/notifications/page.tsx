@@ -3,7 +3,10 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { OrgCapability } from "@prisma/client";
 
-import { requireOrgCapabilityOrNotFound } from "@/lib/auth/authorize";
+import {
+  hasOrgCapability,
+  requireOrgCapabilityOrNotFound,
+} from "@/lib/auth/authorize";
 import {
   isRetryableNotification,
   listOrganizationNotifications,
@@ -41,9 +44,16 @@ export default async function OrganizationNotificationsPage({
   const { orgId } = await params;
   // orgId from the URL is an untrusted selector — the grant comes from
   // the caller's OrganizationAccess rows.
-  await requireOrgCapabilityOrNotFound(
+  const ctx = await requireOrgCapabilityOrNotFound(
     orgId,
     OrgCapability.NOTIFICATIONS_MANAGE,
+  );
+  // Member pages need MEMBERS_MANAGE — degrade names to text for
+  // notification-only managers (issue #90).
+  const canViewMembers = hasOrgCapability(
+    ctx,
+    orgId,
+    OrgCapability.MEMBERS_MANAGE,
   );
 
   // The org exists — the admin grant already resolved it — so a missing
@@ -130,12 +140,16 @@ export default async function OrganizationNotificationsPage({
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-medium text-neutral-900">
                       {notification.member ? (
-                        <Link
-                          href={`/admin/members/${notification.member.id}`}
-                          className="hover:underline"
-                        >
-                          {notification.member.displayName}
-                        </Link>
+                        canViewMembers ? (
+                          <Link
+                            href={`/admin/organizations/${orgId}/members/${notification.member.id}`}
+                            className="hover:underline"
+                          >
+                            {notification.member.displayName}
+                          </Link>
+                        ) : (
+                          notification.member.displayName
+                        )
                       ) : (
                         "Direct destination"
                       )}

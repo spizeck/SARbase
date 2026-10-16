@@ -44,6 +44,13 @@ export default async function TrainingEventPage({
     notFound();
 
   const orgId = event.organizationId;
+  // Member pages need MEMBERS_MANAGE — degrade names to text for
+  // training-only managers (issue #90).
+  const canViewMembers = hasOrgCapability(
+    ctx,
+    orgId,
+    OrgCapability.MEMBERS_MANAGE,
+  );
   const [organization, units, members] = await Promise.all([
     getOrganization(orgId),
     listUnits(orgId),
@@ -118,12 +125,16 @@ export default async function TrainingEventPage({
             <dt className="text-xs text-neutral-500">Lead member</dt>
             <dd>
               {event.leadMember ? (
-                <Link
-                  href={`/admin/organizations/${orgId}/members/${event.leadMember.id}`}
-                  className="hover:underline"
-                >
-                  {event.leadMember.displayName}
-                </Link>
+                canViewMembers ? (
+                  <Link
+                    href={`/admin/organizations/${orgId}/members/${event.leadMember.id}`}
+                    className="hover:underline"
+                  >
+                    {event.leadMember.displayName}
+                  </Link>
+                ) : (
+                  event.leadMember.displayName
+                )
               ) : (
                 "None / external"
               )}
