@@ -32,7 +32,17 @@ export interface DatasetDef {
   key: string;
   group: string;
   label: string;
+  /**
+   * One-sentence, plain-language purpose shown under the label. Must be
+   * understandable to a non-technical coordinator — no schema jargon.
+   */
   description: string;
+  /**
+   * Optional technical detail behind progressive disclosure in the UI:
+   * column-name semantics, join keys, retention/deletion behavior.
+   * Accuracy matters here; implementation vocabulary is fine.
+   */
+  help?: string;
   /** Filters this dataset supports — anything else is a 400. */
   filters: ReadonlySet<FilterKey>;
   /** Which column the from/to range applies to, and its storage kind. */
@@ -109,7 +119,7 @@ const organizationDataset: DatasetDef = {
   key: "organization",
   group: "Organization & people",
   label: "Organization",
-  description: "The organization record itself — id, name, timezone.",
+  description: "The organization's own record — name and timezone.",
   filters: NONE,
   run: async (tx, organizationId) => ({
     columns: [c.id("id"), c.t("name"), c.t("timezone"), c.ts("createdAt")],
@@ -124,7 +134,7 @@ const unitsDataset: DatasetDef = {
   key: "units",
   group: "Organization & people",
   label: "Units",
-  description: "Internal groupings (stations, teams).",
+  description: "Internal groupings such as stations or teams.",
   filters: NONE,
   run: async (tx, organizationId) => ({
     columns: [
@@ -151,7 +161,8 @@ const membersDataset: DatasetDef = {
   group: "Organization & people",
   label: "Members",
   description:
-    "Member roster including contact details as recorded. Sensitive — admin only.",
+    "The member roster, including contact details as recorded. Contains personal data.",
+  help: "Includes each member's stable id and the linked sign-in identity id so this file can be joined to other exports.",
   filters: new Set<FilterKey>(["unit"]),
   run: async (tx, organizationId, _tz, f) => ({
     columns: [
@@ -186,8 +197,9 @@ const membersDataset: DatasetDef = {
 const memberUnitsDataset: DatasetDef = {
   key: "member-units",
   group: "Organization & people",
-  label: "Member-unit memberships",
+  label: "Unit membership",
   description: "Which members belong to which units.",
+  help: "Join to members.csv on memberId and to units.csv on unitId.",
   filters: NONE,
   run: async (tx, organizationId) => ({
     columns: [
@@ -209,7 +221,8 @@ const memberAvailabilityDataset: DatasetDef = {
   group: "Organization & people",
   label: "Availability history",
   description:
-    "Append-only availability statements (raw history — no derived scores).",
+    "Every availability update members have set — the complete history, not just the latest.",
+  help: "Rows are never rewritten: the most recent row per member is the current statement. The date range filters when each update was recorded.",
   filters: DATE_ONLY,
   dateField: { name: "createdAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => ({
@@ -239,7 +252,7 @@ const memberNotificationPreferencesDataset: DatasetDef = {
   group: "Organization & people",
   label: "Notification preferences",
   description:
-    "Per-member channel opt-ins (willingness flags only — no destinations).",
+    "Which channels (email, SMS, WhatsApp, push) each member opted into — not the addresses themselves.",
   filters: NONE,
   run: async (tx, organizationId) => ({
     columns: [
@@ -263,8 +276,8 @@ const memberInvitationsDataset: DatasetDef = {
   key: "member-invitations",
   group: "Organization & people",
   label: "Member invitations",
-  description:
-    "Onboarding invitations with lifecycle state and expiry. Token hashes and token versions are never exported — they are bearer-material internals.",
+  description: "Invitations sent to members, with status and expiry dates.",
+  help: "Invitation token internals are never exported — the file cannot be used to accept an invitation.",
   filters: DATE_ONLY,
   dateField: { name: "createdAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => ({
@@ -313,9 +326,10 @@ const memberInvitationsDataset: DatasetDef = {
 const memberInvitationEventsDataset: DatasetDef = {
   key: "member-invitation-events",
   group: "Organization & people",
-  label: "Member invitation events",
+  label: "Invitation activity",
   description:
-    "Append-only invitation lifecycle history (create, resend, revoke, accept). `from`/`to` filter the event instant.",
+    "A dated history of invitation actions — sent, resent, accepted, revoked.",
+  help: "One row per action, never rewritten. `detail` holds structured JSON context; the date range filters when each action happened.",
   filters: DATE_ONLY,
   dateField: { name: "createdAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => {
@@ -347,8 +361,9 @@ const memberInvitationEventsDataset: DatasetDef = {
 const qualificationDefinitionsDataset: DatasetDef = {
   key: "qualification-definitions",
   group: "Qualifications & training",
-  label: "Qualification definitions",
-  description: "The qualification/certification types tracked.",
+  label: "Qualification types",
+  description:
+    "The qualification and certification types the organization tracks.",
   filters: NONE,
   run: async (tx, organizationId) => ({
     columns: [
@@ -370,7 +385,9 @@ const memberQualificationsDataset: DatasetDef = {
   key: "member-qualifications",
   group: "Qualifications & training",
   label: "Member qualifications",
-  description: "Append-only certificate records per member.",
+  description:
+    "Certificates and qualifications recorded per member, including issue and expiry dates.",
+  help: "Rows are never rewritten — a corrected record appears as a new row. Join to members.csv on memberId and qualification-definitions.csv on definitionId.",
   filters: NONE,
   run: async (tx, organizationId) => ({
     columns: [
@@ -396,8 +413,8 @@ const trainingEventsDataset: DatasetDef = {
   key: "training-events",
   group: "Qualifications & training",
   label: "Training events",
-  description:
-    "Training records. `from`/`to` filter the org-local event date; `unit` filters the recorded unit.",
+  description: "Training sessions with date, duration, instructor, and status.",
+  help: "The date range matches the event's calendar date; the unit filter matches the unit recorded on the event.",
   filters: new Set<FilterKey>(["date", "unit"]),
   dateField: { name: "date", kind: "date" },
   run: async (tx, organizationId, _tz, f) => ({
@@ -431,7 +448,7 @@ const trainingTopicsDataset: DatasetDef = {
   key: "training-topics",
   group: "Qualifications & training",
   label: "Training topics",
-  description: "Topic labels per training event.",
+  description: "Topic labels recorded on each training event.",
   filters: NONE,
   run: async (tx, organizationId) => ({
     columns: [
@@ -451,7 +468,8 @@ const trainingAttendanceDataset: DatasetDef = {
   key: "training-attendance",
   group: "Qualifications & training",
   label: "Training attendance",
-  description: "Member attendance rows per training event.",
+  description: "One row per member attendance on each training event.",
+  help: "Join to training-events.csv on trainingEventId and members.csv on memberId.",
   filters: NONE,
   run: async (tx, organizationId) => ({
     columns: [
@@ -473,7 +491,7 @@ const storageLocationsDataset: DatasetDef = {
   key: "storage-locations",
   group: "Assets & maintenance",
   label: "Storage locations",
-  description: "Named places where assets and stock are kept.",
+  description: "Named places where equipment and stock are kept.",
   filters: NONE,
   run: async (tx, organizationId) => ({
     columns: [
@@ -497,7 +515,8 @@ const assetsDataset: DatasetDef = {
   key: "assets",
   group: "Assets & maintenance",
   label: "Assets",
-  description: "Durable equipment records. `unit` filters recorded unit.",
+  description: "Equipment records with identifiers, condition, and status.",
+  help: "The unit filter matches the unit recorded on the asset.",
   filters: new Set<FilterKey>(["unit"]),
   run: async (tx, organizationId, _tz, f) => ({
     columns: [
@@ -530,7 +549,8 @@ const inventoryItemsDataset: DatasetDef = {
   key: "inventory-items",
   group: "Assets & maintenance",
   label: "Inventory items",
-  description: "Consumable stock records. `unit` filters recorded unit.",
+  description: "Consumable stock records with quantities and storage location.",
+  help: "The unit filter matches the unit recorded on the item.",
   filters: new Set<FilterKey>(["unit"]),
   run: async (tx, organizationId, _tz, f) => ({
     columns: [
@@ -558,8 +578,8 @@ const inventoryItemsDataset: DatasetDef = {
 const inspectionDefinitionsDataset: DatasetDef = {
   key: "inspection-definitions",
   group: "Assets & maintenance",
-  label: "Inspection definitions",
-  description: "Inspection types and their recurrence.",
+  label: "Inspection types",
+  description: "The inspections defined per asset and how often they recur.",
   filters: NONE,
   run: async (tx, organizationId) => ({
     columns: [
@@ -583,8 +603,8 @@ const inspectionRecordsDataset: DatasetDef = {
   key: "inspection-records",
   group: "Assets & maintenance",
   label: "Inspection records",
-  description:
-    "Recorded inspections. `from`/`to` filter the performed-on date.",
+  description: "Completed inspections with findings and next-due dates.",
+  help: "The date range matches the date each inspection was performed.",
   filters: DATE_ONLY,
   dateField: { name: "performedOn", kind: "date" },
   run: async (tx, organizationId, _tz, f) => ({
@@ -614,7 +634,7 @@ const maintenancePlansDataset: DatasetDef = {
   key: "maintenance-plans",
   group: "Assets & maintenance",
   label: "Maintenance plans",
-  description: "Scheduled maintenance definitions per asset.",
+  description: "Scheduled maintenance defined per asset.",
   filters: NONE,
   run: async (tx, organizationId) => ({
     columns: [
@@ -641,8 +661,8 @@ const maintenanceRecordsDataset: DatasetDef = {
   key: "maintenance-records",
   group: "Assets & maintenance",
   label: "Maintenance records",
-  description:
-    "Service/repair events. `from`/`to` filter the performed-on date.",
+  description: "Service and repair work performed on assets.",
+  help: "The date range matches the date each job was performed.",
   filters: DATE_ONLY,
   dateField: { name: "performedOn", kind: "date" },
   run: async (tx, organizationId, _tz, f) => ({
@@ -673,7 +693,7 @@ const assetMetersDataset: DatasetDef = {
   key: "asset-meters",
   group: "Assets & maintenance",
   label: "Asset meters",
-  description: "Meter definitions (engine hours, odometer, ...).",
+  description: "Meters tracked per asset, such as engine hours or odometers.",
   filters: NONE,
   run: async (tx, organizationId) => ({
     columns: [
@@ -696,8 +716,8 @@ const assetMeterReadingsDataset: DatasetDef = {
   key: "asset-meter-readings",
   group: "Assets & maintenance",
   label: "Meter readings",
-  description:
-    "Append-only meter observations. `from`/`to` filter the recorded-on date.",
+  description: "Recorded meter observations with dates and notes.",
+  help: "Rows are never rewritten. The date range matches the recorded-on date.",
   filters: DATE_ONLY,
   dateField: { name: "recordedOn", kind: "date" },
   run: async (tx, organizationId, _tz, f) => ({
@@ -724,7 +744,8 @@ const defectsDataset: DatasetDef = {
   key: "defects",
   group: "Assets & maintenance",
   label: "Defects",
-  description: "Reported defects. `from`/`to` filter the reported-on date.",
+  description: "Reported equipment problems with status and resolution.",
+  help: "The date range matches the date each defect was reported.",
   filters: DATE_ONLY,
   dateField: { name: "reportedOn", kind: "date" },
   run: async (tx, organizationId, _tz, f) => ({
@@ -753,8 +774,8 @@ const calloutsDataset: DatasetDef = {
   key: "callouts",
   group: "Incidents & callouts",
   label: "Callouts",
-  description:
-    "Callout records. `from`/`to` filter activation time (org-local dates); `unit` filters the targeted unit.",
+  description: "Callout records with activation and closure times.",
+  help: "The date range matches when each callout was activated (organization-local dates); the unit filter matches the targeted unit.",
   filters: new Set<FilterKey>(["date", "unit"]),
   dateField: { name: "activatedAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => ({
@@ -787,8 +808,8 @@ const calloutInvitationsDataset: DatasetDef = {
   key: "callout-invitations",
   group: "Incidents & callouts",
   label: "Callout invitations",
-  description:
-    "Materialized invitations with raw response state and timestamps. Response token hashes are never exported.",
+  description: "Who was invited to each callout and how they responded.",
+  help: "Includes the recorded response and timestamps. Response link internals are never exported — the file cannot be used to answer a callout.",
   filters: DATE_ONLY,
   dateField: { name: "invitedAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => ({
@@ -818,7 +839,8 @@ const incidentsDataset: DatasetDef = {
   group: "Incidents & callouts",
   label: "Incidents",
   description:
-    "Incident records with factual timestamps. `from`/`to` filter record creation (org-local dates).",
+    "Incident records with status and factual timestamps — reported, departed, on scene, returned, closed.",
+  help: "The date range matches when each incident record was created (organization-local dates).",
   filters: DATE_ONLY,
   dateField: { name: "createdAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => ({
@@ -855,8 +877,8 @@ const incidentParticipantsDataset: DatasetDef = {
   key: "incident-participants",
   group: "Incidents & callouts",
   label: "Incident participants",
-  description:
-    "Recorded member participation per incident. `from`/`to` filter the recorded-at instant.",
+  description: "Members recorded on each incident.",
+  help: "The date range matches when each participation entry was recorded.",
   filters: DATE_ONLY,
   dateField: { name: "recordedAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => ({
@@ -883,8 +905,8 @@ const incidentAssetsDataset: DatasetDef = {
   key: "incident-assets",
   group: "Incidents & callouts",
   label: "Incident assets",
-  description:
-    "Assets recorded as used on incidents. `from`/`to` filter the recorded-at instant.",
+  description: "Equipment recorded as used on each incident.",
+  help: "The date range matches when each usage entry was recorded.",
   filters: DATE_ONLY,
   dateField: { name: "recordedAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => ({
@@ -912,7 +934,8 @@ const incidentTimelineDataset: DatasetDef = {
   group: "Incidents & callouts",
   label: "Incident timeline",
   description:
-    "System-generated incident timeline events. `from`/`to` filter the occurred-at instant.",
+    "The system-recorded timeline of what happened on each incident, in order.",
+  help: "`metadata` holds structured JSON context for each event. The date range matches when each event occurred.",
   filters: DATE_ONLY,
   dateField: { name: "occurredAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => {
@@ -947,7 +970,8 @@ const incidentNotesDataset: DatasetDef = {
   group: "Incidents & callouts",
   label: "Incident notes",
   description:
-    "Human-authored incident notes. `from`/`to` filter entry creation. Sensitive — admin only.",
+    "Notes people wrote on incidents. Contains free text — may include sensitive detail.",
+  help: "The date range matches when each note was created.",
   filters: DATE_ONLY,
   dateField: { name: "createdAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => ({
@@ -977,7 +1001,8 @@ const incidentNoteCorrectionsDataset: DatasetDef = {
   group: "Incidents & callouts",
   label: "Incident note corrections",
   description:
-    "Append-only before/after history for incident notes. `from`/`to` filter the correction instant.",
+    "Before/after history recorded whenever an incident note is corrected.",
+  help: "Rows are never rewritten — this is the audit trail for note edits. The date range matches when each correction was made.",
   filters: DATE_ONLY,
   dateField: { name: "createdAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => ({
@@ -1005,9 +1030,10 @@ const incidentNoteCorrectionsDataset: DatasetDef = {
 const incidentChangesDataset: DatasetDef = {
   key: "incident-changes",
   group: "Incidents & callouts",
-  label: "Incident changes",
+  label: "Incident corrections",
   description:
-    "Append-only material-field correction history. `from`/`to` filter the correction instant.",
+    "Before/after history recorded whenever key incident fields are corrected.",
+  help: "Rows are never rewritten — this is the audit trail for corrections to an incident's material fields. The date range matches when each correction was made.",
   filters: DATE_ONLY,
   dateField: { name: "createdAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => ({
@@ -1044,8 +1070,8 @@ const incidentChangesDataset: DatasetDef = {
 const organizationDocumentsDataset: DatasetDef = {
   key: "organization-documents",
   group: "Documents & attachments",
-  label: "Organization documents",
-  description: "Document records (SOPs, manuals, certificates).",
+  label: "Documents",
+  description: "Document records such as SOPs, manuals, and certificates.",
   filters: NONE,
   run: async (tx, organizationId) => ({
     columns: [
@@ -1071,7 +1097,8 @@ const organizationDocumentVersionsDataset: DatasetDef = {
   key: "organization-document-versions",
   group: "Documents & attachments",
   label: "Document versions",
-  description: "Version rows linking documents to file attachments.",
+  description: "Which uploaded file belongs to each version of a document.",
+  help: "Join to organization-documents.csv on documentId and attachments.csv on attachmentId.",
   filters: NONE,
   run: async (tx, organizationId) => ({
     columns: [
@@ -1094,9 +1121,10 @@ const organizationDocumentVersionsDataset: DatasetDef = {
 const attachmentsDataset: DatasetDef = {
   key: "attachments",
   group: "Documents & attachments",
-  label: "Attachment metadata",
+  label: "File information",
   description:
-    "File metadata including tombstoned rows (status DELETED). Storage keys and provider internals are never exported — see docs/reporting.md for the file-retrieval path.",
+    "Details of uploaded files — name, type, size, and status — including records of deleted files.",
+  help: "Deleted files keep a row (status DELETED) so history stays honest — the file contents are removed, not the record. Storage internals are never exported; see docs/reporting.md for how to retrieve a file's contents.",
   filters: DATE_ONLY,
   dateField: { name: "createdAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => ({
@@ -1129,9 +1157,10 @@ const attachmentsDataset: DatasetDef = {
 const attachmentLinksDataset: DatasetDef = {
   key: "attachment-links",
   group: "Documents & attachments",
-  label: "Attachment links",
+  label: "Where files are used",
   description:
-    "One row per attachment-to-record link. `linkType` names the target table; `targetId` joins to that dataset's id (or to documentId for DOCUMENT_VERSION).",
+    "Which record each uploaded file is attached to — incident, qualification, asset, and so on.",
+  help: "`linkType` names the kind of record; `targetId` is that record's id (the document id for DOCUMENT_VERSION), so this file joins attachments to the matching export.",
   filters: NONE,
   run: async (tx, organizationId) => {
     const org = { organizationId };
@@ -1283,7 +1312,7 @@ const vendorsDataset: DatasetDef = {
   key: "vendors",
   group: "Vendors & expenses",
   label: "Vendors",
-  description: "Vendor records including contact details as recorded.",
+  description: "Vendor records with contact details as recorded.",
   filters: NONE,
   run: async (tx, organizationId) => ({
     columns: [
@@ -1311,7 +1340,8 @@ const expensesDataset: DatasetDef = {
   group: "Vendors & expenses",
   label: "Expenses",
   description:
-    "Bookkeeping-friendly expense rows. `amountMinor`+`currency` are exact; `amount` is the exponent-aware decimal rendering. `from`/`to` filter the org-local expense date.",
+    "Expense rows ready for bookkeeping — dates, amounts, vendor, status, and reimbursement.",
+  help: "`amount` is the readable amount; `amountMinor` and `currency` carry the exact value (minor units, ISO 4217) — amounts are never converted between currencies. The date range matches the expense's calendar date.",
   filters: new Set<FilterKey>([
     "date",
     "vendor",
@@ -1436,9 +1466,10 @@ const expensesDataset: DatasetDef = {
 const expenseLinksDataset: DatasetDef = {
   key: "expense-links",
   group: "Vendors & expenses",
-  label: "Expense links",
+  label: "Expense record links",
   description:
-    "One row per expense-to-record context link. `linkType` names the target table; `targetId` joins to that dataset's id.",
+    "Which incident, training event, asset, or stock item each expense relates to.",
+  help: "`linkType` names the kind of related record; `targetId` is that record's id, so this file joins expenses to the matching export.",
   filters: NONE,
   run: async (tx, organizationId) => {
     const org = { organizationId };
@@ -1548,9 +1579,10 @@ const expenseLinksDataset: DatasetDef = {
 const expenseEventsDataset: DatasetDef = {
   key: "expense-events",
   group: "Vendors & expenses",
-  label: "Expense events",
+  label: "Expense activity history",
   description:
-    "Append-only expense lifecycle/audit feed. `from`/`to` filter the occurred-at instant.",
+    "A dated history of what happened to each expense — created, submitted, approved, reimbursed.",
+  help: "Rows are never rewritten — this is the expense audit feed. `metadata` holds structured JSON context. The date range matches when each action occurred.",
   filters: DATE_ONLY,
   dateField: { name: "occurredAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => {
@@ -1583,9 +1615,10 @@ const expenseEventsDataset: DatasetDef = {
 const expenseChangesDataset: DatasetDef = {
   key: "expense-changes",
   group: "Vendors & expenses",
-  label: "Expense changes",
+  label: "Expense correction history",
   description:
-    "Append-only before/after correction history. `from`/`to` filter the correction instant.",
+    "Before/after history recorded whenever an expense is corrected.",
+  help: "Rows are never rewritten — this is the audit trail for expense edits. The date range matches when each correction was made.",
   filters: DATE_ONLY,
   dateField: { name: "createdAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => ({
@@ -1626,9 +1659,10 @@ const expenseChangesDataset: DatasetDef = {
 const dataExportEventsDataset: DatasetDef = {
   key: "data-export-events",
   group: "Documents & attachments",
-  label: "Export audit history",
+  label: "Download history",
   description:
-    "The DataExportEvent audit trail itself — who exported which dataset, when, and with which structured filters.",
+    "Who downloaded which export, when, and with which filters — the audit trail for this page.",
+  help: "This is the DataExportEvent audit trail itself. `filters` holds the structured filter values as JSON; free-text filters are deliberately not recorded.",
   filters: DATE_ONLY,
   dateField: { name: "createdAt", kind: "instant" },
   run: async (tx, organizationId, tz, f) => {

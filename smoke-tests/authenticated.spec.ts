@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { AxeBuilder } from "@axe-core/playwright";
 
 /**
  * Authenticated hosted smoke coverage (workstream: hosted app testing).
@@ -87,5 +88,67 @@ test.describe("authenticated session", () => {
     expect([404, 401, 403]).toContain(response.status());
     const body = await response.text();
     expect(body.length).toBeLessThan(4096);
+  });
+
+  test("the reports page is understandable and accessible", async ({
+    page,
+  }) => {
+    // Reports & exports is admin-gated: reach it through the org nav
+    // when the smoke identity has admin access, otherwise skip.
+    await page.goto("/org");
+    if (!/\/org\/[a-z0-9]+/i.test(page.url())) {
+      const orgLink = page
+        .getByRole("link")
+        .filter({ hasText: /Admin|Member/ })
+        .first();
+      if ((await orgLink.count()) === 0) {
+        test.skip(true, "smoke identity has no organization grant");
+        return;
+      }
+      await orgLink.click();
+    }
+    const reportsLink = page.getByRole("link", {
+      name: "Reports & exports",
+    });
+    if ((await reportsLink.count()) === 0) {
+      test.skip(true, "smoke identity is not an organization admin");
+      return;
+    }
+    await reportsLink.click();
+    await expect(page).toHaveURL(/\/reports$/);
+
+    // Plain-language contract (issue #73): a consistent download action
+    // and no implementation vocabulary leaking into coordinator copy.
+    await expect(
+      page.getByRole("heading", { name: "Download your data" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Download CSV" }).first(),
+    ).toBeVisible();
+    // innerText, not textContent: closed <details> help blocks keep
+    // technical terms in the DOM legitimately — this asserts on what a
+    // coordinator actually sees.
+    const bodyText = await page.locator("main").innerText();
+    for (const term of [
+      "tombstone",
+      "append-only",
+      "linkType",
+      "targetId",
+      "amountMinor",
+    ]) {
+      expect(bodyText.toLowerCase()).not.toContain(term.toLowerCase());
+    }
+
+    // Progressive disclosure is keyboard/native: open the first help
+    // summary so axe also evaluates the revealed technical detail.
+    const summary = page.locator("details > summary").first();
+    if (await summary.count()) {
+      await summary.click();
+    }
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
+    expect(results.violations).toEqual([]);
   });
 });

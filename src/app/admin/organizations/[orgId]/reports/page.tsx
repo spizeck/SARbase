@@ -47,197 +47,263 @@ function Stat({ label, value }: { label: string; value: string | number }) {
   );
 }
 
+const fieldClass = "min-w-0";
+
 function ExportRow({
   orgId,
   dataset,
   units,
   vendors,
   categories,
+  timezone,
 }: {
   orgId: string;
   dataset: DatasetDef;
   units: { id: string; name: string }[];
   vendors: { id: string; name: string }[];
   categories: string[];
+  timezone: string;
 }) {
   const url = `/api/organizations/${orgId}/exports/${dataset.key}`;
   const f = dataset.filters;
   const hasFilters = f.size > 0;
-  if (!hasFilters) {
-    return (
-      <li className="flex items-center justify-between gap-3 px-4 py-2">
-        <div>
-          <span className="text-sm font-medium text-neutral-900">
-            {dataset.label}
-          </span>
-          <span className="text-sm text-neutral-600">
-            {" "}
-            — {dataset.description}
-          </span>
-        </div>
-        <a href={url} download className={buttonClass}>
-          CSV
-        </a>
-      </li>
-    );
-  }
   return (
-    <li className="px-4 py-2">
-      <form
-        method="get"
-        action={url}
-        className="flex flex-wrap items-end gap-x-4 gap-y-2"
-      >
-        <div className="min-w-40">
-          <span className="text-sm font-medium text-neutral-900">
-            {dataset.label}
-          </span>
-          <p className="text-xs text-neutral-600">{dataset.description}</p>
+    <li className="px-4 py-3">
+      <form method="get" action={url}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h4 className="text-sm font-medium text-neutral-900">
+              {dataset.label}
+            </h4>
+            <p className="mt-0.5 text-sm text-neutral-600">
+              {dataset.description}
+            </p>
+            {dataset.help && (
+              <details className="mt-1 text-xs text-neutral-500">
+                <summary className="cursor-pointer select-none font-medium text-neutral-600 hover:text-neutral-800">
+                  Details for spreadsheet users
+                </summary>
+                <p className="mt-1">{dataset.help}</p>
+              </details>
+            )}
+          </div>
+          {!hasFilters && (
+            <a
+              href={url}
+              download
+              className={`${buttonClass} shrink-0`}
+              aria-label={`Download ${dataset.label} as CSV`}
+            >
+              Download CSV
+            </a>
+          )}
         </div>
-        {f.has("date") && (
-          <>
-            <div>
-              <label htmlFor={`${dataset.key}-from`} className={labelClass}>
-                From
-              </label>
-              <input
-                id={`${dataset.key}-from`}
-                name="from"
-                type="date"
-                className={inputClass}
-              />
+        {hasFilters && (
+          <fieldset className="mt-3">
+            <legend className="text-xs font-medium text-neutral-700">
+              Filters — optional; leave blank for everything
+            </legend>
+            <div className="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-end">
+              {f.has("date") && (
+                <fieldset className={`${fieldClass} sm:col-span-2`}>
+                  <legend className="sr-only">Date range</legend>
+                  <div className="grid grid-cols-2 gap-2 lg:flex">
+                    <div>
+                      <label
+                        htmlFor={`${dataset.key}-from`}
+                        className={labelClass}
+                      >
+                        From date
+                      </label>
+                      <input
+                        id={`${dataset.key}-from`}
+                        name="from"
+                        type="date"
+                        className={`${inputClass} w-full`}
+                      />
+                    </div>
+                    <div>
+                      <label
+                        htmlFor={`${dataset.key}-to`}
+                        className={labelClass}
+                      >
+                        To date
+                      </label>
+                      <input
+                        id={`${dataset.key}-to`}
+                        name="to"
+                        type="date"
+                        className={`${inputClass} w-full`}
+                      />
+                    </div>
+                  </div>
+                </fieldset>
+              )}
+              {f.has("unit") && units.length > 0 && (
+                <div className={fieldClass}>
+                  <label htmlFor={`${dataset.key}-unit`} className={labelClass}>
+                    Unit
+                  </label>
+                  <select
+                    id={`${dataset.key}-unit`}
+                    name="unit"
+                    defaultValue=""
+                    className={`${inputClass} w-full lg:w-auto`}
+                  >
+                    <option value="">All units</option>
+                    <option value="org">No unit (organization-wide)</option>
+                    {units.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {f.has("vendor") && (
+                <div className={fieldClass}>
+                  <label
+                    htmlFor={`${dataset.key}-vendor`}
+                    className={labelClass}
+                  >
+                    Vendor
+                  </label>
+                  <select
+                    id={`${dataset.key}-vendor`}
+                    name="vendor"
+                    defaultValue=""
+                    className={`${inputClass} w-full lg:w-auto`}
+                  >
+                    <option value="">All vendors</option>
+                    {vendors.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {f.has("status") && (
+                <div className={fieldClass}>
+                  <label
+                    htmlFor={`${dataset.key}-status`}
+                    className={labelClass}
+                  >
+                    Status
+                  </label>
+                  <select
+                    id={`${dataset.key}-status`}
+                    name="status"
+                    defaultValue=""
+                    className={`${inputClass} w-full lg:w-auto`}
+                  >
+                    <option value="">Any status</option>
+                    {[
+                      ["DRAFT", "Draft"],
+                      ["SUBMITTED", "Submitted"],
+                      ["APPROVED", "Approved"],
+                      ["REJECTED", "Rejected"],
+                    ].map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {f.has("reimbursementStatus") && (
+                <div className={fieldClass}>
+                  <label
+                    htmlFor={`${dataset.key}-reimb`}
+                    className={labelClass}
+                  >
+                    Reimbursement
+                  </label>
+                  <select
+                    id={`${dataset.key}-reimb`}
+                    name="reimbursementStatus"
+                    defaultValue=""
+                    className={`${inputClass} w-full lg:w-auto`}
+                  >
+                    <option value="">Any state</option>
+                    {[
+                      ["NOT_REQUIRED", "Not required"],
+                      ["PENDING", "Pending"],
+                      ["REIMBURSED", "Reimbursed"],
+                    ].map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {f.has("currency") && (
+                <div className={fieldClass}>
+                  <label
+                    htmlFor={`${dataset.key}-currency`}
+                    className={labelClass}
+                  >
+                    Currency
+                  </label>
+                  <input
+                    id={`${dataset.key}-currency`}
+                    name="currency"
+                    type="text"
+                    maxLength={3}
+                    placeholder="USD"
+                    aria-describedby={`${dataset.key}-currency-hint`}
+                    autoCapitalize="characters"
+                    className={`${inputClass} w-20 uppercase`}
+                  />
+                  <p
+                    id={`${dataset.key}-currency-hint`}
+                    className="mt-0.5 text-xs text-neutral-500"
+                  >
+                    Three-letter code, e.g. USD
+                  </p>
+                </div>
+              )}
+              {f.has("category") && (
+                <div className={fieldClass}>
+                  <label
+                    htmlFor={`${dataset.key}-category`}
+                    className={labelClass}
+                  >
+                    Category
+                  </label>
+                  <input
+                    id={`${dataset.key}-category`}
+                    name="category"
+                    type="text"
+                    list={`${dataset.key}-categories`}
+                    placeholder="Exact category"
+                    className={`${inputClass} w-full lg:w-auto`}
+                  />
+                  <datalist id={`${dataset.key}-categories`}>
+                    {categories.map((cat) => (
+                      <option key={cat} value={cat} />
+                    ))}
+                  </datalist>
+                </div>
+              )}
+              <div className="sm:col-span-2 lg:col-auto">
+                <button
+                  type="submit"
+                  className={`${buttonClass} w-full sm:w-auto`}
+                >
+                  Download CSV
+                </button>
+              </div>
             </div>
-            <div>
-              <label htmlFor={`${dataset.key}-to`} className={labelClass}>
-                To
-              </label>
-              <input
-                id={`${dataset.key}-to`}
-                name="to"
-                type="date"
-                className={inputClass}
-              />
-            </div>
-          </>
+            {f.has("date") && (
+              <p className="mt-2 text-xs text-neutral-500">
+                Dates are whole days in the organization&apos;s timezone (
+                {timezone}).
+              </p>
+            )}
+          </fieldset>
         )}
-        {f.has("unit") && units.length > 0 && (
-          <div>
-            <label htmlFor={`${dataset.key}-unit`} className={labelClass}>
-              Unit
-            </label>
-            <select
-              id={`${dataset.key}-unit`}
-              name="unit"
-              defaultValue=""
-              className={inputClass}
-            >
-              <option value="">All</option>
-              <option value="org">Organization-wide</option>
-              {units.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-        {f.has("vendor") && (
-          <div>
-            <label htmlFor={`${dataset.key}-vendor`} className={labelClass}>
-              Vendor
-            </label>
-            <select
-              id={`${dataset.key}-vendor`}
-              name="vendor"
-              defaultValue=""
-              className={inputClass}
-            >
-              <option value="">All</option>
-              {vendors.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-        {f.has("status") && (
-          <div>
-            <label htmlFor={`${dataset.key}-status`} className={labelClass}>
-              Status
-            </label>
-            <select
-              id={`${dataset.key}-status`}
-              name="status"
-              defaultValue=""
-              className={inputClass}
-            >
-              <option value="">All</option>
-              {["DRAFT", "SUBMITTED", "APPROVED", "REJECTED"].map((s) => (
-                <option key={s} value={s}>
-                  {s.toLowerCase()}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-        {f.has("reimbursementStatus") && (
-          <div>
-            <label htmlFor={`${dataset.key}-reimb`} className={labelClass}>
-              Reimbursement
-            </label>
-            <select
-              id={`${dataset.key}-reimb`}
-              name="reimbursementStatus"
-              defaultValue=""
-              className={inputClass}
-            >
-              <option value="">All</option>
-              {["NOT_REQUIRED", "PENDING", "REIMBURSED"].map((s) => (
-                <option key={s} value={s}>
-                  {s.toLowerCase().replace(/_/g, " ")}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-        {f.has("currency") && (
-          <div>
-            <label htmlFor={`${dataset.key}-currency`} className={labelClass}>
-              Currency
-            </label>
-            <input
-              id={`${dataset.key}-currency`}
-              name="currency"
-              type="text"
-              maxLength={3}
-              placeholder="USD"
-              className={`${inputClass} w-16 uppercase`}
-            />
-          </div>
-        )}
-        {f.has("category") && (
-          <div>
-            <label htmlFor={`${dataset.key}-category`} className={labelClass}>
-              Category
-            </label>
-            <input
-              id={`${dataset.key}-category`}
-              name="category"
-              type="text"
-              list={`${dataset.key}-categories`}
-              className={inputClass}
-            />
-            <datalist id={`${dataset.key}-categories`}>
-              {categories.map((cat) => (
-                <option key={cat} value={cat} />
-              ))}
-            </datalist>
-          </div>
-        )}
-        <button type="submit" className={buttonClass}>
-          Download CSV
-        </button>
       </form>
     </li>
   );
@@ -331,7 +397,7 @@ export default async function ReportsPage({
           {organization.units.length > 0 && (
             <div>
               <label htmlFor="unit" className={labelClass}>
-                Unit (training only)
+                Unit — affects the training section only
               </label>
               <select
                 id="unit"
@@ -392,7 +458,7 @@ export default async function ReportsPage({
               label="Recorded training participant-hours"
               value={`${participantHoursLabel(
                 summary.training.participantMinutes,
-              )} h (${summary.training.participantMinutes} participant-minutes)`}
+              )} h`}
             />
           </tbody>
         </table>
@@ -544,13 +610,14 @@ export default async function ReportsPage({
 
       <section aria-labelledby="exports-heading" className="mt-10">
         <h2 id="exports-heading" className="text-lg font-medium">
-          Data exports
+          Download your data (CSV)
         </h2>
         <p className="mt-1 text-sm text-neutral-600">
-          CSV downloads of the organization&apos;s structured records. Stable
-          ids in every file let exported datasets be re-joined — see{" "}
-          <span className="font-mono text-xs">docs/reporting.md</span>. Every
-          export is audited.
+          Each card downloads a CSV spreadsheet of part of the
+          organization&apos;s records. Every download is recorded in the
+          download history. Files share stable record ids, so they can be
+          cross-referenced in a spreadsheet — the technical detail is in
+          docs/reporting.md.
         </p>
         {[...groups.entries()].map(([group, datasets]) => (
           <section key={group} aria-label={group} className="mt-6">
@@ -564,6 +631,7 @@ export default async function ReportsPage({
                   units={organization.units}
                   vendors={vendors}
                   categories={categories}
+                  timezone={organization.timezone}
                 />
               ))}
             </ul>

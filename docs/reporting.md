@@ -25,12 +25,33 @@ src/lib/exports/service.ts    runCsvExport: authz → rate limit → one
                               insert) → serialize → filename
 src/lib/reporting/summary.ts  getAnnualSummary: org-local-year queries
                               + pure aggregation helpers
+src/lib/exports/datasets.test.ts  registry contract: plain-language
+                              labels/descriptions, stable keys/filters
 src/app/api/organizations/[orgId]/exports/[dataset]/route.ts
 src/app/admin/organizations/[orgId]/reports/page.tsx
 ```
 
 Adding a record type to exports is one `DatasetDef` entry — routing,
 authorization, audit, and serialization need no change.
+
+## Reports page presentation (issue #73)
+
+The reports page is written for non-technical coordinators:
+
+- `DatasetDef.label` is a plain-language title; `description` is one
+  sentence stating what the file contains. Neither may use schema or
+  pipeline vocabulary (`datasets.test.ts` enforces this).
+- `DatasetDef.help` carries the technical detail — join-column
+  semantics, correction-history behavior, money precision — rendered
+  behind a "Details for spreadsheet users" disclosure so accuracy is
+  preserved without crowding the main copy.
+- Filters are grouped in a labelled fieldset per dataset; date ranges
+  state that they cover whole days in the organization's timezone, and
+  every card exposes the same "Download CSV" action.
+
+CSV column names, filter parameter names, file formats, audit
+behavior, and authorization are unchanged — the overhaul is
+presentation-only.
 
 ## Authorization
 
