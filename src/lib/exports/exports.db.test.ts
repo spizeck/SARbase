@@ -95,6 +95,7 @@ describe.skipIf(!hasDb)("data exports", () => {
     maintenanceRecord: "",
     attachment: "",
     document: "",
+    submission: "",
     callout: "",
   };
 
@@ -507,6 +508,26 @@ describe.skipIf(!hasDb)("data exports", () => {
         createdByAuthIdentityId: `${PREFIX}actor`,
       },
     });
+    // A member submission with evidence — its attachment link must
+    // surface in attachment-links like every other link table.
+    const submission = await prisma.memberSubmission.create({
+      data: {
+        organizationId: orgA,
+        memberId: ids.member,
+        kind: "RECORD_CORRECTION",
+        details: `${PREFIX}correction`,
+        submittedByAuthIdentityId: `${PREFIX}actor`,
+      },
+    });
+    ids.submission = submission.id;
+    await prisma.memberSubmissionAttachment.create({
+      data: {
+        organizationId: orgA,
+        memberSubmissionId: submission.id,
+        attachmentId: attachment.id,
+        createdByAuthIdentityId: `${PREFIX}actor`,
+      },
+    });
   });
 
   afterAll(async () => {
@@ -568,6 +589,9 @@ describe.skipIf(!hasDb)("data exports", () => {
       where: { organizationId: org },
     });
     await prisma.attachmentEvent.deleteMany({
+      where: { organizationId: org },
+    });
+    await prisma.memberSubmissionAttachment.deleteMany({
       where: { organizationId: org },
     });
     await prisma.attachment.deleteMany({ where: { organizationId: org } });
@@ -656,6 +680,9 @@ describe.skipIf(!hasDb)("data exports", () => {
       where: { organizationId: org },
     });
     await prisma.memberUnit.deleteMany({ where: { organizationId: org } });
+    await prisma.memberSubmission.deleteMany({
+      where: { organizationId: org },
+    });
     await prisma.member.deleteMany({ where: { organizationId: org } });
     await prisma.unit.deleteMany({ where: { organizationId: org } });
     await prisma.organization.deleteMany({ where: { id: org } });
@@ -890,6 +917,11 @@ describe.skipIf(!hasDb)("data exports", () => {
       expect(expenseLink?.[targetIdx]).toBe(ids.expenseUsdApproved);
       const docLink = rows.find((r) => r[typeIdx] === "DOCUMENT_VERSION");
       expect(docLink?.[targetIdx]).toBe(ids.document);
+      const submissionLink = rows.find(
+        (r) => r[typeIdx] === "MEMBER_SUBMISSION",
+      );
+      expect(submissionLink?.[targetIdx]).toBe(ids.submission);
+      expect(submissionLink?.[attachIdx]).toBe(ids.attachment);
     });
 
     it("exports attachment metadata without storage keys or URLs", async () => {

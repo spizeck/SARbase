@@ -1160,7 +1160,7 @@ const attachmentLinksDataset: DatasetDef = {
   label: "Where files are used",
   description:
     "Which record each uploaded file is attached to — incident, qualification, asset, and so on.",
-  help: "`linkType` names the kind of record; `targetId` is that record's id (the document id for DOCUMENT_VERSION), so this file joins attachments to the matching export.",
+  help: "`linkType` names the kind of record; `targetId` is that record's id (the document id for DOCUMENT_VERSION, the submission id for MEMBER_SUBMISSION), so this file joins attachments to the matching export.",
   filters: NONE,
   run: async (tx, organizationId) => {
     const org = { organizationId };
@@ -1175,6 +1175,7 @@ const attachmentLinksDataset: DatasetDef = {
       defect,
       expense,
       docVersion,
+      submission,
     ] = await Promise.all([
       tx.incidentAttachment.findMany({
         where: org,
@@ -1227,6 +1228,14 @@ const attachmentLinksDataset: DatasetDef = {
       tx.organizationDocumentVersion.findMany({
         where: org,
         select: { id: true, attachmentId: true, documentId: true },
+      }),
+      tx.memberSubmissionAttachment.findMany({
+        where: org,
+        select: {
+          id: true,
+          attachmentId: true,
+          memberSubmissionId: true,
+        },
       }),
     ]);
     const rows = [
@@ -1289,6 +1298,12 @@ const attachmentLinksDataset: DatasetDef = {
         linkType: "DOCUMENT_VERSION",
         attachmentId: l.attachmentId,
         targetId: l.documentId,
+      })),
+      ...submission.map((l) => ({
+        linkId: l.id,
+        linkType: "MEMBER_SUBMISSION",
+        attachmentId: l.attachmentId,
+        targetId: l.memberSubmissionId,
       })),
     ].sort(
       (a, b) =>

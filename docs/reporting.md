@@ -201,14 +201,16 @@ Column order is the declared order in `datasets.ts`.
 
 One-to-many links export as **relationship tables**, not packed cells:
 `attachment-links` carries `(linkId, linkType, attachmentId, targetId)`
-across the nine record link tables plus document versions (ten sources
-total), and `expense-links`
+across the ten record link tables plus document versions (eleven
+sources total), and `expense-links`
 carries `(linkId, linkType, expenseId, targetId, note)` across the five
 expense link tables. `linkType` names the target's dataset
 (`INCIDENT`, `TRAINING_EVENT`, `ASSET`, `MAINTENANCE_RECORD`,
 `INVENTORY_ITEM`, `MEMBER_QUALIFICATION`, `INSPECTION_RECORD`,
-`DEFECT`, `EXPENSE`, `INCIDENT_NOTE`, `DOCUMENT_VERSION`); `targetId`
-joins to that dataset's `id` (to `documentId` for `DOCUMENT_VERSION`).
+`DEFECT`, `EXPENSE`, `INCIDENT_NOTE`, `DOCUMENT_VERSION`,
+`MEMBER_SUBMISSION`); `targetId`
+joins to that dataset's `id` (to `documentId` for `DOCUMENT_VERSION`,
+to `memberSubmissionId` for `MEMBER_SUBMISSION`).
 
 ### Money
 
