@@ -18,6 +18,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -33,6 +34,47 @@ const SUBCOMMANDS: Record<string, { prisma: string[]; label: string }> = {
 };
 
 const CONFIRM_FLAG = "--confirm-host";
+const DEFAULT_SCHEMA = "prisma/schema.prisma";
+
+/** The schema file a caller can redirect with `--schema`/`--schema=`. */
+function schemaPathFromArgs(args: string[]): {
+  path: string;
+  explicit: boolean;
+} {
+  const inline = args.find((a) => a.startsWith("--schema="));
+  if (inline) return { path: inline.slice("--schema=".length), explicit: true };
+  const idx = args.indexOf("--schema");
+  if (idx >= 0 && args[idx + 1]) {
+    return { path: args[idx + 1]!, explicit: true };
+  }
+  return { path: DEFAULT_SCHEMA, explicit: false };
+}
+
+/**
+ * Every env var a datasource block reads its url from. A --schema
+ * override can point Prisma at a DIFFERENT connection variable than
+ * DATABASE_URL — validating only the default pair would let a hostile
+ * or stray schema bypass the target guard entirely.
+ */
+export function datasourceEnvUrls(
+  schemaFile: string,
+  env: Record<string, string | undefined> = process.env,
+): { variable: string; url: string }[] | null {
+  let source: string;
+  try {
+    source = readFileSync(schemaFile, "utf8");
+  } catch {
+    return null;
+  }
+  const urls: { variable: string; url: string }[] = [];
+  for (const block of source.matchAll(/datasource\s+\w+\s*\{[^}]*\}/gs)) {
+    for (const ref of block[0].matchAll(/env\(\s*"([^"]+)"\s*\)/g)) {
+      const url = env[ref[1]!];
+      if (url) urls.push({ variable: ref[1]!, url });
+    }
+  }
+  return urls;
+}
 
 export function run(argv: string[]): number {
   const [subcommand, ...rest] = argv;
@@ -71,16 +113,32 @@ export function run(argv: string[]): number {
     return 2;
   }
 
+  const guardEnv = {
+    productionHost: process.env.APP_PRODUCTION_DB_HOST,
+    testingHost: process.env.APP_TESTING_DB_HOST,
+    confirmHost,
+  };
   try {
-    assertDestructiveTarget(
-      url,
-      {
-        productionHost: process.env.APP_PRODUCTION_DB_HOST,
-        testingHost: process.env.APP_TESTING_DB_HOST,
-        confirmHost,
-      },
-      spec.label,
-    );
+    assertDestructiveTarget(url, guardEnv, spec.label);
+    // Validate every datasource env var the schema actually resolves —
+    // a --schema override must not widen the checked surface.
+    const schema = schemaPathFromArgs(prismaArgs);
+    const datasourceUrls = datasourceEnvUrls(schema.path);
+    if (datasourceUrls === null) {
+      console.error(
+        `Refused: cannot read the schema file "${schema.path}" — the ` +
+          `datasource target is unverifiable.`,
+      );
+      return 1;
+    }
+    for (const { variable, url: datasourceUrl } of datasourceUrls) {
+      if (datasourceUrl === url) continue;
+      assertDestructiveTarget(
+        datasourceUrl,
+        guardEnv,
+        `${spec.label} (datasource ${variable})`,
+      );
+    }
   } catch (error) {
     if (
       error instanceof DestructiveTargetError ||
@@ -97,6 +155,10 @@ export function run(argv: string[]): number {
     env: process.env,
     shell: process.platform === "win32",
   });
+  if (result.error) {
+    console.error(`Failed to launch prisma: ${result.error.message}`);
+    return 1;
+  }
   return result.status ?? 1;
 }
 

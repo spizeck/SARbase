@@ -110,6 +110,19 @@ backfill, then constrain/drop in a follow-up deploy.
     every invocation — `migrate dev`/`reset`/`push` never touch either.
   - Any other remote host (a personal Neon dev branch) requires
     `-- --confirm-host <exact-hostname>` matching the resolved target.
+  - Protected-host markers may be written as a bare hostname, a
+    `host:port` pair, or a full URL — all forms are resolved and
+    canonicalized before comparison, so Neon pooled (`-pooler`) and
+    unpooled spellings of a protected branch are equivalent, and a
+    trailing DNS dot can't dodge the match. The confirmation value, by
+    contrast, must equal the resolved target hostname exactly.
+  - The wrapper also reads the effective `--schema` and validates every
+    env var its `datasource` block resolves — a schema redirect can't
+    widen the checked surface.
+  - Accepted limitation: a loopback URL that tunnels to a remote
+    database (SSH port-forward, cloud proxy socket) is
+    indistinguishable from disposable local Postgres at the URL level.
+    If you run a tunnel, you are responsible for what it reaches.
   - The database test suite applies the same guard to
     `TEST_DATABASE_URL`; a remote test database needs
     `TEST_DB_CONFIRM_HOST=<exact-hostname>`.

@@ -18,8 +18,14 @@
  * - Any other remote host requires an explicit positive-identity
  *   confirmation whose value must equal the resolved hostname exactly —
  *   never a name, a glob, or "yes".
+ *
+ * Known limitation: a loopback target that tunnels to a remote
+ * database (SSH port-forward, cloud proxy socket) is indistinguishable
+ * from a disposable local instance at the URL level. Operators
+ * running tunnels are responsible for what the tunnel reaches.
  */
 
+import { normalizeDatabaseEndpoint } from "../../src/lib/env";
 import {
   describeDatabaseTarget,
   LOOPBACK_HOSTS,
@@ -48,6 +54,30 @@ function normalizeHost(host: string | undefined): string | null {
 }
 
 /**
+ * Protected-host markers may be configured as bare hostnames,
+ * host:port pairs, or full connection URLs, and a Neon marker can name
+ * either the pooled or the unpooled endpoint of the same branch.
+ * Resolve every accepted marker form to the canonical hostname the
+ * target is normalized to — otherwise `-pooler` aliases, trailing DNS
+ * dots, or decoration silently bypass the unconditional refusal.
+ */
+function normalizeProtectedHost(marker: string | undefined): string | null {
+  const trimmed = marker?.trim();
+  if (!trimmed) return null;
+  let candidate = trimmed;
+  try {
+    const parsed = new URL(
+      trimmed.includes("://") ? trimmed : `postgres://${trimmed}`,
+    );
+    if (parsed.hostname) candidate = parsed.hostname;
+  } catch {
+    // Unparseable marker — compare it as written; it simply never
+    // matches a real hostname, which fails closed.
+  }
+  return normalizeDatabaseEndpoint(candidate);
+}
+
+/**
  * Assert a destructive database command may run against `url`.
  * Throws DestructiveTargetError with an actionable message on refusal.
  */
@@ -59,19 +89,22 @@ export function assertDestructiveTarget(
   const { hostname } = parseDatabaseTargetUrl(url);
   const target = describeDatabaseTarget(url);
   const lower = hostname.toLowerCase();
+  // Pooled/unpooled endpoint spelling and trailing DNS dots are the
+  // same host — canonicalize before the protected comparisons.
+  const resolved = normalizeDatabaseEndpoint(hostname);
 
-  if (LOOPBACK_HOSTS.has(lower)) return;
+  if (LOOPBACK_HOSTS.has(resolved)) return;
 
-  const productionHost = normalizeHost(env.productionHost);
-  if (productionHost && lower === productionHost) {
+  const productionHost = normalizeProtectedHost(env.productionHost);
+  if (productionHost && resolved === productionHost) {
     throw new DestructiveTargetError(
       `${commandDescription} is aimed at the PRODUCTION database ` +
         `(${target}). This is refused unconditionally — production ` +
         `migrations run only through the Vercel build.`,
     );
   }
-  const testingHost = normalizeHost(env.testingHost);
-  if (testingHost && lower === testingHost) {
+  const testingHost = normalizeProtectedHost(env.testingHost);
+  if (testingHost && resolved === testingHost) {
     throw new DestructiveTargetError(
       `${commandDescription} is aimed at the permanent testing baseline ` +
         `(${target}). Testing data is rebuilt by migration replay and ` +
