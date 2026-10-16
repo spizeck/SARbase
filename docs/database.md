@@ -100,7 +100,22 @@ backfill, then constrain/drop in a follow-up deploy.
 
 ## Migration discipline
 
-- Create migrations with `prisma migrate dev` against your LOCAL db.
+- Create migrations with `npm run db:migrate:dev` against your LOCAL db.
+  Destructive-capable Prisma commands (`migrate dev`, `migrate reset`,
+  `db push`) run through `scripts/migrate.ts`, which guards the target
+  before invoking the CLI (issue #88 — a raw `prisma migrate reset`
+  once wiped a shared database that `.env` happened to point at):
+  - Loopback targets proceed freely.
+  - `APP_PRODUCTION_DB_HOST` and `APP_TESTING_DB_HOST` are refused under
+    every invocation — `migrate dev`/`reset`/`push` never touch either.
+  - Any other remote host (a personal Neon dev branch) requires
+    `-- --confirm-host <exact-hostname>` matching the resolved target.
+  - The database test suite applies the same guard to
+    `TEST_DATABASE_URL`; a remote test database needs
+    `TEST_DB_CONFIRM_HOST=<exact-hostname>`.
+  - Never run `npx prisma migrate dev|reset` or `npx prisma db push`
+    directly — the wrapper exists because the bare CLI trusts `.env`
+    silently.
 - **Never edit, rename, or delete an applied migration.** Reconcile by
   appending a new migration to the tail.
 - CI replays every migration onto an empty database (`migrate deploy`
