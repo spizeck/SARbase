@@ -96,21 +96,50 @@ test.describe("authenticated session", () => {
     // Reports & exports is admin-gated: reach it through the org nav
     // when the smoke identity has admin access, otherwise skip.
     await page.goto("/org");
+    let isAdmin: boolean | null = null;
     if (!/\/org\/[a-z0-9]+/i.test(page.url())) {
-      const orgLink = page
+      // Chooser — wait for it to render before judging membership, and
+      // use the per-org role badge to establish the grant rather than
+      // treating a missing nav link as proof of a missing role.
+      await expect(
+        page.getByRole("heading", { name: "Your organizations" }),
+      ).toBeVisible();
+      const adminLink = page
         .getByRole("link")
-        .filter({ hasText: /Admin|Member/ })
+        .filter({ hasText: "Admin" })
         .first();
-      if ((await orgLink.count()) === 0) {
+      const memberLink = page
+        .getByRole("link")
+        .filter({ hasText: "Member" })
+        .first();
+      if (await adminLink.count()) {
+        isAdmin = true;
+        await adminLink.click();
+      } else if (await memberLink.count()) {
+        isAdmin = false;
+        await memberLink.click();
+      } else {
         test.skip(true, "smoke identity has no organization grant");
         return;
       }
-      await orgLink.click();
+    } else {
+      // Landed directly on a workspace — confirm the shell nav has
+      // rendered before judging whether the reports link exists.
+      await expect(page.getByRole("navigation").first()).toBeVisible();
     }
     const reportsLink = page.getByRole("link", {
       name: "Reports & exports",
     });
-    if ((await reportsLink.count()) === 0) {
+    if (isAdmin === false) {
+      test.skip(true, "smoke identity is not an organization admin");
+      return;
+    }
+    if (isAdmin === true) {
+      // Known admin: the link must appear — fail rather than skip.
+      await expect(reportsLink).toBeVisible();
+    } else if ((await reportsLink.count()) === 0) {
+      // Role unknown (direct redirect) but nav is rendered — a missing
+      // link here genuinely means no admin access.
       test.skip(true, "smoke identity is not an organization admin");
       return;
     }
@@ -139,12 +168,11 @@ test.describe("authenticated session", () => {
       expect(bodyText.toLowerCase()).not.toContain(term.toLowerCase());
     }
 
-    // Progressive disclosure is keyboard/native: open the first help
-    // summary so axe also evaluates the revealed technical detail.
-    const summary = page.locator("details > summary").first();
-    if (await summary.count()) {
-      await summary.click();
-    }
+    // Progressive disclosure is required, not optional — open the first
+    // help summary so axe also evaluates the revealed technical detail.
+    const summary = page.locator("main details > summary").first();
+    await expect(summary).toBeVisible();
+    await summary.click();
 
     const results = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
