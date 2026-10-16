@@ -13,10 +13,16 @@ const {
   getAuthContextMock,
   requireAttachmentForAdminOrOwnerMock,
   openAttachmentDownloadMock,
+  reconcileAttachmentScanMock,
+  getFileStorageProviderMock,
+  attachmentFindUniqueOrThrowMock,
 } = vi.hoisted(() => ({
   getAuthContextMock: vi.fn(),
   requireAttachmentForAdminOrOwnerMock: vi.fn(),
   openAttachmentDownloadMock: vi.fn(),
+  reconcileAttachmentScanMock: vi.fn(),
+  getFileStorageProviderMock: vi.fn(),
+  attachmentFindUniqueOrThrowMock: vi.fn(),
 }));
 
 vi.mock("@/lib/logging", async (importOriginal) => ({
@@ -37,9 +43,22 @@ vi.mock("@/lib/domain/attachments", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   openAttachmentDownload: openAttachmentDownloadMock,
 }));
+vi.mock("@/lib/domain/malware-scan", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  reconcileAttachmentScan: reconcileAttachmentScanMock,
+}));
+vi.mock("@/lib/storage/resolve", () => ({
+  getFileStorageProvider: getFileStorageProviderMock,
+}));
+vi.mock("@/lib/prisma", () => ({
+  prisma: {
+    attachment: { findUniqueOrThrow: attachmentFindUniqueOrThrowMock },
+  },
+}));
 
 import { AuthorizationError } from "@/lib/auth/context";
 import { AttachmentDeletedError } from "@/lib/domain/attachments";
+import { AttachmentScanBlockedError } from "@/lib/domain/malware-scan";
 import { StorageError } from "@/lib/storage/provider";
 
 import { GET } from "./route";
@@ -161,5 +180,77 @@ describe("GET /api/attachments/[attachmentId]/download", () => {
     const body = await response.json();
     expect(body.error.code).toBe("INTERNAL_ERROR");
     expect(body.error.message).not.toContain("provider text");
+  });
+
+  it("returns 423 + Retry-After while a scan is pending and unreconciled", async () => {
+    openAttachmentDownloadMock.mockRejectedValue(
+      new AttachmentScanBlockedError("PENDING"),
+    );
+    reconcileAttachmentScanMock.mockResolvedValue({ outcome: "NO_TAG" });
+    const response = await callGet();
+    expect(response.status).toBe(423);
+    const body = await response.json();
+    expect(body.error.code).toBe("SCAN_NOT_CLEARED");
+    expect(response.headers.get("Retry-After")).toBe("10");
+  });
+
+  it("serves a pending attachment once tag reconciliation clears it", async () => {
+    openAttachmentDownloadMock
+      .mockRejectedValueOnce(new AttachmentScanBlockedError("PENDING"))
+      .mockResolvedValueOnce({
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("file-bytes"));
+            controller.close();
+          },
+        }),
+        sizeBytes: 10,
+        mediaType: "application/pdf",
+        displayFilename: "report.pdf",
+      });
+    reconcileAttachmentScanMock.mockResolvedValue({ outcome: "APPLIED_CLEAN" });
+    attachmentFindUniqueOrThrowMock.mockResolvedValue(attachment);
+    const response = await callGet();
+    expect(response.status).toBe(200);
+    // The re-fetched row — not the stale pre-reconciliation one — is
+    // what gets served.
+    expect(attachmentFindUniqueOrThrowMock).toHaveBeenCalledWith({
+      where: { id: ATTACHMENT_ID },
+    });
+    expect(openAttachmentDownloadMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed to 423 when reconciliation itself errors", async () => {
+    openAttachmentDownloadMock.mockRejectedValue(
+      new AttachmentScanBlockedError("PENDING"),
+    );
+    reconcileAttachmentScanMock.mockRejectedValue(new Error("s3 timeout"));
+    const response = await callGet();
+    expect(response.status).toBe(423);
+    const body = await response.json();
+    expect(body.error.code).toBe("SCAN_NOT_CLEARED");
+  });
+
+  it("blocks an infected file with 423 and no reconcile attempt", async () => {
+    openAttachmentDownloadMock.mockRejectedValue(
+      new AttachmentScanBlockedError("INFECTED"),
+    );
+    const response = await callGet();
+    expect(response.status).toBe(423);
+    const body = await response.json();
+    expect(body.error.code).toBe("SCAN_NOT_CLEARED");
+    expect(body.error.message).toContain("malware scan");
+    // Only PENDING attempts lazy tag reconciliation.
+    expect(reconcileAttachmentScanMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks an unscanned (UNKNOWN) file with 423", async () => {
+    openAttachmentDownloadMock.mockRejectedValue(
+      new AttachmentScanBlockedError("UNKNOWN"),
+    );
+    const response = await callGet();
+    expect(response.status).toBe(423);
+    const body = await response.json();
+    expect(body.error.code).toBe("SCAN_NOT_CLEARED");
   });
 });
