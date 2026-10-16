@@ -70,7 +70,12 @@ export function ThemeSync() {
   const preference = useThemePreference();
   const systemDark = useSystemDark();
   useLayoutEffect(() => {
-    applyTheme(resolveIsDark(preference, systemDark));
+    // Read the live browser values rather than the hook snapshots: on
+    // hydration the client snapshot still says "system"/false, and the
+    // corrected snapshot lands in a passive effect — resolving here
+    // from the hooks would remove the bootstrap-applied dark class
+    // before then and could paint a light frame.
+    applyTheme(resolveIsDark(readThemePreference(), systemPrefersDark()));
   }, [preference, systemDark]);
   return null;
 }

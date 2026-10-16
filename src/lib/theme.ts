@@ -93,4 +93,4 @@ export function applyTheme(isDark: boolean): void {
  * and must mirror readThemePreference + resolveIsDark exactly — keep
  * them in sync when editing.
  */
-export const THEME_BOOTSTRAP_JS = `(function(){try{var p=null;try{p=localStorage.getItem(${JSON.stringify(THEME_STORAGE_KEY)})}catch(e){}var d=p==="dark"||((p===null||p==="system")&&window.matchMedia(${JSON.stringify(DARK_SCHEME_QUERY)}).matches);var r=document.documentElement;r.classList.toggle("dark",d);r.style.colorScheme=d?"dark":"light"}catch(e){}})()`;
+export const THEME_BOOTSTRAP_JS = `(function(){try{var p=null;try{p=localStorage.getItem(${JSON.stringify(THEME_STORAGE_KEY)})}catch(e){}var d=p==="dark"||((p!=="light"&&p!=="dark")&&window.matchMedia(${JSON.stringify(DARK_SCHEME_QUERY)}).matches);var r=document.documentElement;r.classList.toggle("dark",d);r.style.colorScheme=d?"dark":"light"}catch(e){}})()`;
