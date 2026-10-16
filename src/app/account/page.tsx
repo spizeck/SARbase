@@ -5,8 +5,14 @@ import { requireAuth, linkedMembersWithAccess } from "@/lib/auth/authorize";
 import { signOutAction } from "@/app/login/actions";
 import {
   listMemberQualifications,
+  listQualificationDefinitions,
   expiryLabel,
 } from "@/lib/domain/qualification";
+import {
+  listOwnMemberSubmissions,
+  MEMBER_SUBMISSION_KIND_LABELS,
+  MEMBER_SUBMISSION_STATUS_LABELS,
+} from "@/lib/domain/submissions";
 import { listMemberTraining } from "@/lib/domain/training";
 import {
   getMemberAvailability,
@@ -23,16 +29,26 @@ import {
   relativeTimeLabel,
 } from "@/lib/dates";
 
+import { phoneRegionOptions } from "@/lib/contact";
+
 import {
   updateMyAvailabilityAction,
   updateMyContactPreferencesAction,
   respondToMyInvitationAction,
+  updateMyContactDetailsAction,
+  createMySubmissionAction,
 } from "./actions";
 import {
   AvailabilityForm,
   CalloutResponseForm,
+  ContactDetailsForm,
   ContactPreferencesForm,
+  SubmissionForm,
 } from "./forms";
+import {
+  QualificationEvidenceList,
+  SubmissionEvidenceSection,
+} from "./submission-evidence";
 
 export const metadata = { title: "Account" };
 
@@ -98,6 +114,19 @@ export default async function AccountPage() {
       member,
       availability: await getMemberAvailability(member.id),
       preference: await getMemberContactPreference(member.id),
+    })),
+  );
+
+  // Issue #71 — self-service submissions per linked member: the member's
+  // own filings plus this org's ACTIVE definitions for the claim picker.
+  const phoneRegions = phoneRegionOptions();
+  const ownSubmissions = await Promise.all(
+    linkedMembers.map(async (member) => ({
+      member,
+      submissions: await listOwnMemberSubmissions(member.id),
+      definitions: (
+        await listQualificationDefinitions(member.organizationId)
+      ).map((d) => ({ id: d.id, name: d.name })),
     })),
   );
 
@@ -268,6 +297,27 @@ export default async function AccountPage() {
               </details>
               <details className="mt-3">
                 <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+                  Contact details
+                </summary>
+                <p className="mt-1 text-xs text-neutral-500">
+                  Changes are recorded in your record&apos;s history.
+                </p>
+                <div className="mt-2">
+                  <ContactDetailsForm
+                    action={updateMyContactDetailsAction.bind(null, member.id)}
+                    defaults={{
+                      email: member.email,
+                      phone: member.phone,
+                      emergencyContactName: member.emergencyContactName,
+                      emergencyContactPhone: member.emergencyContactPhone,
+                    }}
+                    regions={phoneRegions}
+                    idPrefix={`details-${member.id}`}
+                  />
+                </div>
+              </details>
+              <details className="mt-3">
+                <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
                   Contact preferences
                 </summary>
                 <div className="mt-2">
@@ -280,6 +330,137 @@ export default async function AccountPage() {
                     phone={member.phone}
                     defaults={preference}
                     idPrefix={`contact-${member.id}`}
+                  />
+                </div>
+              </details>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {linkedMembers.length > 0 && (
+        <section aria-labelledby="submissions-heading" className="mt-8">
+          <h2 id="submissions-heading" className="text-lg font-medium">
+            Submissions
+          </h2>
+          <p className="mt-1 text-sm text-neutral-600">
+            Send your organization qualification evidence or report a wrong
+            record. An administrator reviews each submission — your verified
+            records change only when it is approved.
+          </p>
+          {ownSubmissions.map(({ member, submissions, definitions }) => (
+            <div
+              key={member.id}
+              className="mt-3 rounded-md border border-neutral-200 p-4"
+            >
+              <h3 className="text-sm font-medium text-neutral-500">
+                {member.displayName} — {orgName(member.organizationId)}
+              </h3>
+              {submissions.length === 0 ? (
+                <p className="mt-2 text-sm text-neutral-600">
+                  Nothing submitted yet.
+                </p>
+              ) : (
+                <ul className="mt-2 space-y-3">
+                  {submissions.map((submission) => (
+                    <li
+                      key={submission.id}
+                      className="rounded-md border border-neutral-200 px-3 py-2"
+                    >
+                      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                        <span className="text-sm font-medium text-neutral-900">
+                          {MEMBER_SUBMISSION_KIND_LABELS[submission.kind]}
+                          {submission.qualificationDefinition
+                            ? ` — ${submission.qualificationDefinition.name}`
+                            : ""}
+                          {submission.targetMemberQualification
+                            ? ` — ${submission.targetMemberQualification.definition.name}`
+                            : ""}
+                        </span>
+                        <span
+                          className={`text-xs font-medium ${
+                            submission.status === "PENDING"
+                              ? "text-amber-700"
+                              : submission.status === "APPROVED"
+                                ? "text-green-800"
+                                : "text-red-700"
+                          }`}
+                        >
+                          {MEMBER_SUBMISSION_STATUS_LABELS[submission.status]}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 whitespace-pre-line text-xs text-neutral-600">
+                        {submission.details}
+                      </p>
+                      <p className="mt-0.5 text-xs text-neutral-500">
+                        Submitted {formatDateOnly(submission.createdAt)}
+                        {submission.reviewedAt
+                          ? ` · reviewed ${formatDateOnly(submission.reviewedAt)}`
+                          : ""}
+                      </p>
+                      {submission.reviewNote && (
+                        <p className="mt-1 rounded bg-neutral-50 px-2 py-1 text-xs text-neutral-700">
+                          Reviewer note: {submission.reviewNote}
+                        </p>
+                      )}
+                      {submission.status === "PENDING" && (
+                        <SubmissionEvidenceSection
+                          submissionId={submission.id}
+                        />
+                      )}
+                      {submission.status !== "PENDING" &&
+                        submission.attachments.length > 0 && (
+                          <ul className="mt-1 space-y-0.5">
+                            {submission.attachments.map((link) => (
+                              <li key={link.id} className="text-xs">
+                                {link.attachment.status === "ACTIVE" &&
+                                (link.attachment.storageProvider !== "s3" ||
+                                  link.attachment.scanStatus === "CLEAN") ? (
+                                  <a
+                                    href={`/api/attachments/${link.attachment.id}/download`}
+                                    className="font-medium text-neutral-900 underline"
+                                  >
+                                    {link.attachment.displayFilename}
+                                  </a>
+                                ) : (
+                                  <span
+                                    className={
+                                      link.attachment.status === "DELETED"
+                                        ? "text-neutral-500 line-through"
+                                        : "text-neutral-600"
+                                    }
+                                  >
+                                    {link.attachment.displayFilename}
+                                  </span>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <details className="mt-3">
+                <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+                  New submission
+                </summary>
+                <div className="mt-2">
+                  <SubmissionForm
+                    action={createMySubmissionAction.bind(null, member.id)}
+                    definitions={definitions}
+                    ownQualifications={(
+                      ownQualifications.find((q) => q.member.id === member.id)
+                        ?.records ?? []
+                    ).map((record) => ({
+                      id: record.id,
+                      label: `${record.definition.name}${
+                        record.issuedOn
+                          ? ` · issued ${formatDateOnly(record.issuedOn)}`
+                          : ""
+                      }`,
+                    }))}
+                    idPrefix={`submission-${member.id}`}
                   />
                 </div>
               </details>
@@ -318,6 +499,7 @@ export default async function AccountPage() {
                         {formatDateOnly(record.issuedOn) ?? "not recorded"}
                         {record.issuer ? ` · ${record.issuer}` : ""}
                       </p>
+                      <QualificationEvidenceList qualificationId={record.id} />
                     </li>
                   ))}
                 </ul>

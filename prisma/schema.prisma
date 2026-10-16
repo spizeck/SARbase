@@ -129,6 +129,10 @@ model Organization {
   memberInvitations      MemberInvitation[]
   memberInvitationEvents MemberInvitationEvent[]
 
+  memberContactChanges        MemberContactChange[]
+  memberSubmissions           MemberSubmission[]
+  memberSubmissionAttachments MemberSubmissionAttachment[]
+
   vendors                   Vendor[]
   expenses                  Expense[]
   expenseSequences          ExpenseSequence[]
@@ -174,19 +178,23 @@ model Unit {
 // before (and independently of) any sign-in; a future auth identity
 // links TO a member rather than defining one (see issue #6).
 model Member {
-  id             String       @id @default(cuid())
-  organizationId String
-  displayName    String
+  id                    String       @id @default(cuid())
+  organizationId        String
+  displayName           String
   // Contact points are optional, non-unique, and org-scoped in meaning.
   // A person without email/phone is a valid member; the same email may
   // legitimately appear on multiple members (shared family contact,
   // separate orgs) — uniqueness for sign-in linkage belongs to the auth
   // layer, not this record.
-  email          String?
-  phone          String?
-  status         MemberStatus @default(ACTIVE)
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  email                 String?
+  phone                 String?
+  // Issue #71 — emergency contact, member-editable like email/phone.
+  // Optional, non-unique, org-scoped in meaning; never an auth input.
+  emergencyContactName  String?
+  emergencyContactPhone String?
+  status                MemberStatus @default(ACTIVE)
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   memberUnits  MemberUnit[]
@@ -249,6 +257,12 @@ model Member {
   // same row's token). Restrict: invitation history outlives membership
   // changes.
   memberInvitation MemberInvitation?
+
+  // Issue #71 — contact-field audit history and self-service
+  // submissions. Restrict: history and pending/reviewed work outlive
+  // membership changes.
+  contactChanges MemberContactChange[]
+  submissions    MemberSubmission[]
 
   // Composite-FK target so MemberUnit can enforce same-organization rows.
   @@unique([id, organizationId])
@@ -445,6 +459,135 @@ model MemberInvitationEvent {
   @@index([organizationId, createdAt])
 }
 
+// ---------------------------------------------------------------------------
+// Member self-service (issue #71)
+//
+// Members may edit a small set of contact fields on their own linked
+// Member record and submit qualification claims / record corrections
+// for administrator review. Neither path ever widens access: the member
+// supplies only a memberId selector, ownership is derived server-side
+// from the identity's member links + current OrganizationAccess, and a
+// PENDING submission changes no verified record until an org ADMIN
+// explicitly approves it.
+
+// Append-only audit of changes to the member-editable contact fields
+// (email, phone, emergency contact). One row per field per write —
+// written for both self-service edits (selfReported=true) and admin
+// edits of the same fields, so the member's history is one continuous
+// record regardless of who made the change.
+model MemberContactChange {
+  id                  String   @id @default(cuid())
+  organizationId      String
+  memberId            String
+  // "email" | "phone" | "emergencyContactName" | "emergencyContactPhone"
+  field               String
+  previousValue       String?
+  newValue            String?
+  // True when the caller was updating their own linked member record —
+  // recorded at write time because identity links can change later.
+  selfReported        Boolean  @default(false)
+  actorAuthIdentityId String // plain scalar — survives identity deletion
+  createdAt           DateTime @default(now())
+
+  member       Member       @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@index([memberId, createdAt])
+  @@index([organizationId, createdAt])
+}
+
+enum MemberSubmissionKind {
+  // The member reports a qualification/certification they hold, with
+  // optional dates/issuer and file evidence. Approval creates the
+  // verified MemberQualification.
+  QUALIFICATION_CLAIM
+  // The member reports a problem with an existing record — optionally
+  // naming the MemberQualification it concerns. Approval acknowledges
+  // the report; the administrator applies any fix on the record itself.
+  RECORD_CORRECTION
+}
+
+enum MemberSubmissionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// One item of member-submitted work awaiting administrator review.
+// Attachments arrive through MemberSubmissionAttachment — the same
+// private-storage + scan-gated pipeline as every other evidence file —
+// and are accepted only while the submission is PENDING.
+//
+// submittedByAuthIdentityId / reviewedByAuthIdentityId are plain scalar
+// identity references (the shared audit policy): history survives
+// identity deletion. createdMemberQualificationId records which
+// verified record an approved claim produced.
+model MemberSubmission {
+  id             String               @id @default(cuid())
+  organizationId String
+  memberId       String
+  kind           MemberSubmissionKind
+  // Always present — the member's own description of the claim or
+  // correction. Everything else is structured payload.
+  details        String
+
+  // QUALIFICATION_CLAIM payload: which org definition the member
+  // believes their certification matches, plus the claimed details.
+  qualificationDefinitionId String?
+  issuedOn                  DateTime? @db.Date
+  expiresOn                 DateTime? @db.Date
+  issuer                    String?
+  reference                 String?
+
+  // RECORD_CORRECTION payload: the member's own qualification record
+  // the correction concerns, when it concerns one.
+  targetMemberQualificationId String?
+
+  status                       MemberSubmissionStatus @default(PENDING)
+  submittedByAuthIdentityId    String
+  reviewedByAuthIdentityId     String?
+  reviewedAt                   DateTime?
+  // The reviewer's feedback to the member — required on REJECTED.
+  reviewNote                   String?
+  createdMemberQualificationId String?
+  createdAt                    DateTime               @default(now())
+  updatedAt                    DateTime               @updatedAt
+
+  member                     Member                       @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  organization               Organization                 @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  // Composite FKs pin every referenced record to THIS organization.
+  qualificationDefinition    QualificationDefinition?     @relation(fields: [qualificationDefinitionId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  targetMemberQualification  MemberQualification?         @relation("SubmissionCorrectionTarget", fields: [targetMemberQualificationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  createdMemberQualification MemberQualification?         @relation("SubmissionCreatedQualification", fields: [createdMemberQualificationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  attachments                MemberSubmissionAttachment[]
+
+  // Composite-FK target so MemberSubmissionAttachment enforces
+  // same-organization rows at the database level.
+  @@unique([id, organizationId])
+  @@index([memberId, createdAt])
+  @@index([organizationId, status])
+}
+
+// Evidence files on a member submission — same shape as every other
+// per-entity attachment link table.
+model MemberSubmissionAttachment {
+  id                      String   @id @default(cuid())
+  organizationId          String
+  memberSubmissionId      String
+  attachmentId            String
+  createdByAuthIdentityId String
+  createdAt               DateTime @default(now())
+
+  organization     Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  memberSubmission MemberSubmission @relation(fields: [memberSubmissionId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  attachment       Attachment       @relation(fields: [attachmentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([memberSubmissionId, attachmentId])
+  @@unique([id, organizationId])
+  @@index([attachmentId])
+  @@index([organizationId, memberSubmissionId])
+}
+
 // An organization-defined qualification/certification type — the org's
 // own policy about what it tracks ("we record CPR certificates"), NOT
 // any member's evidence. Deliberately minimal: no rank, competency
@@ -462,6 +605,8 @@ model QualificationDefinition {
 
   organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   memberQualifications MemberQualification[]
+  // Issue #71 — member claims that nominate this definition.
+  memberSubmissions    MemberSubmission[]
 
   // Definition names are unique within an organization (not globally).
   @@unique([organizationId, name])
@@ -503,6 +648,11 @@ model MemberQualification {
   member      Member                          @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Restrict)
   definition  QualificationDefinition         @relation(fields: [definitionId, organizationId], references: [id, organizationId], onDelete: Restrict)
   attachments MemberQualificationAttachment[]
+
+  // Issue #71 — member submissions naming this record as the correction
+  // target, or created by an approved claim.
+  correctionSubmissions  MemberSubmission[] @relation("SubmissionCorrectionTarget")
+  createdFromSubmissions MemberSubmission[] @relation("SubmissionCreatedQualification")
 
   // Composite-FK target so MemberQualificationAttachment enforces
   // same-organization rows at the database level.
@@ -2093,6 +2243,7 @@ model Attachment {
   incidentLinks      IncidentAttachment[]
   incidentNoteLinks  IncidentNoteAttachment[]
   qualificationLinks MemberQualificationAttachment[]
+  submissionLinks    MemberSubmissionAttachment[]
   trainingLinks      TrainingEventAttachment[]
   assetLinks         AssetAttachment[]
   inspectionLinks    InspectionRecordAttachment[]

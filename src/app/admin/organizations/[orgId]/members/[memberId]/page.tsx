@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { getMember } from "@/lib/domain/member";
+import { getMember, listMemberContactChanges } from "@/lib/domain/member";
 import { listUnits } from "@/lib/domain/unit";
 import {
   listMemberQualifications,
@@ -61,6 +61,14 @@ import {
 
 export const metadata = { title: "Member" };
 
+/** Human labels for the audited contact fields (issue #71). */
+const CONTACT_FIELD_LABELS: Record<string, string> = {
+  email: "Email",
+  phone: "Phone",
+  emergencyContactName: "Emergency contact name",
+  emergencyContactPhone: "Emergency contact phone",
+};
+
 export const dynamic = "force-dynamic";
 
 export default async function MemberPage({
@@ -103,6 +111,12 @@ export default async function MemberPage({
     ? await getOrganizationAccessRole(orgId, member.authIdentityId)
     : null;
   const invitation = await getMemberInvitation(member.id);
+  // Issue #71 — contact-field audit trail (self-reported vs admin edits).
+  const contactChanges = await listMemberContactChanges(member.id);
+  const contactActorLabels = await resolveActorLabels(
+    orgId,
+    contactChanges.map((c) => c.actorAuthIdentityId),
+  );
   const inviteState = invitationDisplayState(invitation);
   const inviteActorLabels = invitation
     ? await resolveActorLabels(
@@ -204,6 +218,8 @@ export default async function MemberPage({
               displayName: member.displayName,
               email: member.email,
               phone: member.phone,
+              emergencyContactName: member.emergencyContactName,
+              emergencyContactPhone: member.emergencyContactPhone,
             }}
             submitLabel="Save changes"
             regions={phoneRegionOptions()}
@@ -355,6 +371,37 @@ export default async function MemberPage({
             idPrefix={`admin-contact-${member.id}`}
           />
         </div>
+        {contactChanges.length > 0 && (
+          <details className="mt-3">
+            <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+              Contact change history ({contactChanges.length} most recent)
+            </summary>
+            <ul className="mt-2 divide-y divide-neutral-200 rounded-md border border-neutral-200">
+              {contactChanges.map((change) => (
+                <li key={change.id} className="px-4 py-2 text-xs">
+                  <span className="font-medium text-neutral-900">
+                    {CONTACT_FIELD_LABELS[change.field] ?? change.field}
+                  </span>
+                  <span className="text-neutral-600">
+                    {" "}
+                    changed from {change.previousValue ?? "—"} to{" "}
+                    {change.newValue ?? "—"}
+                  </span>
+                  <span className="text-neutral-500">
+                    {" "}
+                    · {relativeTimeLabel(change.createdAt)} ·{" "}
+                    {change.selfReported
+                      ? "self-reported"
+                      : "recorded by admin"}
+                    {contactActorLabels.get(change.actorAuthIdentityId)
+                      ? ` (${contactActorLabels.get(change.actorAuthIdentityId)})`
+                      : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
       </section>
 
       <section aria-labelledby="qualifications-heading" className="mt-8">

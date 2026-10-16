@@ -4,6 +4,8 @@ import { useState, useActionState } from "react";
 
 import type { AvailabilityStatus } from "@prisma/client";
 
+import type { PhoneRegionOption } from "@/lib/contact";
+import { PhoneFields } from "../admin/phone-fields";
 import type { ActionState } from "../admin/actions";
 
 /**
@@ -322,6 +324,343 @@ export function CalloutResponseForm({
           {state.message}
         </p>
       )}
+    </form>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Issue #71 — member self-service contact details and submissions.    */
+/*                                                                      */
+/* Contact details: the member edits the permitted fields on their OWN */
+/* linked record; every change is audited (MemberContactChange).       */
+/*                                                                      */
+/* Submissions: a member asks the organization to record a              */
+/* qualification (with evidence) or to correct an existing record.     */
+/* A pending submission changes nothing verified — it becomes fact     */
+/* only when an organization administrator approves it.                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The member-editable contact fields — email, own phone, and emergency
+ * contact. The roster display name is deliberately absent: it is
+ * administrative data, not self-service.
+ */
+export function ContactDetailsForm({
+  action,
+  defaults,
+  regions,
+  idPrefix = "details",
+}: {
+  action: BoundAction;
+  defaults: {
+    email: string | null;
+    phone: string | null;
+    emergencyContactName: string | null;
+    emergencyContactPhone: string | null;
+  };
+  regions: PhoneRegionOption[];
+  idPrefix?: string;
+}) {
+  const [state, formAction, pending] = useActionState(action, {});
+  return (
+    <form action={formAction} className="space-y-3">
+      <div>
+        <label htmlFor={`${idPrefix}-email`} className={labelClass}>
+          Email <span className="font-normal text-neutral-500">(optional)</span>
+        </label>
+        <input
+          id={`${idPrefix}-email`}
+          name="email"
+          type="email"
+          maxLength={254}
+          autoComplete="email"
+          defaultValue={defaults.email ?? undefined}
+          aria-invalid={Boolean(state.fieldErrors?.email)}
+          aria-describedby={`${idPrefix}-email-error`}
+          className={inputClass}
+        />
+        <FieldError
+          id={`${idPrefix}-email-error`}
+          errors={state.fieldErrors?.email}
+        />
+      </div>
+      <PhoneFields
+        idPrefix={`${idPrefix}-phone`}
+        regions={regions}
+        defaultPhone={defaults.phone}
+        errors={state.fieldErrors?.phone}
+      />
+      <fieldset className="space-y-3 border-t border-neutral-200 pt-3">
+        <legend className="text-sm font-medium text-neutral-800">
+          Emergency contact{" "}
+          <span className="font-normal text-neutral-500">(optional)</span>
+        </legend>
+        <p className="text-xs text-neutral-500">
+          Who your organization should contact for you in an emergency.
+        </p>
+        <div>
+          <label htmlFor={`${idPrefix}-ec-name`} className={labelClass}>
+            Contact name
+          </label>
+          <input
+            id={`${idPrefix}-ec-name`}
+            name="emergencyContactName"
+            type="text"
+            maxLength={120}
+            autoComplete="off"
+            defaultValue={defaults.emergencyContactName ?? undefined}
+            aria-invalid={Boolean(state.fieldErrors?.emergencyContactName)}
+            aria-describedby={`${idPrefix}-ec-name-error`}
+            className={inputClass}
+          />
+          <FieldError
+            id={`${idPrefix}-ec-name-error`}
+            errors={state.fieldErrors?.emergencyContactName}
+          />
+        </div>
+        <PhoneFields
+          idPrefix={`${idPrefix}-ec-phone`}
+          regions={regions}
+          defaultPhone={defaults.emergencyContactPhone}
+          errors={state.fieldErrors?.emergencyContactPhone}
+          fieldName="emergencyContactPhone"
+          regionFieldName="emergencyContactPhoneRegion"
+        />
+      </fieldset>
+      {state.message && (
+        <p className={errorClass} role="alert">
+          {state.message}
+        </p>
+      )}
+      {state.notice && (
+        <p className="mt-1 text-sm text-green-800" role="status">
+          {state.notice}
+        </p>
+      )}
+      <button type="submit" disabled={pending} className={buttonClass}>
+        {pending ? "Saving…" : "Save contact details"}
+      </button>
+    </form>
+  );
+}
+
+/**
+ * File a submission: a qualification claim (with the claimed dates and
+ * issuer) or a correction to an existing qualification record. The kind
+ * selector shows only the fields that kind uses — irrelevant fields are
+ * unmounted so they cannot submit stray values.
+ */
+export function SubmissionForm({
+  action,
+  definitions,
+  ownQualifications,
+  idPrefix = "submission",
+}: {
+  action: BoundAction;
+  /** This org's ACTIVE qualification definitions (id + name). */
+  definitions: { id: string; name: string }[];
+  /** The member's own existing qualification records (for corrections). */
+  ownQualifications: { id: string; label: string }[];
+  idPrefix?: string;
+}) {
+  const [state, formAction, pending] = useActionState(action, {});
+  const [kind, setKind] = useState<"QUALIFICATION_CLAIM" | "RECORD_CORRECTION">(
+    "QUALIFICATION_CLAIM",
+  );
+
+  return (
+    <form action={formAction} className="space-y-3">
+      <div>
+        <label htmlFor={`${idPrefix}-kind`} className={labelClass}>
+          What are you submitting?
+        </label>
+        <select
+          id={`${idPrefix}-kind`}
+          name="kind"
+          value={kind}
+          onChange={(e) =>
+            setKind(
+              e.target.value as "QUALIFICATION_CLAIM" | "RECORD_CORRECTION",
+            )
+          }
+          className={inputClass}
+        >
+          <option value="QUALIFICATION_CLAIM">
+            Qualification or training evidence
+          </option>
+          <option value="RECORD_CORRECTION">Record correction</option>
+        </select>
+        <FieldError
+          id={`${idPrefix}-kind-error`}
+          errors={state.fieldErrors?.kind}
+        />
+      </div>
+
+      {kind === "QUALIFICATION_CLAIM" && (
+        <>
+          <div>
+            <label htmlFor={`${idPrefix}-definition`} className={labelClass}>
+              Qualification
+            </label>
+            <select
+              id={`${idPrefix}-definition`}
+              name="qualificationDefinitionId"
+              aria-invalid={Boolean(
+                state.fieldErrors?.qualificationDefinitionId,
+              )}
+              aria-describedby={`${idPrefix}-definition-error`}
+              className={inputClass}
+              defaultValue=""
+            >
+              <option value="" disabled>
+                Choose a qualification…
+              </option>
+              {definitions.map((definition) => (
+                <option key={definition.id} value={definition.id}>
+                  {definition.name}
+                </option>
+              ))}
+            </select>
+            <FieldError
+              id={`${idPrefix}-definition-error`}
+              errors={state.fieldErrors?.qualificationDefinitionId}
+            />
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label htmlFor={`${idPrefix}-issued`} className={labelClass}>
+                Issue date{" "}
+                <span className="font-normal text-neutral-500">(optional)</span>
+              </label>
+              <input
+                id={`${idPrefix}-issued`}
+                name="issuedOn"
+                type="date"
+                aria-invalid={Boolean(state.fieldErrors?.issuedOn)}
+                aria-describedby={`${idPrefix}-issued-error`}
+                className={inputClass}
+              />
+              <FieldError
+                id={`${idPrefix}-issued-error`}
+                errors={state.fieldErrors?.issuedOn}
+              />
+            </div>
+            <div>
+              <label htmlFor={`${idPrefix}-expires`} className={labelClass}>
+                Expiry date{" "}
+                <span className="font-normal text-neutral-500">(optional)</span>
+              </label>
+              <input
+                id={`${idPrefix}-expires`}
+                name="expiresOn"
+                type="date"
+                aria-invalid={Boolean(state.fieldErrors?.expiresOn)}
+                aria-describedby={`${idPrefix}-expires-error`}
+                className={inputClass}
+              />
+              <FieldError
+                id={`${idPrefix}-expires-error`}
+                errors={state.fieldErrors?.expiresOn}
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label htmlFor={`${idPrefix}-issuer`} className={labelClass}>
+                Issuing organization{" "}
+                <span className="font-normal text-neutral-500">(optional)</span>
+              </label>
+              <input
+                id={`${idPrefix}-issuer`}
+                name="issuer"
+                type="text"
+                maxLength={120}
+                placeholder="e.g. KNRM"
+                className={inputClass}
+              />
+            </div>
+            <div>
+              <label htmlFor={`${idPrefix}-reference`} className={labelClass}>
+                Certificate or reference{" "}
+                <span className="font-normal text-neutral-500">(optional)</span>
+              </label>
+              <input
+                id={`${idPrefix}-reference`}
+                name="reference"
+                type="text"
+                maxLength={120}
+                className={inputClass}
+              />
+            </div>
+          </div>
+        </>
+      )}
+
+      {kind === "RECORD_CORRECTION" && (
+        <div>
+          <label htmlFor={`${idPrefix}-target`} className={labelClass}>
+            Which record is wrong?{" "}
+            <span className="font-normal text-neutral-500">(optional)</span>
+          </label>
+          <select
+            id={`${idPrefix}-target`}
+            name="targetMemberQualificationId"
+            className={inputClass}
+            defaultValue=""
+          >
+            <option value="">Not a specific record</option>
+            {ownQualifications.map((record) => (
+              <option key={record.id} value={record.id}>
+                {record.label}
+              </option>
+            ))}
+          </select>
+          <FieldError
+            id={`${idPrefix}-target-error`}
+            errors={state.fieldErrors?.targetMemberQualificationId}
+          />
+        </div>
+      )}
+
+      <div>
+        <label htmlFor={`${idPrefix}-details`} className={labelClass}>
+          Details
+        </label>
+        <textarea
+          id={`${idPrefix}-details`}
+          name="details"
+          required
+          maxLength={2000}
+          rows={4}
+          placeholder={
+            kind === "QUALIFICATION_CLAIM"
+              ? "Describe the qualification — course, provider, certificate number…"
+              : "What is wrong, and what should it say?"
+          }
+          aria-invalid={Boolean(state.fieldErrors?.details)}
+          aria-describedby={`${idPrefix}-details-error`}
+          className={inputClass}
+        />
+        <FieldError
+          id={`${idPrefix}-details-error`}
+          errors={state.fieldErrors?.details}
+        />
+      </div>
+
+      <p className="text-xs text-neutral-500">
+        An organization administrator reviews every submission. Nothing here
+        changes your verified records until it is approved — you can attach
+        evidence files after submitting.
+      </p>
+
+      {state.message && (
+        <p className={errorClass} role="alert">
+          {state.message}
+        </p>
+      )}
+      <button type="submit" disabled={pending} className={buttonClass}>
+        {pending ? "Submitting…" : "Submit for review"}
+      </button>
     </form>
   );
 }

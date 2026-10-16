@@ -316,6 +316,7 @@ export type AttachmentEntityType =
   | "INCIDENT"
   | "INCIDENT_NOTE"
   | "MEMBER_QUALIFICATION"
+  | "MEMBER_SUBMISSION"
   | "TRAINING_EVENT"
   | "ASSET"
   | "INSPECTION_RECORD"
@@ -327,6 +328,7 @@ export const ATTACHMENT_ENTITY_TYPES: readonly AttachmentEntityType[] = [
   "INCIDENT",
   "INCIDENT_NOTE",
   "MEMBER_QUALIFICATION",
+  "MEMBER_SUBMISSION",
   "TRAINING_EVENT",
   "ASSET",
   "INSPECTION_RECORD",
@@ -408,6 +410,28 @@ async function resolveEntity(
       if (!record) throw new CrossOrganizationAttachmentError();
       return {
         organizationId: record.organizationId,
+        incidentId: null,
+        incidentStatus: null,
+        expenseId: null,
+        requiresReason: false,
+      };
+    }
+    case "MEMBER_SUBMISSION": {
+      // Issue #71 — evidence files a member attaches to their own
+      // submission. The submission is frozen at review: files are only
+      // attachable while it is PENDING.
+      const submission = await tx.memberSubmission.findUnique({
+        where: { id: entityId },
+        select: { organizationId: true, status: true },
+      });
+      if (!submission) throw new CrossOrganizationAttachmentError();
+      if (submission.status !== "PENDING") {
+        throw new AttachmentInputError(
+          "This submission has already been reviewed and no longer accepts files.",
+        );
+      }
+      return {
+        organizationId: submission.organizationId,
         incidentId: null,
         incidentStatus: null,
         expenseId: null,
@@ -630,6 +654,10 @@ async function createLinkRow(
       return tx.memberQualificationAttachment.create({
         data: { ...base, memberQualificationId: entityId },
       });
+    case "MEMBER_SUBMISSION":
+      return tx.memberSubmissionAttachment.create({
+        data: { ...base, memberSubmissionId: entityId },
+      });
     case "TRAINING_EVENT":
       return tx.trainingEventAttachment.create({
         data: { ...base, trainingEventId: entityId },
@@ -679,6 +707,10 @@ async function deleteLinkRow(
     case "MEMBER_QUALIFICATION":
       return tx.memberQualificationAttachment.deleteMany({
         where: { memberQualificationId: entityId, attachmentId },
+      });
+    case "MEMBER_SUBMISSION":
+      return tx.memberSubmissionAttachment.deleteMany({
+        where: { memberSubmissionId: entityId, attachmentId },
       });
     case "TRAINING_EVENT":
       return tx.trainingEventAttachment.deleteMany({
@@ -1676,6 +1708,13 @@ export async function listEntityAttachments(
     case "MEMBER_QUALIFICATION":
       rows = await prisma.memberQualificationAttachment.findMany({
         where: { memberQualificationId: entityId },
+        include,
+        orderBy,
+      });
+      break;
+    case "MEMBER_SUBMISSION":
+      rows = await prisma.memberSubmissionAttachment.findMany({
+        where: { memberSubmissionId: entityId },
         include,
         orderBy,
       });
