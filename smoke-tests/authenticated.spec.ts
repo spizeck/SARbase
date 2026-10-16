@@ -120,7 +120,7 @@ test.describe("authenticated session", () => {
     // Plain-language contract (issue #73): a consistent download action
     // and no implementation vocabulary leaking into coordinator copy.
     await expect(
-      page.getByRole("heading", { name: "Download your data" }),
+      page.getByRole("heading", { name: /Download your data/ }),
     ).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Download CSV" }).first(),
