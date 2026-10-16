@@ -3,6 +3,7 @@
 import {
   useActionState,
   useEffect,
+  useId,
   useReducer,
   useState,
   useTransition,
@@ -753,6 +754,9 @@ export function ManagerCapabilitiesForm({
   const [selected, setSelected] = useState<Set<OrgCapability>>(
     () => new Set(granted),
   );
+  // One editor renders per manager row — ids must be instance-unique
+  // or labels associate with the wrong form.
+  const reasonId = useId();
 
   const grantedSet = new Set(granted);
   const added = [...selected].filter((c) => !grantedSet.has(c));
@@ -835,13 +839,13 @@ export function ManagerCapabilitiesForm({
       )}
       <div>
         <label
-          htmlFor="capability-reason"
+          htmlFor={reasonId}
           className="text-xs font-medium text-neutral-600"
         >
           Reason (optional — recorded in the access history)
         </label>
         <input
-          id="capability-reason"
+          id={reasonId}
           type="text"
           name="reason"
           maxLength={200}

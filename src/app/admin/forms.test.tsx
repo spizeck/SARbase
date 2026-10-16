@@ -212,6 +212,35 @@ describe("ManagerCapabilitiesForm", () => {
     expect(html).not.toContain("Review before saving");
   });
 
+  it("gives each instance a unique reason-input id (one form per manager row)", () => {
+    // One form renders per manager row — ids must differ WITHIN the
+    // same tree or labels associate with the wrong input.
+    const html = renderToStaticMarkup(
+      <>
+        <ManagerCapabilitiesForm
+          action={noopAction}
+          granted={[]}
+          targetLabel="A"
+        />
+        <ManagerCapabilitiesForm
+          action={noopAction}
+          granted={[]}
+          targetLabel="B"
+        />
+      </>,
+    );
+    const ids = [
+      ...html.matchAll(/<input[^>]*id="([^"]+)"[^>]*name="reason"/g),
+    ].map((m) => m[1]);
+    const labels = [
+      ...html.matchAll(/<label[^>]*for="([^"]+)"[^>]*>\s*Reason/g),
+    ].map((m) => m[1]);
+    expect(ids.length).toBe(2);
+    expect(new Set(ids).size).toBe(2);
+    // Each label associates with its own instance's input.
+    expect(new Set(labels)).toEqual(new Set(ids));
+  });
+
   it("standard set is a documented subset of the registry", () => {
     // The form's "Apply standard set" button can only ever select
     // registry entries — and the registry never includes account
