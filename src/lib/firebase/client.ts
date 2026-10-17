@@ -1,5 +1,5 @@
-import { getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
-import { getAuth, type Auth } from "firebase/auth";
+import { getApp, getApps, initializeApp, type FirebaseApp } from "@firebase/app";
+import { getAuth, type Auth } from "@firebase/auth";
 
 import { tryParseFirebaseClientEnvironment } from "@/lib/env";
 

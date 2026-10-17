@@ -9,13 +9,13 @@ const { getAppsMock, getAppMock, initializeAppMock, getAuthMock } = vi.hoisted(
   }),
 );
 
-vi.mock("firebase/app", () => ({
+vi.mock("@firebase/app", () => ({
   getApps: getAppsMock,
   getApp: getAppMock,
   initializeApp: initializeAppMock,
 }));
 
-vi.mock("firebase/auth", () => ({
+vi.mock("@firebase/auth", () => ({
   getAuth: getAuthMock,
 }));
 

@@ -7,7 +7,7 @@ import {
   sendEmailVerification,
   signInWithEmailAndPassword,
   signOut,
-} from "firebase/auth";
+} from "@firebase/auth";
 
 import { getFirebaseClientAuth } from "@/lib/firebase/client";
 import { inviteAuthErrorView } from "@/lib/invitation-accept";

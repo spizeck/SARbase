@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FirebaseError } from "firebase/app";
+import { FirebaseError } from "@firebase/app";
 
 import { inviteAuthErrorView } from "./invitation-accept";
 

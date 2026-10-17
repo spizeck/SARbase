@@ -1,4 +1,4 @@
-import { FirebaseError } from "firebase/app";
+import { FirebaseError } from "@firebase/app";
 
 export type InviteAuthMode = "sign_in" | "register";
 

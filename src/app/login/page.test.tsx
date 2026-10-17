@@ -45,7 +45,7 @@ vi.mock("@/lib/firebase/client", () => ({
   getFirebaseClientAuth: () => null,
 }));
 
-vi.mock("firebase/auth", () => ({
+vi.mock("@firebase/auth", () => ({
   signInWithEmailAndPassword: vi.fn(),
 }));
 
