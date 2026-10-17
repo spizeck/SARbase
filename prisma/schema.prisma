@@ -3085,3 +3085,38 @@ model RateLimitWindow {
   /// Epoch milliseconds when the current window ends.
   resetAt BigInt
 }
+
+// Legal acceptance records — append-only evidence that a specific
+// AuthIdentity explicitly accepted a specific Terms version while a
+// specific Privacy notice version was presented.
+//
+// authIdentityId is a plain scalar (the audit convention): acceptance
+// history must survive identity deletion, and the stored id remains a
+// stable forensic reference afterwards. There is deliberately no
+// organizationId — acceptance is between the person and the platform
+// operator, not any participating organization.
+//
+// One row per (identity, terms version): a new terms version requires
+// a fresh acceptance; re-clicking the same version is an idempotent
+// no-op via the unique key. No update/delete paths exist in the
+// application.
+model TermsAcceptance {
+  id             String   @id @default(cuid())
+  /// Plain scalar audit reference — survives identity deletion.
+  authIdentityId String
+  /// The accepted document identity: version stamp + sha256 of the
+  /// rendered text (src/lib/legal/documents.ts legalDocumentHash), so
+  /// acceptance is bound to the exact words presented.
+  termsVersion   String
+  termsHash      String
+  /// The Privacy notice version + hash shown at acceptance time —
+  /// recorded as "presented", not as blanket consent to processing.
+  privacyVersion String
+  privacyHash    String
+  /// How acceptance was captured — e.g. "explicit_checkbox".
+  mechanism      String
+  acceptedAt     DateTime @default(now())
+
+  @@unique([authIdentityId, termsVersion])
+  @@index([authIdentityId])
+}

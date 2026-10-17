@@ -64,7 +64,10 @@ export const dynamic = "force-dynamic";
  * context, organization scope, and role — no member self-service yet.
  */
 export default async function AccountPage() {
-  const ctx = await requireAuth();
+  // Personal-data surface: stays reachable before Terms acceptance so
+  // an unaccepted user can still manage their own account, privacy
+  // preferences, and consent — they just can't reach organizations.
+  const ctx = await requireAuth({ allowWithoutTerms: true });
 
   // A Member link alone grants nothing: member-derived data is exposed
   // only where the identity also holds a current OrganizationAccess row.

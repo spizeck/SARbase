@@ -47,4 +47,13 @@ test.describe("legal pages", () => {
       ).toBeVisible();
     }
   });
+
+  test("/legal/accept is not public — unauthenticated users go to sign-in", async ({
+    page,
+  }) => {
+    // Acceptance is recorded against an authenticated identity, so the
+    // page must never render its form anonymously.
+    await page.goto("/legal/accept");
+    await expect(page).toHaveURL(/\/login/);
+  });
 });

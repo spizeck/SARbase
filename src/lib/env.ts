@@ -221,6 +221,9 @@ export const appEnvironmentSchema = z.object({
   ALLOW_RESEND_IN_PREVIEW: z.string().optional(),
   ALLOW_S3_IN_PREVIEW: z.string().optional(),
   ALLOW_WHATSAPP_IN_PREVIEW: z.string().optional(),
+  // Master switch for mandatory Terms acceptance. Even "true" cannot
+  // enforce draft documents — see src/lib/legal/acceptance.ts.
+  LEGAL_ACCEPTANCE_REQUIRED: z.string().optional(),
 });
 
 export type AppEnvironment = z.infer<typeof appEnvironmentSchema>;
@@ -361,6 +364,19 @@ export function isFirebaseAdminConfigured(
   } catch {
     return false;
   }
+}
+
+/**
+ * The owner-set master switch for mandatory Terms acceptance. This is
+ * only the flag — actual enforcement additionally requires the Terms
+ * document to be marked `approved` (see
+ * src/lib/legal/acceptance.ts), so this flag can be set early without
+ * ever enforcing draft text.
+ */
+export function isLegalAcceptanceFlagEnabled(
+  values: Record<string, string | undefined> = process.env,
+): boolean {
+  return parseAppEnvironment(values).LEGAL_ACCEPTANCE_REQUIRED === "true";
 }
 
 /**

@@ -5,6 +5,8 @@ import { log } from "@/lib/logging";
 import { prisma } from "@/lib/prisma";
 
 import { ORG_CAPABILITIES } from "./capabilities";
+import { requireTermsAcceptance } from "@/lib/legal/acceptance";
+
 import {
   AuthenticationError,
   AuthorizationError,
@@ -43,11 +45,23 @@ function logDenial(event: string, ctx: AuthContext | null, detail?: object) {
 /**
  * Require any authenticated, ACTIVE identity. Pages should use the
  * redirecting default; actions can catch AuthenticationError.
+ *
+ * Terms acceptance is enforced here — the single chokepoint every
+ * authenticated page passes through — so new surfaces fail closed by
+ * default when acceptance is required. `allowWithoutTerms` opts out
+ * for the acceptance screen itself and essential account/legal
+ * surfaces (users who haven't accepted must still reach their own
+ * data, sign out, and read the documents).
  */
-export async function requireAuth(): Promise<AuthContext> {
+export async function requireAuth(options?: {
+  allowWithoutTerms?: boolean;
+}): Promise<AuthContext> {
   const ctx = await getAuthContext();
   if (!ctx) {
     redirect("/login");
+  }
+  if (!options?.allowWithoutTerms) {
+    await requireTermsAcceptance(ctx);
   }
   return ctx;
 }
