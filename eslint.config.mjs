@@ -18,7 +18,13 @@ export default defineConfig([
         {
           patterns: [
             {
-              group: ["firebase", "firebase/*"],
+              group: [
+                "firebase",
+                "firebase/*",
+                // Internal firebase seam — not the npm umbrella.
+                "!@/lib/firebase",
+                "!@/lib/firebase/*",
+              ],
               message:
                 "Import from @firebase/app or @firebase/auth instead — the firebase umbrella reintroduces the firestore/gRPC subtree (issue #57).",
             },
