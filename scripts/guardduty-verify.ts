@@ -62,6 +62,8 @@ function aws(args: string[]): AwsResult {
   const result = spawnSync("aws", [...args, "--output", "json"], {
     env: process.env,
     encoding: "utf8",
+    // A stalled CLI must not hang the whole report.
+    timeout: 30_000,
     // Windows: aws is aws.cmd and needs a shell to resolve; every arg is
     // either a literal or passed assertSafeArg above, so no metachars
     // can reach the shell.
@@ -231,6 +233,7 @@ export async function verifyGuardDutyDelivery(
           }
         ).MalwareProtectionPlans ?? [];
       let found: CheckResult | null = null;
+      let detailFailures = 0;
       for (const p of ids) {
         if (!p.MalwareProtectionPlanId) continue;
         const detail = awsCli([
@@ -241,7 +244,11 @@ export async function verifyGuardDutyDelivery(
           "--region",
           region,
         ]);
-        if (!detail.ok) continue;
+        // A failed detail read is unverifiable — not absence.
+        if (!detail.ok) {
+          detailFailures += 1;
+          continue;
+        }
         const plan = detail.json as {
           ProtectedResource?: { S3Bucket?: { BucketName?: string } };
           Actions?: { Tagging?: { Status?: string } };
@@ -261,11 +268,18 @@ export async function verifyGuardDutyDelivery(
         break;
       }
       push(
-        found ?? {
-          name: "GuardDuty protection plan",
-          status: "FAIL",
-          detail: `${ids.length} plan(s) in region — none covers ${bucket}`,
-        },
+        found ??
+          (detailFailures > 0
+            ? {
+                name: "GuardDuty protection plan",
+                status: "MANUAL" as const,
+                detail: `${detailFailures} plan detail read(s) failed — cannot conclude absence; verify ${bucket} in GuardDuty console → Malware Protection for S3`,
+              }
+            : {
+                name: "GuardDuty protection plan",
+                status: "FAIL" as const,
+                detail: `${ids.length} plan(s) in region — none covers ${bucket}`,
+              }),
       );
     }
   }
@@ -446,7 +460,7 @@ export async function verifyGuardDutyDelivery(
       status: r.ok && problems.length === 0 ? "PASS" : "FAIL",
       detail:
         problems.length === 0
-          ? "AUTHORIZED + API_KEY (secret material is EventBridge-managed — not inspected)"
+          ? "AUTHORIZED + API_KEY (secret material is EventBridge-managed — not inspected; token-match is proven only by the Phase 5 live upload test)"
           : problems.join("; "),
     });
   }

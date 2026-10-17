@@ -161,11 +161,37 @@ describe("verifyGuardDutyDelivery", () => {
     expect(results.length).toBe(10);
   });
 
-  it("fails closed when the aws CLI is unusable", async () => {
+  it("probes the endpoint with an unauthenticated POST, no redirects", async () => {
+    let seen: { url: unknown; init: RequestInit | undefined } | null = null;
+    const spy = (async (url: unknown, init?: RequestInit) => {
+      seen = { url, init };
+      return new Response("{}", { status: 401 });
+    }) as typeof fetch;
+    await run({ fetch: spy });
+    expect(seen).not.toBeNull();
+    expect(seen!.init?.method).toBe("POST");
+    expect(seen!.init?.redirect).toBe("manual");
+  });
+
+  it("fails closed when the aws CLI binary is missing", async () => {
+    // Identity would succeed — only the version probe fails.
     const results = await verifyGuardDutyDelivery({
       ...base,
       awsVersion: () => false,
-      aws: () => fail("no credentials"),
+      aws: healthyAws(),
+      fetch: healthyFetch(),
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0]!.status).toBe("FAIL");
+  });
+
+  it("fails closed when credentials cannot be resolved", async () => {
+    // CLI present — only the identity call fails.
+    const results = await verifyGuardDutyDelivery({
+      ...base,
+      awsVersion: () => true,
+      aws: (args) =>
+        args[0] === "sts" ? fail("no credentials") : healthyAws()(args),
       fetch: healthyFetch(),
     });
     expect(results).toHaveLength(1);
@@ -219,18 +245,24 @@ describe("verifyGuardDutyDelivery", () => {
   });
 
   it("fails when the rule filters the wrong bucket", async () => {
+    // Everything else in the pattern is correct — only the bucket
+    // condition is wrong, so this isolates the bucket check.
     const results = await run({
       aws: (args) =>
         args[1] === "describe-rule"
           ? ok({
               State: "ENABLED",
+              EventBusName: "default",
               EventPattern: JSON.stringify({
                 source: ["aws.guardduty"],
                 "detail-type": [
                   "GuardDuty Malware Protection Object Scan Result",
                 ],
                 detail: {
-                  s3ObjectDetails: { bucketName: ["other-bucket"] },
+                  s3ObjectDetails: {
+                    bucketName: ["other-bucket"],
+                    objectKey: [{ prefix: "organizations/" }],
+                  },
                 },
               }),
             })
@@ -247,6 +279,7 @@ describe("verifyGuardDutyDelivery", () => {
         args[1] === "describe-rule"
           ? ok({
               State: "ENABLED",
+              EventBusName: "default",
               EventPattern: JSON.stringify({
                 source: ["aws.guardduty"],
                 "detail-type": [
