@@ -3,11 +3,15 @@ import type { OrgCapability } from "@prisma/client";
 
 import { SetupChecklist } from "@/app/admin/setup-checklist";
 import { setSetupChecklistDismissedAction } from "@/app/admin/actions";
-import { getAdminDashboard } from "@/lib/domain/dashboard";
+import {
+  getAdminDashboard,
+  getDashboardAttention,
+} from "@/lib/domain/dashboard";
 import { getOrganizationSetup } from "@/lib/domain/setup";
 import { getMemberAvailability } from "@/lib/domain/availability";
 import { listMemberCalloutInvitations } from "@/lib/domain/callouts";
 import { listMemberTraining } from "@/lib/domain/training";
+import { listOwnMemberSubmissions } from "@/lib/domain/submissions";
 import {
   expiryLabel,
   listMemberQualifications,
@@ -152,9 +156,10 @@ export async function AdminDashboard({
   capabilities: OrgCapability[];
   isAdmin: boolean;
 }) {
-  const [data, setup] = await Promise.all([
+  const [data, setup, attention] = await Promise.all([
     getAdminDashboard(orgId, timezone),
     isAdmin ? getOrganizationSetup(orgId) : null,
+    getDashboardAttention(orgId, capabilities, isAdmin, orgToday),
   ]);
   const { counts } = data;
   const can = (cap: OrgCapability) => capabilities.includes(cap);
@@ -238,6 +243,219 @@ export async function AdminDashboard({
               />
             ))}
           </div>
+        </section>
+      )}
+
+      {attention.availability && (
+        <section
+          aria-labelledby="availability-heading"
+          className="mt-6 rounded-lg border border-neutral-200 px-4 py-3"
+        >
+          <div className="flex items-baseline justify-between gap-3">
+            <h2
+              id="availability-heading"
+              className="text-sm font-semibold text-neutral-900"
+            >
+              Stated availability now
+            </h2>
+            {canViewMembers && (
+              <Link
+                href={`${adminRoot}/members`}
+                className="text-xs font-medium text-neutral-500 hover:text-neutral-900 hover:underline"
+              >
+                Members
+              </Link>
+            )}
+          </div>
+          <p className="mt-2 text-sm text-neutral-700">
+            <span className="font-medium text-green-800">
+              {attention.availability.available} available
+            </span>
+            {" · "}
+            {attention.availability.unavailable +
+              attention.availability.offIsland >
+            0 ? (
+              <span className="font-medium text-amber-800">
+                {attention.availability.unavailable +
+                  attention.availability.offIsland}{" "}
+                unavailable
+                {attention.availability.offIsland > 0 &&
+                  ` (${attention.availability.offIsland} off island)`}
+              </span>
+            ) : (
+              <span>0 unavailable</span>
+            )}
+            {" · "}
+            <span className="font-medium text-neutral-600">
+              {attention.availability.unknownNoStatement +
+                attention.availability.unknownExpired}{" "}
+              unknown
+            </span>
+          </p>
+          <p className="mt-1 text-xs text-neutral-500">
+            Of {attention.availability.totalActive} active members. Unknown
+            means no current statement
+            {attention.availability.unknownExpired > 0 &&
+              ` — ${attention.availability.unknownExpired} statement${
+                attention.availability.unknownExpired === 1 ? " has" : "s have"
+              } expired`}
+            . Members&apos; stated availability is not a qualification,
+            competence, or readiness assessment.
+          </p>
+        </section>
+      )}
+
+      {(attention.activeCallouts !== undefined ||
+        attention.failedNotifications !== undefined ||
+        attention.equipment !== undefined ||
+        attention.pendingSubmissions !== undefined ||
+        attention.pendingInvitations !== undefined) && (
+        <section aria-labelledby="attention-heading" className="mt-6">
+          <h2
+            id="attention-heading"
+            className="text-sm font-semibold text-neutral-900"
+          >
+            Needs attention
+          </h2>
+          <ul className="mt-3 space-y-2">
+            {attention.activeCallouts?.map((callout) => (
+              <li
+                key={callout.id}
+                className="rounded-lg border border-neutral-200 px-4 py-3"
+              >
+                <div className="flex items-baseline justify-between gap-3">
+                  <Link
+                    href={`${adminRoot}/callouts/${callout.id}`}
+                    className="min-w-0 truncate text-sm font-medium text-neutral-900 hover:underline"
+                  >
+                    {callout.title}
+                  </Link>
+                  <span className="shrink-0 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">
+                    Active
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-neutral-600">
+                  Activated {formatInstantInZone(callout.activatedAt, timezone)}{" "}
+                  · {callout.counts.total} invited · {callout.counts.coming}{" "}
+                  coming · {callout.counts.unavailable} unavailable
+                  {callout.counts.noResponse > 0 && (
+                    <span className="font-medium text-amber-800">
+                      {" "}
+                      · {callout.counts.noResponse} no response
+                    </span>
+                  )}
+                </p>
+              </li>
+            ))}
+
+            {attention.failedNotifications !== undefined &&
+              attention.failedNotifications > 0 && (
+                <li className="rounded-lg border border-neutral-200 px-4 py-3">
+                  {can("NOTIFICATIONS_MANAGE") ? (
+                    <Link
+                      href={`${adminRoot}/notifications`}
+                      className="text-sm font-medium text-red-800 hover:underline"
+                    >
+                      {attention.failedNotifications} notification
+                      {attention.failedNotifications === 1 ? "" : "s"} failed in
+                      the last 14 days
+                    </Link>
+                  ) : (
+                    <span className="text-sm font-medium text-red-800">
+                      {attention.failedNotifications} notification
+                      {attention.failedNotifications === 1 ? "" : "s"} failed in
+                      the last 14 days
+                    </span>
+                  )}
+                  <p className="mt-1 text-xs text-neutral-500">
+                    Delivery failure is a provider-reported fact — members may
+                    not have received these alerts.
+                  </p>
+                </li>
+              )}
+
+            {attention.equipment &&
+              (attention.equipment.openDefects > 0 ||
+                attention.equipment.overdueInspections > 0 ||
+                attention.equipment.dueSoonInspections > 0 ||
+                attention.equipment.dueMaintenance > 0) && (
+                <li className="rounded-lg border border-neutral-200 px-4 py-3">
+                  <Link
+                    href={`${adminRoot}/maintenance`}
+                    className="text-sm font-medium text-neutral-900 hover:underline"
+                  >
+                    Equipment
+                  </Link>
+                  <p className="mt-1 text-xs text-neutral-600">
+                    {[
+                      attention.equipment.openDefects > 0 &&
+                        `${attention.equipment.openDefects} open defect${
+                          attention.equipment.openDefects === 1 ? "" : "s"
+                        }`,
+                      attention.equipment.overdueInspections > 0 &&
+                        `${attention.equipment.overdueInspections} overdue inspection${
+                          attention.equipment.overdueInspections === 1
+                            ? ""
+                            : "s"
+                        }`,
+                      attention.equipment.dueSoonInspections > 0 &&
+                        `${attention.equipment.dueSoonInspections} inspection${
+                          attention.equipment.dueSoonInspections === 1
+                            ? ""
+                            : "s"
+                        } due soon`,
+                      attention.equipment.dueMaintenance > 0 &&
+                        `${attention.equipment.dueMaintenance} maintenance item${
+                          attention.equipment.dueMaintenance === 1 ? "" : "s"
+                        } due`,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                </li>
+              )}
+
+            {attention.pendingSubmissions !== undefined &&
+              attention.pendingSubmissions > 0 && (
+                <li className="rounded-lg border border-neutral-200 px-4 py-3">
+                  <Link
+                    href={`${adminRoot}/reviews`}
+                    className="text-sm font-medium text-neutral-900 hover:underline"
+                  >
+                    {attention.pendingSubmissions} member submission
+                    {attention.pendingSubmissions === 1 ? "" : "s"} awaiting
+                    review
+                  </Link>
+                </li>
+              )}
+
+            {attention.pendingInvitations !== undefined &&
+              attention.pendingInvitations > 0 && (
+                <li className="rounded-lg border border-neutral-200 px-4 py-3">
+                  <Link
+                    href={`${adminRoot}/access`}
+                    className="text-sm font-medium text-neutral-900 hover:underline"
+                  >
+                    {attention.pendingInvitations} member invitation
+                    {attention.pendingInvitations === 1 ? "" : "s"} pending
+                  </Link>
+                </li>
+              )}
+          </ul>
+          {(!attention.activeCallouts ||
+            attention.activeCallouts.length === 0) &&
+            !attention.failedNotifications &&
+            !attention.pendingSubmissions &&
+            !attention.pendingInvitations &&
+            (!attention.equipment ||
+              (attention.equipment.openDefects === 0 &&
+                attention.equipment.overdueInspections === 0 &&
+                attention.equipment.dueSoonInspections === 0 &&
+                attention.equipment.dueMaintenance === 0)) && (
+              <p className="mt-3 text-sm text-neutral-500">
+                No outstanding items recorded.
+              </p>
+            )}
         </section>
       )}
 
@@ -479,13 +697,22 @@ export async function MemberDashboard({
     );
   }
 
-  const [availability, calloutInvitations, qualifications, training] =
-    await Promise.all([
-      getMemberAvailability(member.id),
-      listMemberCalloutInvitations([member.id]),
-      listMemberQualifications(member.id),
-      listMemberTraining(member.id),
-    ]);
+  const [
+    availability,
+    calloutInvitations,
+    qualifications,
+    training,
+    submissions,
+  ] = await Promise.all([
+    getMemberAvailability(member.id),
+    listMemberCalloutInvitations([member.id]),
+    listMemberQualifications(member.id),
+    listMemberTraining(member.id),
+    listOwnMemberSubmissions(member.id),
+  ]);
+  const pendingSubmissions = submissions.filter(
+    (s) => s.status === "PENDING",
+  ).length;
   const expiringSoon = qualifications.filter(
     (q) =>
       q.expiresOn != null &&
@@ -513,10 +740,22 @@ export async function MemberDashboard({
                 : "Not recorded"}
             </dd>
           </div>
+          {availability.expired && (
+            <p className="mt-1 text-xs text-amber-800">
+              Your last availability statement has expired — coordinators see
+              your status as unknown until you update it.
+            </p>
+          )}
           <div className="mt-2 flex items-baseline justify-between gap-3">
             <dt className="text-neutral-500">Tracked qualifications</dt>
             <dd className="text-neutral-900">{qualifications.length}</dd>
           </div>
+          {pendingSubmissions > 0 && (
+            <div className="mt-2 flex items-baseline justify-between gap-3">
+              <dt className="text-neutral-500">Submissions awaiting review</dt>
+              <dd className="text-neutral-900">{pendingSubmissions}</dd>
+            </div>
+          )}
         </dl>
         <p className="border-t border-neutral-100 px-4 py-2.5 text-xs text-neutral-500">
           <Link
