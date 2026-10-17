@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 // The verification script is the owner's read-only proof of the live
 // pipeline — mock the CLI boundary and assert the verdict logic for
-// each wiring state the runbook cares about.
+// each wiring state the runbook cares about. Mocks use the REAL AWS
+// response field names (ApiDestinationState, HttpMethod, …); a mock
+// that invents friendlier shapes would teach the script wrong.
 
 const { spawnSyncMock } = vi.hoisted(() => ({ spawnSyncMock: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawnSync: spawnSyncMock }));
@@ -50,6 +52,7 @@ function healthyAws(): AwsFn {
           EventBusName: "default",
           EventPattern: JSON.stringify({
             source: ["aws.guardduty"],
+            "detail-type": ["GuardDuty Malware Protection Object Scan Result"],
             detail: {
               s3ObjectDetails: {
                 bucketName: [BUCKET],
@@ -62,37 +65,62 @@ function healthyAws(): AwsFn {
         return ok({
           Targets: [
             {
-              Arn: "arn:aws:events:us-east-1:123:api-destination/x",
-              RoleArn: "arn:aws:iam::123:role/invoke",
-              DeadLetterConfig: { Arn: "arn:aws:sqs:us-east-1:123:dlq" },
+              Arn: "arn:aws:events:us-east-1:123:api-destination/sarbase-prod-scan-ingest/x",
+              RoleArn: "arn:aws:iam::123:role/sarbase-prod-scan-event-invoke",
+              DeadLetterConfig: {
+                Arn: "arn:aws:sqs:us-east-1:123:sarbase-prod-guardduty-scan-dlq",
+              },
+              RetryPolicy: {
+                MaximumRetryAttempts: 10,
+                MaximumEventAgeInSeconds: 3600,
+              },
             },
           ],
         });
       case "events describe-api-destination":
         return ok({
-          ConnectionState: "AUTHORIZED",
+          ApiDestinationState: "ACTIVE",
           InvocationEndpoint: ENDPOINT,
+          HttpMethod: "POST",
+          ConnectionArn:
+            "arn:aws:events:us-east-1:123:connection/sarbase-prod-scan-webhook/abc",
         });
       case "events describe-connection":
         return ok({ ConnectionState: "AUTHORIZED", AuthType: "API_KEY" });
       case "sqs get-queue-url":
         return ok({ QueueUrl: "https://sqs/queue" });
       case "sqs get-queue-attributes":
-        return ok({ Attributes: { ApproximateNumberOfMessages: "0" } });
+        return ok({
+          Attributes: {
+            ApproximateNumberOfMessages: "0",
+            ApproximateNumberOfMessagesNotVisible: "0",
+            ApproximateNumberOfMessagesDelayed: "0",
+          },
+        });
       case "cloudwatch describe-alarms":
-        return ok({ MetricAlarms: [{ AlarmName: "dlq", StateValue: "OK" }] });
+        return ok({
+          MetricAlarms: [
+            {
+              AlarmName: "sarbase-prod-guardduty-scan-dlq",
+              StateValue: "OK",
+              Namespace: "AWS/SQS",
+              MetricName: "ApproximateNumberOfMessagesVisible",
+              Dimensions: [
+                {
+                  Name: "QueueName",
+                  Value: "sarbase-prod-guardduty-scan-dlq",
+                },
+              ],
+              Threshold: 0,
+              ComparisonOperator: "GreaterThanThreshold",
+              EvaluationPeriods: 1,
+            },
+          ],
+        });
       default:
         return fail(`unstubbed call: ${key}`);
     }
   };
-}
-
-function stubCliVersion() {
-  spawnSyncMock.mockReturnValue({
-    status: 0,
-    stdout: "aws-cli/2.x",
-    error: null,
-  });
 }
 
 function healthyFetch(): typeof fetch {
@@ -108,10 +136,10 @@ const base = {
 async function run(
   overrides: Partial<Parameters<typeof verifyGuardDutyDelivery>[0]> = {},
 ) {
-  stubCliVersion();
   return verifyGuardDutyDelivery({
     ...base,
     aws: healthyAws(),
+    awsVersion: () => true,
     fetch: healthyFetch(),
     ...overrides,
   });
@@ -134,14 +162,26 @@ describe("verifyGuardDutyDelivery", () => {
   });
 
   it("fails closed when the aws CLI is unusable", async () => {
-    spawnSyncMock.mockReturnValue({ error: new Error("not found") });
     const results = await verifyGuardDutyDelivery({
       ...base,
+      awsVersion: () => false,
       aws: () => fail("no credentials"),
       fetch: healthyFetch(),
     });
     expect(results).toHaveLength(1);
     expect(results[0]!.status).toBe("FAIL");
+  });
+
+  it("rejects unsafe argument values before any CLI call", async () => {
+    await expect(
+      verifyGuardDutyDelivery({
+        ...base,
+        bucket: "bucket; rm -rf /",
+        aws: healthyAws(),
+        awsVersion: () => true,
+        fetch: healthyFetch(),
+      }),
+    ).rejects.toThrow(/refusing to interpolate/);
   });
 
   it("fails when the bucket is not versioned", async () => {
@@ -162,14 +202,36 @@ describe("verifyGuardDutyDelivery", () => {
     expect(byName(results, "GuardDuty protection plan").status).toBe("FAIL");
   });
 
-  it("fails when the rule is disabled or scoped to a different bucket", async () => {
+  it("fails when the plan is inactive or tagging is off", async () => {
+    const results = await run({
+      aws: (args) =>
+        args[1] === "get-malware-protection-plan"
+          ? ok({
+              ProtectedResource: { S3Bucket: { BucketName: BUCKET } },
+              Actions: { Tagging: { Status: "DISABLED" } },
+              Status: "ACTIVE",
+            })
+          : healthyAws()(args),
+    });
+    const check = byName(results, "GuardDuty protection plan");
+    expect(check.status).toBe("FAIL");
+    expect(check.detail).toContain("tagging=DISABLED");
+  });
+
+  it("fails when the rule filters the wrong bucket", async () => {
     const results = await run({
       aws: (args) =>
         args[1] === "describe-rule"
           ? ok({
               State: "ENABLED",
               EventPattern: JSON.stringify({
-                detail: { s3ObjectDetails: { bucketName: ["other-bucket"] } },
+                source: ["aws.guardduty"],
+                "detail-type": [
+                  "GuardDuty Malware Protection Object Scan Result",
+                ],
+                detail: {
+                  s3ObjectDetails: { bucketName: ["other-bucket"] },
+                },
               }),
             })
           : healthyAws()(args),
@@ -179,32 +241,174 @@ describe("verifyGuardDutyDelivery", () => {
     );
   });
 
+  it("fails when the pattern drops the organizations/ prefix filter", async () => {
+    const results = await run({
+      aws: (args) =>
+        args[1] === "describe-rule"
+          ? ok({
+              State: "ENABLED",
+              EventPattern: JSON.stringify({
+                source: ["aws.guardduty"],
+                "detail-type": [
+                  "GuardDuty Malware Protection Object Scan Result",
+                ],
+                detail: {
+                  s3ObjectDetails: { bucketName: [BUCKET] },
+                },
+              }),
+            })
+          : healthyAws()(args),
+    });
+    expect(byName(results, "EventBridge rule enabled and scoped").status).toBe(
+      "FAIL",
+    );
+  });
+
+  it("fails when the rule target points at a different destination", async () => {
+    const results = await run({
+      aws: (args) =>
+        args[1] === "list-targets-by-rule"
+          ? ok({
+              Targets: [
+                {
+                  Arn: "arn:aws:events:us-east-1:123:api-destination/other-dest/x",
+                  RoleArn:
+                    "arn:aws:iam::123:role/sarbase-prod-scan-event-invoke",
+                  DeadLetterConfig: {
+                    Arn: "arn:aws:sqs:us-east-1:123:sarbase-prod-guardduty-scan-dlq",
+                  },
+                  RetryPolicy: {
+                    MaximumRetryAttempts: 10,
+                    MaximumEventAgeInSeconds: 3600,
+                  },
+                },
+              ],
+            })
+          : healthyAws()(args),
+    });
+    expect(byName(results, "rule targets wired to this pipeline").status).toBe(
+      "FAIL",
+    );
+  });
+
+  it("fails when the retry policy drifts", async () => {
+    const results = await run({
+      aws: (args) =>
+        args[1] === "list-targets-by-rule"
+          ? ok({
+              Targets: [
+                {
+                  Arn: "arn:aws:events:us-east-1:123:api-destination/sarbase-prod-scan-ingest/x",
+                  RoleArn:
+                    "arn:aws:iam::123:role/sarbase-prod-scan-event-invoke",
+                  DeadLetterConfig: {
+                    Arn: "arn:aws:sqs:us-east-1:123:sarbase-prod-guardduty-scan-dlq",
+                  },
+                },
+              ],
+            })
+          : healthyAws()(args),
+    });
+    expect(byName(results, "rule targets wired to this pipeline").status).toBe(
+      "FAIL",
+    );
+  });
+
   it("fails when the API destination points at a different endpoint", async () => {
     const results = await run({
       aws: (args) =>
         args[1] === "describe-api-destination"
           ? ok({
-              ConnectionState: "AUTHORIZED",
+              ApiDestinationState: "ACTIVE",
               InvocationEndpoint: "https://evil.example.com/hook",
+              HttpMethod: "POST",
+              ConnectionArn:
+                "arn:aws:events:us-east-1:123:connection/sarbase-prod-scan-webhook/abc",
             })
           : healthyAws()(args),
     });
-    expect(
-      byName(results, "API destination authorized and pointed at the app")
-        .status,
-    ).toBe("FAIL");
+    expect(byName(results, "API destination wired to the app").status).toBe(
+      "FAIL",
+    );
   });
 
-  it("fails when the DLQ holds undelivered messages", async () => {
+  it("fails when the destination uses a non-POST method or wrong connection", async () => {
+    const results = await run({
+      aws: (args) =>
+        args[1] === "describe-api-destination"
+          ? ok({
+              ApiDestinationState: "ACTIVE",
+              InvocationEndpoint: ENDPOINT,
+              HttpMethod: "GET",
+              ConnectionArn:
+                "arn:aws:events:us-east-1:123:connection/other-conn/abc",
+            })
+          : healthyAws()(args),
+    });
+    const check = byName(results, "API destination wired to the app");
+    expect(check.status).toBe("FAIL");
+    expect(check.detail).toContain("HttpMethod=GET");
+  });
+
+  it("fails when the connection auth type is wrong", async () => {
+    const results = await run({
+      aws: (args) =>
+        args[1] === "describe-connection"
+          ? ok({
+              ConnectionState: "AUTHORIZED",
+              AuthType: "OAUTH_CLIENT_CREDENTIALS",
+            })
+          : healthyAws()(args),
+    });
+    expect(byName(results, "webhook connection authorized").status).toBe(
+      "FAIL",
+    );
+  });
+
+  it("fails when the DLQ holds visible OR in-flight messages", async () => {
     const results = await run({
       aws: (args) =>
         args[1] === "get-queue-attributes"
-          ? ok({ Attributes: { ApproximateNumberOfMessages: "3" } })
+          ? ok({
+              Attributes: {
+                ApproximateNumberOfMessages: "0",
+                ApproximateNumberOfMessagesNotVisible: "2",
+                ApproximateNumberOfMessagesDelayed: "0",
+              },
+            })
           : healthyAws()(args),
     });
     expect(
       byName(results, "dead-letter queue exists and is empty").status,
     ).toBe("FAIL");
+  });
+
+  it("fails when the alarm watches the wrong metric or queue", async () => {
+    const results = await run({
+      aws: (args) =>
+        args[1] === "describe-alarms"
+          ? ok({
+              MetricAlarms: [
+                {
+                  AlarmName: "sarbase-prod-guardduty-scan-dlq",
+                  StateValue: "OK",
+                  Namespace: "AWS/SQS",
+                  MetricName: "ApproximateAgeOfOldestMessage",
+                  Dimensions: [
+                    {
+                      Name: "QueueName",
+                      Value: "some-other-queue",
+                    },
+                  ],
+                  ComparisonOperator: "GreaterThanThreshold",
+                },
+              ],
+            })
+          : healthyAws()(args),
+    });
+    expect(byName(results, "DLQ CloudWatch alarm configured").status).toBe(
+      "FAIL",
+    );
   });
 
   it("fails when the ingest endpoint 404s (route not deployed)", async () => {
@@ -215,6 +419,15 @@ describe("verifyGuardDutyDelivery", () => {
     expect(
       byName(results, "ingest endpoint reachable and fails closed").status,
     ).toBe("FAIL");
+  });
+
+  it("fails when the endpoint redirects instead of terminating", async () => {
+    const results = await run({
+      fetch: (async () => new Response("", { status: 302 })) as typeof fetch,
+    });
+    const check = byName(results, "ingest endpoint reachable and fails closed");
+    expect(check.status).toBe("FAIL");
+    expect(check.detail).toContain("redirect");
   });
 
   it("reports MANUAL when GuardDuty is not API-visible", async () => {
