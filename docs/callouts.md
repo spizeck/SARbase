@@ -85,10 +85,13 @@ diverge.
 4. After commit — never inside the transaction — one notification per
    invitation is requested through `requestNotification` (issue #13)
    with the deterministic key
-   `callout:{calloutId}:invitation:{invitationId}:email` and template
-   `callout_invitation`. Member email preferences apply unchanged:
-   preference off or no email → the notification is `SUPPRESSED`, the
-   invitation stands, and the coordinator sees both facts.
+   `callout:{calloutId}:invitation:{invitationId}:email` (the `:email`
+   suffix is historical — the member's `preferredChannel`, default
+   EMAIL, selects the actual channel at dispatch time) and template
+   `callout_invitation`. Member notification preferences apply
+   unchanged: preference off, no destination, or missing WhatsApp
+   consent → the notification is `SUPPRESSED`, the invitation stands,
+   and the coordinator sees both facts.
 5. Per-invitation dispatch failures are caught and logged — a callout
    never disappears because one send failed. Replaying the activation
    (same key) resumes invitations that have no notification row.
