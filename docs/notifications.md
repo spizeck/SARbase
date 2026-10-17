@@ -223,6 +223,18 @@ A `FakeWhatsAppProvider` exists for development/tests; production never silently
 - **Unmatched/unknown**: acknowledged without storage — Meta retries
   unacknowledged webhooks, and unknown `wamid`s can arrive for messages
   sent outside SARbase.
+- **Inbound opt-out (issue #111)**: a bare STOP-style keyword (`stop`,
+  `stop all`, `unsubscribe`, `cancel`, `end`, `quit` — exact match
+  only) records `whatsappOptedOutAt` on every member whose stored E.164
+  phone matches the sender, across organizations — the sender number is
+  deployment-wide. Audited via `MemberContactChange` attributed to a
+  `whatsapp-webhook` actor. Every other inbound message is ignored;
+  SARbase never converses over WhatsApp.
+- **Dispatch-time consent re-check**: `dispatchAttempt` re-verifies live
+  consent under the notification row lock, so an opt-out recorded
+  between request and send can never be raced past. Never-dispatched
+  requests become `SUPPRESSED`/`consent_missing`; retries on revoked
+  consent refuse loudly.
 - Delivery/read state is a fact about the **message**, never the
   volunteer — it can never become an acknowledgment, availability
   signal, or readiness input.
