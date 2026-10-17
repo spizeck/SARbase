@@ -261,6 +261,29 @@ describe.skipIf(!hasDb)("whatsapp channel and consent", () => {
     );
   });
 
+  it("suppresses a direct-destination WHATSAPP send — consent is member-scoped", async () => {
+    // A memberless send names a raw destination and skips the member
+    // preference path entirely. For WhatsApp that must never bypass
+    // consent — the request records consent_missing and the provider
+    // is never invoked.
+    const provider = whatsappProvider();
+    const { notification } = await requestNotification(
+      {
+        organizationId: orgA.id,
+        channel: "WHATSAPP",
+        destination: "5994161234",
+        template: "admin_notice",
+        subject: "Direct send attempt",
+        idempotencyKey: uniq("key"),
+      },
+      actor.id,
+      { provider },
+    );
+    expect(notification.status).toBe("SUPPRESSED");
+    expect(notification.statusReason).toBe(SUPPRESSION_REASONS.CONSENT_MISSING);
+    expect(provider.calls).toHaveLength(0);
+  });
+
   /* ---------------- template dispatch ---------------- */
 
   it("dispatches a callout alert with Meta template params and the derived link", async () => {

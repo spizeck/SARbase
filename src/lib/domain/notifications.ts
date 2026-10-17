@@ -232,6 +232,17 @@ async function resolveRecipient(
   input: NotificationRequestInput,
 ): Promise<ResolvedRecipient> {
   if (!input.memberId) {
+    // WhatsApp sends are member-only — consent is a member-scoped fact,
+    // so a direct destination can never carry authorization to receive
+    // WhatsApp messages. Email keeps the administrative direct-send
+    // path.
+    if (input.channel === "WHATSAPP") {
+      return {
+        memberId: null,
+        destination: input.destination ?? null,
+        suppression: SUPPRESSION_REASONS.CONSENT_MISSING,
+      };
+    }
     return {
       memberId: null,
       destination: input.destination ?? null,
