@@ -187,17 +187,21 @@ export function ContactPreferencesForm({
   action,
   email,
   phone,
+  whatsappConsented = false,
   defaults,
   idPrefix = "contact",
 }: {
   action: BoundAction;
   email: string | null;
   phone: string | null;
+  /** Live WhatsApp consent (consented + not opted out). */
+  whatsappConsented?: boolean;
   defaults?: {
     notifyEmail: boolean;
     notifySms: boolean;
     notifyWhatsapp: boolean;
     notifyPush: boolean;
+    preferredChannel?: "EMAIL" | "WHATSAPP" | null;
   } | null;
   idPrefix?: string;
 }) {
@@ -261,6 +265,26 @@ export function ContactPreferencesForm({
           })}
         </ul>
       </fieldset>
+      <div>
+        <label htmlFor={`${idPrefix}-preferredChannel`} className={labelClass}>
+          Preferred channel
+        </label>
+        <p className="mt-1 text-xs text-neutral-500">
+          When more than one channel is enabled, notifications go to this one —
+          SARbase never switches channels silently.
+        </p>
+        <select
+          id={`${idPrefix}-preferredChannel`}
+          name="preferredChannel"
+          defaultValue={defaults?.preferredChannel ?? "EMAIL"}
+          className="mt-1 block w-full rounded border-neutral-300 text-sm"
+        >
+          <option value="EMAIL">Email</option>
+          <option value="WHATSAPP" disabled={!phone || !whatsappConsented}>
+            WhatsApp{!whatsappConsented ? " (requires consent)" : ""}
+          </option>
+        </select>
+      </div>
       {state.message && (
         <p className={errorClass} role="alert">
           {state.message}
@@ -660,6 +684,68 @@ export function SubmissionForm({
       )}
       <button type="submit" disabled={pending} className={buttonClass}>
         {pending ? "Submitting…" : "Submit for review"}
+      </button>
+    </form>
+  );
+}
+
+/**
+ * WhatsApp consent (issue #100) — self-service only. Consent is a
+ * legal fact separate from the willingness checkboxes: granting or
+ * opting out is explicit, timestamped, and audited. This form is the
+ * ONLY surface that writes consent — staff preference editors never
+ * render it.
+ */
+export function WhatsAppConsentForm({
+  action,
+  phone,
+  consentedAt,
+  optedOutAt,
+}: {
+  action: BoundAction;
+  phone: string | null;
+  consentedAt: Date | null;
+  optedOutAt: Date | null;
+}) {
+  const [state, formAction, pending] = useActionState(action, {});
+  const consented = consentedAt != null && optedOutAt == null;
+
+  return (
+    <form action={formAction} className="space-y-2">
+      <fieldset>
+        <legend className={labelClass}>WhatsApp consent</legend>
+        <p className="mt-1 text-xs text-neutral-500">
+          {consented
+            ? `You consented to SARbase WhatsApp messages on ${consentedAt!.toLocaleDateString()}. Consent covers operational notifications to ${phone ?? "your phone number"} — it is never proof a message was delivered or that you responded.`
+            : "SARbase can send operational messages (callout alerts, updates) to your phone number via WhatsApp — but only with your explicit consent. You can opt out at any time; opting out stops future WhatsApp sends without changing any delivery history."}
+        </p>
+        {!phone && (
+          <p className="mt-1 text-xs text-neutral-500">
+            A phone number on the member record is required before WhatsApp
+            messages can reach you.
+          </p>
+        )}
+      </fieldset>
+      <input
+        type="hidden"
+        name="consent"
+        value={consented ? "false" : "true"}
+      />
+      {state.message && (
+        <p className={errorClass} role="alert">
+          {state.message}
+        </p>
+      )}
+      <button
+        type="submit"
+        disabled={pending || (!consented && !phone)}
+        className={buttonClass}
+      >
+        {pending
+          ? "Saving…"
+          : consented
+            ? "Opt out of WhatsApp"
+            : "Consent to WhatsApp messages"}
       </button>
     </form>
   );

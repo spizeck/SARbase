@@ -19,7 +19,7 @@
  */
 
 /** Channels SARbase can dispatch on. Mirrors the Prisma enum. */
-export type NotificationChannelName = "EMAIL";
+export type NotificationChannelName = "EMAIL" | "WHATSAPP";
 
 /**
  * Normalized failure classification. `retryable` answers "could a later
@@ -59,6 +59,18 @@ export interface ProviderSendRequest {
    * re-invoked same attempt can dedupe at the provider when supported.
    */
   idempotencyKey: string;
+  /**
+   * Template dispatch for template-only channels (WHATSAPP): the Meta
+   * template name, language code, and positional body parameters —
+   * resolved per attempt from the internal template registry
+   * (whatsapp-templates.ts) so a retry sends identical content.
+   * EMAIL providers ignore this field entirely.
+   */
+  template?: {
+    name: string;
+    language: string;
+    parameters: string[];
+  } | null;
 }
 
 /**

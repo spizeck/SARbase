@@ -890,8 +890,18 @@ export const contactPreferenceSchema = z.object({
   notifySms: checkboxSchema,
   notifyWhatsapp: checkboxSchema,
   notifyPush: checkboxSchema,
+  // Issue #100 — the member's preferred channel; absent keeps current.
+  preferredChannel: z.enum(["EMAIL", "WHATSAPP"]).optional(),
 });
 export type ContactPreferenceInput = z.infer<typeof contactPreferenceSchema>;
+
+/**
+ * WhatsApp consent (issue #100) — a separate, self-service-only fact.
+ * The action accepts an explicit boolean ("true"/"false"), never the
+ * presence of a checkbox alone, so a form that omits the field cannot
+ * silently revoke consent.
+ */
+export const whatsappConsentSchema = z.enum(["true", "false"]);
 
 /* ------------------------------------------------------------------ */
 /* Notifications (issue #13)                                           */

@@ -35,6 +35,7 @@ import { phoneRegionOptions } from "@/lib/contact";
 import {
   updateMyAvailabilityAction,
   updateMyContactPreferencesAction,
+  updateMyWhatsappConsentAction,
   respondToMyInvitationAction,
   updateMyContactDetailsAction,
   createMySubmissionAction,
@@ -44,6 +45,7 @@ import {
   CalloutResponseForm,
   ContactDetailsForm,
   ContactPreferencesForm,
+  WhatsAppConsentForm,
   SubmissionForm,
 } from "./forms";
 import {
@@ -339,9 +341,24 @@ export default async function AccountPage() {
                     )}
                     email={member.email}
                     phone={member.phone}
+                    whatsappConsented={
+                      preference?.whatsappConsentAt != null &&
+                      preference.whatsappOptedOutAt == null
+                    }
                     defaults={preference}
                     idPrefix={`contact-${member.id}`}
                   />
+                  <div className="mt-4 border-t border-neutral-200 pt-3">
+                    <WhatsAppConsentForm
+                      action={updateMyWhatsappConsentAction.bind(
+                        null,
+                        member.id,
+                      )}
+                      phone={member.phone}
+                      consentedAt={preference?.whatsappConsentAt ?? null}
+                      optedOutAt={preference?.whatsappOptedOutAt ?? null}
+                    />
+                  </div>
                 </div>
               </details>
             </div>

@@ -1516,16 +1516,37 @@ model MemberAvailabilityUpdate {
 // posture as member detail edits. Cascade keeps the row consistent if a
 // member row is ever removed at the database level; the application
 // surface never deletes members.
+// The channel a member prefers for member-targeted notifications.
+// NULL means no explicit choice — treated as EMAIL. Willingness
+// (notify*) and consent (whatsapp*) are still enforced per channel;
+// a preferred channel that cannot dispatch suppresses honestly,
+// it never silently substitutes another channel.
+enum PreferredContactChannel {
+  EMAIL
+  WHATSAPP
+}
+
 model MemberNotificationPreference {
-  id             String   @id @default(cuid())
-  organizationId String
-  memberId       String
-  notifyEmail    Boolean  @default(false)
-  notifySms      Boolean  @default(false)
-  notifyWhatsapp Boolean  @default(false)
-  notifyPush     Boolean  @default(false)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id                                  String                   @id @default(cuid())
+  organizationId                      String
+  memberId                            String
+  notifyEmail                         Boolean                  @default(false)
+  notifySms                           Boolean                  @default(false)
+  notifyWhatsapp                      Boolean                  @default(false)
+  notifyPush                          Boolean                  @default(false)
+  // Issue #100 — explicit preferred channel for member-targeted
+  // notifications; NULL = EMAIL.
+  preferredChannel                    PreferredContactChannel?
+  // Issue #100 — WhatsApp consent. Consent is a separate, stricter
+  // fact than willingness: it can only be recorded by the member
+  // themselves (self-service), is timestamped, and is revoked by
+  // whatsappOptedOutAt. Administrators may edit the notify* flags but
+  // can never manufacture consent — dispatch requires both.
+  whatsappConsentAt                   DateTime?
+  whatsappConsentRecordedByIdentityId String?
+  whatsappOptedOutAt                  DateTime?
+  createdAt                           DateTime                 @default(now())
+  updatedAt                           DateTime                 @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   member       Member       @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Cascade)
@@ -1547,11 +1568,13 @@ model MemberNotificationPreference {
 // or response conclusion.
 // ---------------------------------------------------------------------------
 
-// Delivery channels SARbase can send on. EMAIL is the baseline; SMS,
-// WhatsApp, and push are deliberately deferred (the provider seam is
-// documented in docs/notifications.md).
+// Delivery channels SARbase can send on. EMAIL is the baseline;
+// WHATSAPP arrived with issue #100 (Meta Cloud API, template-only).
+// SMS and push remain deferred (the provider seam is documented in
+// docs/notifications.md).
 enum NotificationChannel {
   EMAIL
+  WHATSAPP
 }
 
 // The factual lifecycle of a notification request:

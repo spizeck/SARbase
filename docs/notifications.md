@@ -37,7 +37,7 @@ types; adapters (`src/lib/notifications/*.ts`) never see Prisma types.
 ### `Notification` — the durable request
 
 One row per logical send. `organizationId`, optional `memberId` (composite
-same-org FK), `channel` (`EMAIL`), `template`, `subject`/`bodyText`
+same-org FK), `channel` (`EMAIL` | `WHATSAPP`), `template`, `subject`/`bodyText`
 (stored so retries replay the _exact_ message — a request whose content
 cannot be reproduced cannot be retried deterministically), `destination`
 snapshot, `metadata` (small structured ids/codes only — never bodies or
@@ -58,12 +58,12 @@ returns — and never deleted (`Restrict` on both FKs).
 
 ### Statuses — facts, not conclusions
 
-| `Notification.status` | Meaning                                                                                                                   |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `PENDING`             | Recorded; dispatch in flight or an attempt's outcome unknown.                                                             |
-| `SUPPRESSED`          | Never dispatched; `statusReason` says why (`preference_disabled`, `destination_missing`). Not a failure.                  |
-| `ACCEPTED`            | The provider accepted the message. **Not** proof of delivery — delivery confirmation needs a provider webhook (deferred). |
-| `FAILED`              | Dispatched and not accepted; the last attempt carries the classification.                                                 |
+| `Notification.status` | Meaning                                                                                                                     |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `PENDING`             | Recorded; dispatch in flight or an attempt's outcome unknown.                                                               |
+| `SUPPRESSED`          | Never dispatched; `statusReason` says why (`preference_disabled`, `destination_missing`, `consent_missing`). Not a failure. |
+| `ACCEPTED`            | The provider accepted the message. **Not** proof of delivery — delivery confirmation needs a provider webhook (deferred).   |
+| `FAILED`              | Dispatched and not accepted; the last attempt carries the classification.                                                   |
 
 Attempt statuses: `DISPATCHING` (written before the provider call;
 permanently DISPATCHING honestly means "invoked, outcome never
@@ -81,6 +81,37 @@ request-creation time:
 - Preference on but `Member.email` missing → `SUPPRESSED` /
   `destination_missing`. (The write path normally prevents this
   combination; the check remains because rows can drift.)
+
+### WhatsApp (issue #100)
+
+A member-targeted `WHATSAPP` request requires **three** separate facts —
+willingness is not consent:
+
+1. `notifyWhatsapp = true` on the preference row (editable by the member
+   and by staff with member-management capability);
+2. **live consent** — `whatsappConsentAt` set and `whatsappOptedOutAt`
+   unset. Consent can only be recorded through the member's own
+   self-service action (`setMemberWhatsappConsent`), is timestamped and
+   attributed, and is revoked by opting out. Administrators can never
+   manufacture it — the staff preference editor cannot reach the consent
+   fields;
+3. `Member.phone` normalizable to E.164 (bare digits are the stored
+   destination snapshot — Meta's `to` field).
+
+Missing willingness → `preference_disabled`; missing consent →
+`consent_missing`; unusable phone → `destination_missing` — all
+`SUPPRESSED`, all honest facts on the request record.
+
+`preferredChannel` on the preference row (EMAIL default) is the member's
+explicit channel choice. Callouts and other member-targeted sends honor
+it — a preferred channel that cannot dispatch suppresses; SARbase never
+silently substitutes the other channel.
+
+WhatsApp sends are **template-only** (Meta's business-initiated rule).
+Internal template ids map to proposed Meta-approved names in
+`src/lib/notifications/whatsapp-templates.ts`; template parameters are
+built at dispatch time — including the secure response link, which is
+derived per send and never stored in the request body.
 
 The `destination` column is a **snapshot**: if the member changes their
 email the next day, history still shows the address actually used. The
@@ -250,10 +281,10 @@ production, so CI never sends real email and needs no credentials.
 
 ## Deferred — deliberately not built
 
-Responder-facing channels beyond email, SMS/WhatsApp/push providers,
-multi-channel escalation, automatic/background retries, provider delivery
-webhooks (real `DELIVERED` state), a generic workflow engine, incident
-workflow (#15), and global search (#18). Callout orchestration (#14)
+SMS/push providers, multi-channel escalation, automatic/background
+retries, a generic workflow engine, incident workflow (#15), and global
+search (#18). WhatsApp delivery-status webhooks (real `DELIVERED`/`READ`
+state) land with issue #101. Callout orchestration (#14)
 builds on this foundation — one `callout_invitation` request per
 invitation with a deterministic idempotency key — see
 [`docs/callouts.md`](callouts.md).

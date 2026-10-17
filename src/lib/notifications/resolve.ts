@@ -1,4 +1,8 @@
-import { parseAppEnvironment, parseNotificationEnvironment } from "@/lib/env";
+import {
+  parseAppEnvironment,
+  parseNotificationEnvironment,
+  parseWhatsAppEnvironment,
+} from "@/lib/env";
 
 import { FakeNotificationProvider } from "./fake";
 import {
@@ -7,6 +11,7 @@ import {
   type NotificationProvider,
 } from "./provider";
 import { ResendEmailProvider } from "./resend";
+import { MetaWhatsAppProvider } from "./whatsapp";
 
 /**
  * Resolve the configured provider for a channel from the environment.
@@ -39,6 +44,9 @@ export function resolveNotificationProvider(
   channel: NotificationChannelName,
   values: Record<string, string | undefined> = process.env,
 ): NotificationProvider {
+  if (channel === "WHATSAPP") {
+    return resolveWhatsAppProvider(values);
+  }
   if (channel !== "EMAIL") {
     throw new NotificationConfigError(
       `No notification provider is implemented for channel ${channel}.`,
@@ -79,4 +87,57 @@ export function resolveNotificationProvider(
     );
   }
   return new FakeNotificationProvider();
+}
+
+/**
+ * WhatsApp provider resolution — the same fail-closed contract as the
+ * email resolver (issue #100):
+ * - WHATSAPP_PROVIDER=meta, or unset with WHATSAPP_ACCESS_TOKEN
+ *   present → Meta Cloud API; requires the token AND
+ *   WHATSAPP_PHONE_NUMBER_ID.
+ * - Preview deployments cannot send real WhatsApp traffic merely
+ *   because envs exist — meta on preview also requires
+ *   ALLOW_WHATSAPP_IN_PREVIEW=true (a dedicated sandbox sender).
+ * - Production must never silently use the fake — unconfigured or
+ *   explicitly-fake production throws, so a missing credential fails
+ *   the send loudly instead of pretending delivery.
+ */
+function resolveWhatsAppProvider(
+  values: Record<string, string | undefined>,
+): NotificationProvider {
+  const env = parseWhatsAppEnvironment(values);
+  const app = parseAppEnvironment(values);
+  const isProduction =
+    app.VERCEL_ENV === "production" || process.env.NODE_ENV === "production";
+  const isPreview = app.VERCEL_ENV === "preview";
+
+  const selection =
+    env.WHATSAPP_PROVIDER ??
+    (env.WHATSAPP_ACCESS_TOKEN && !isPreview ? "meta" : "fake");
+
+  if (selection === "meta") {
+    if (!env.WHATSAPP_ACCESS_TOKEN || !env.WHATSAPP_PHONE_NUMBER_ID) {
+      throw new NotificationConfigError(
+        "Notification provider 'meta' requires WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID.",
+      );
+    }
+    if (isPreview && app.ALLOW_WHATSAPP_IN_PREVIEW !== "true") {
+      throw new NotificationConfigError(
+        "Notification provider 'meta' is not permitted on preview deployments by default. To send real WhatsApp traffic from a preview deliberately (a dedicated sandbox sender), set ALLOW_WHATSAPP_IN_PREVIEW=true as a preview-scoped variable.",
+      );
+    }
+    return new MetaWhatsAppProvider({
+      accessToken: env.WHATSAPP_ACCESS_TOKEN,
+      phoneNumberId: env.WHATSAPP_PHONE_NUMBER_ID,
+      apiVersion: env.WHATSAPP_API_VERSION,
+    });
+  }
+
+  // selection === "fake"
+  if (isProduction) {
+    throw new NotificationConfigError(
+      "Notification provider 'fake' is not permitted in production. Configure WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID.",
+    );
+  }
+  return new FakeNotificationProvider({ channel: "WHATSAPP" });
 }

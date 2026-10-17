@@ -290,3 +290,113 @@ export async function setMemberContactPreference(
   });
   return preference;
 }
+
+/* ------------------------------------------------------------------ */
+/* WhatsApp consent (issue #100)                                       */
+/*                                                                     */
+/* Consent is a separate, stricter fact than the notifyWhatsapp        */
+/* willingness flag: it is timestamped, attributed to the recording    */
+/* identity, and may only be written through this function — which is  */
+/* called exclusively from the member's own self-service path.         */
+/* Administrators editing preferences never reach it, so staff cannot  */
+/* manufacture a member's consent. Every change also lands on the      */
+/* MemberContactChange audit trail, so consent history is provable.    */
+/* ------------------------------------------------------------------ */
+
+/** True when the preference row holds live (not opted-out) consent. */
+export function hasWhatsAppConsent(
+  preference:
+    | { whatsappConsentAt: Date | null; whatsappOptedOutAt: Date | null }
+    | null
+    | undefined,
+): boolean {
+  return (
+    preference?.whatsappConsentAt != null &&
+    preference.whatsappOptedOutAt == null
+  );
+}
+
+/**
+ * Record or revoke the member's own WhatsApp consent. Granting sets a
+ * fresh consent timestamp and clears any prior opt-out; revoking stamps
+ * the opt-out while keeping the historical consent row for audit. The
+ * MemberContactChange row makes the transition attributable — this
+ * never touches historical Notification records.
+ */
+export async function setMemberWhatsappConsent(
+  memberId: string,
+  consent: boolean,
+  actorAuthIdentityId: string,
+) {
+  const member = await prisma.member.findUniqueOrThrow({
+    where: { id: memberId },
+    select: {
+      organizationId: true,
+      notificationPreference: {
+        select: {
+          whatsappConsentAt: true,
+          whatsappOptedOutAt: true,
+        },
+      },
+    },
+  });
+  const now = new Date();
+  const wasConsented = hasWhatsAppConsent(member.notificationPreference);
+  if (wasConsented === consent) {
+    // No state change — return the row when one exists; with no row at
+    // all, fall through so an explicit opt-out still lands on the
+    // audit trail.
+    const existing = await getMemberContactPreference(memberId);
+    if (existing) return existing;
+  }
+
+  const preference = await prisma.$transaction(async (tx) => {
+    const updated = await tx.memberNotificationPreference.upsert({
+      where: {
+        memberId_organizationId: {
+          memberId,
+          organizationId: member.organizationId,
+        },
+      },
+      create: {
+        organizationId: member.organizationId,
+        memberId,
+        whatsappConsentAt: consent ? now : null,
+        whatsappConsentRecordedByIdentityId: consent
+          ? actorAuthIdentityId
+          : null,
+        whatsappOptedOutAt: consent ? null : now,
+      },
+      update: consent
+        ? {
+            whatsappConsentAt: now,
+            whatsappConsentRecordedByIdentityId: actorAuthIdentityId,
+            whatsappOptedOutAt: null,
+          }
+        : { whatsappOptedOutAt: now },
+    });
+    await tx.memberContactChange.create({
+      data: {
+        organizationId: member.organizationId,
+        memberId,
+        field: "whatsappConsent",
+        previousValue: wasConsented ? "granted" : null,
+        newValue: consent ? "granted" : "opted_out",
+        selfReported: true,
+        actorAuthIdentityId,
+      },
+    });
+    return updated;
+  });
+
+  log({
+    event: consent
+      ? "contact_preference.whatsapp_consent_granted"
+      : "contact_preference.whatsapp_consent_revoked",
+    subsystem: "domain",
+    entityType: "Member",
+    entityId: memberId,
+    organizationId: member.organizationId,
+  });
+  return preference;
+}

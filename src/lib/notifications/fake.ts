@@ -21,7 +21,7 @@ import type {
  */
 export class FakeNotificationProvider implements NotificationProvider {
   readonly providerName = "fake";
-  readonly channel = "EMAIL" as const;
+  readonly channel: "EMAIL" | "WHATSAPP";
 
   /** Every request this instance was asked to send, in order. */
   readonly calls: ProviderSendRequest[] = [];
@@ -31,12 +31,15 @@ export class FakeNotificationProvider implements NotificationProvider {
 
   constructor(
     options: {
+      /** Channel this fake serves — EMAIL unless a test asks otherwise. */
+      channel?: "EMAIL" | "WHATSAPP";
       /** Outcomes consumed in order; exhausted script → defaultResult. */
       results?: ProviderSendResult[];
       /** Outcome once the script is exhausted. Default: accepted. */
       defaultResult?: ProviderSendResult;
     } = {},
   ) {
+    this.channel = options.channel ?? "EMAIL";
     this.script = [...(options.results ?? [])];
     this.defaultResult = options.defaultResult ?? {
       status: "accepted",

@@ -220,6 +220,7 @@ export const appEnvironmentSchema = z.object({
   ALLOW_FIREBASE_ADMIN_IN_PREVIEW: z.string().optional(),
   ALLOW_RESEND_IN_PREVIEW: z.string().optional(),
   ALLOW_S3_IN_PREVIEW: z.string().optional(),
+  ALLOW_WHATSAPP_IN_PREVIEW: z.string().optional(),
 });
 
 export type AppEnvironment = z.infer<typeof appEnvironmentSchema>;
@@ -390,6 +391,44 @@ export function parseNotificationEnvironment(
   values: Record<string, string | undefined> = process.env,
 ): NotificationEnvironment {
   return notificationEnvironmentSchema.parse(values);
+}
+
+/**
+ * WhatsApp channel configuration (issue #100) — server-only.
+ *
+ * - WHATSAPP_PROVIDER: explicit provider selection, "meta" or "fake".
+ *   Optional; when unset the resolver picks "meta" if
+ *   WHATSAPP_ACCESS_TOKEN is present and otherwise fails closed in
+ *   production or falls back to "fake" in development/test — the same
+ *   contract as the email resolver (src/lib/notifications/resolve.ts).
+ * - WHATSAPP_ACCESS_TOKEN: Meta system-user access token. SECRET.
+ * - WHATSAPP_PHONE_NUMBER_ID: numeric id of the sending phone number
+ *   (not the number itself) — Meta API Setup page.
+ * - WHATSAPP_API_VERSION: pinned Graph API version, e.g. "v24.0".
+ *   Defaults in the provider; pin deliberately at activation.
+ * - WHATSAPP_APP_SECRET: Meta app secret used to verify webhook
+ *   signatures (X-Hub-Signature-256). SECRET.
+ * - WHATSAPP_WEBHOOK_VERIFY_TOKEN: shared token for the Meta webhook
+ *   challenge handshake. SECRET — generated at activation.
+ */
+export const whatsappEnvironmentSchema = z.object({
+  WHATSAPP_PROVIDER: z.enum(["meta", "fake"]).optional(),
+  WHATSAPP_ACCESS_TOKEN: z.string().min(1).optional(),
+  WHATSAPP_PHONE_NUMBER_ID: z.string().min(1).optional(),
+  WHATSAPP_API_VERSION: z
+    .string()
+    .regex(/^v\d+\.\d+$/)
+    .optional(),
+  WHATSAPP_APP_SECRET: z.string().min(1).optional(),
+  WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().min(1).optional(),
+});
+
+export type WhatsAppEnvironment = z.infer<typeof whatsappEnvironmentSchema>;
+
+export function parseWhatsAppEnvironment(
+  values: Record<string, string | undefined> = process.env,
+): WhatsAppEnvironment {
+  return whatsappEnvironmentSchema.parse(values);
 }
 
 /**

@@ -26,6 +26,8 @@ import type {
   NotificationProvider,
 } from "@/lib/notifications/provider";
 import { resolveNotificationProvider } from "@/lib/notifications/resolve";
+import { normalizePhoneToE164Digits } from "@/lib/notifications/phone";
+import { resolveWhatsAppTemplate } from "@/lib/notifications/whatsapp-templates";
 
 /**
  * Notification request and delivery records (issue #13).
@@ -110,6 +112,7 @@ export class NotificationRecipientError extends Error {
 export const SUPPRESSION_REASONS = {
   PREFERENCE_DISABLED: "preference_disabled",
   DESTINATION_MISSING: "destination_missing",
+  CONSENT_MISSING: "consent_missing",
 } as const;
 export type SuppressionReason =
   (typeof SUPPRESSION_REASONS)[keyof typeof SUPPRESSION_REASONS];
@@ -129,7 +132,8 @@ export const NOTIFICATION_ATTEMPT_STATUS_LABELS: Record<string, string> = {
 
 export const SUPPRESSION_REASON_LABELS: Record<string, string> = {
   preference_disabled: "Member preference does not allow this channel",
-  destination_missing: "No destination on the member record",
+  destination_missing: "No usable destination on the member record",
+  consent_missing: "Member has not granted WhatsApp consent",
 };
 
 export interface NotificationRequestInput {
@@ -231,7 +235,15 @@ async function resolveRecipient(
     select: {
       id: true,
       email: true,
-      notificationPreference: { select: { notifyEmail: true } },
+      phone: true,
+      notificationPreference: {
+        select: {
+          notifyEmail: true,
+          notifyWhatsapp: true,
+          whatsappConsentAt: true,
+          whatsappOptedOutAt: true,
+        },
+      },
     },
   });
   if (!member) {
@@ -260,8 +272,39 @@ async function resolveRecipient(
     };
   }
 
-  // Unreachable while EMAIL is the only channel — future channels add
-  // their preference/destination check here.
+  if (input.channel === "WHATSAPP") {
+    const preference = member.notificationPreference;
+    const destination = normalizePhoneToE164Digits(member.phone);
+    if (preference?.notifyWhatsapp !== true) {
+      return {
+        memberId: member.id,
+        destination,
+        suppression: SUPPRESSION_REASONS.PREFERENCE_DISABLED,
+      };
+    }
+    // Willingness is not consent: WhatsApp dispatch also requires a
+    // member-recorded consent that has not been opted out of. An admin
+    // toggling notifyWhatsapp can never satisfy this check.
+    const consented =
+      preference.whatsappConsentAt != null &&
+      preference.whatsappOptedOutAt == null;
+    if (!consented) {
+      return {
+        memberId: member.id,
+        destination,
+        suppression: SUPPRESSION_REASONS.CONSENT_MISSING,
+      };
+    }
+    if (!destination) {
+      return {
+        memberId: member.id,
+        destination: null,
+        suppression: SUPPRESSION_REASONS.DESTINATION_MISSING,
+      };
+    }
+    return { memberId: member.id, destination, suppression: null };
+  }
+
   throw new Error(`Unsupported notification channel: ${input.channel}`);
 }
 
@@ -323,17 +366,17 @@ function dispatchEligibilityError(
  * callout/member context) is a programming or data bug — throwing here
  * records no attempt and emails nobody a dead link.
  */
-async function resolveDispatchBodyText(
+/**
+ * The secure link this notification's send should carry — derived at
+ * dispatch time, never persisted. Shared by EMAIL body substitution
+ * and WHATSAPP template parameters: both channel paths must carry the
+ * same credential per send, and the hash-update side effect keeps the
+ * invitation's lookup aligned with whichever channel delivered it.
+ * Returns null when the notification carries no secure-link context.
+ */
+async function resolveSecureLink(
   notification: Notification,
 ): Promise<string | null> {
-  const text = notification.bodyText;
-  if (
-    text == null ||
-    (!text.includes(CALLOUT_RESPONSE_URL_PLACEHOLDER) &&
-      !text.includes(MEMBER_INVITATION_URL_PLACEHOLDER))
-  ) {
-    return text;
-  }
   const metadata = (notification.metadata ?? null) as {
     calloutId?: string;
     invitationId?: string;
@@ -360,14 +403,11 @@ async function resolveDispatchBodyText(
         responseTokenHash: createHash("sha256").update(token).digest("hex"),
       },
     });
-    return text.replaceAll(
-      CALLOUT_RESPONSE_URL_PLACEHOLDER,
-      `${resolveSiteUrl()}/respond?t=${encodeURIComponent(token)}`,
-    );
+    return `${resolveSiteUrl()}/respond?t=${encodeURIComponent(token)}`;
   }
-  // Member invitations: the emailed link derives from the invitation's
-  // CURRENT tokenVersion, so a send after a resend carries the live link
-  // and the stored hash stays aligned with what actually went out.
+  // Member invitations: the link derives from the invitation's
+  // CURRENT tokenVersion, so a send after a resend carries the live
+  // link and the stored hash stays aligned with what actually went out.
   if (
     notification.template === MEMBER_INVITATION_TEMPLATE &&
     metadata?.invitationId
@@ -397,14 +437,92 @@ async function resolveDispatchBodyText(
         tokenHash: createHash("sha256").update(token).digest("hex"),
       },
     });
-    return text.replaceAll(
-      MEMBER_INVITATION_URL_PLACEHOLDER,
-      `${resolveSiteUrl()}/invite?t=${encodeURIComponent(token)}`,
+    return `${resolveSiteUrl()}/invite?t=${encodeURIComponent(token)}`;
+  }
+  return null;
+}
+
+async function resolveDispatchBodyText(
+  notification: Notification,
+): Promise<string | null> {
+  const text = notification.bodyText;
+  if (
+    text == null ||
+    (!text.includes(CALLOUT_RESPONSE_URL_PLACEHOLDER) &&
+      !text.includes(MEMBER_INVITATION_URL_PLACEHOLDER))
+  ) {
+    return text;
+  }
+  const link = await resolveSecureLink(notification);
+  if (link == null) {
+    throw new Error(
+      `Notification ${notification.id} carries an unresolvable response-link placeholder.`,
     );
   }
-  throw new Error(
-    `Notification ${notification.id} carries an unresolvable response-link placeholder.`,
-  );
+  return text
+    .replaceAll(CALLOUT_RESPONSE_URL_PLACEHOLDER, link)
+    .replaceAll(MEMBER_INVITATION_URL_PLACEHOLDER, link);
+}
+
+/**
+ * The provider template envelope for a WHATSAPP send — the Meta name,
+ * language, and ordered parameters from the internal registry
+ * (whatsapp-templates.ts). The secure link is derived here through the
+ * same per-attempt path as EMAIL so the credential a member receives
+ * is identical on either channel, and no parameter ever comes from a
+ * stored body (which holds only placeholders).
+ *
+ * An unregistered template id is a programming bug — throwing before
+ * any attempt row leaves the request honestly PENDING rather than
+ * recording a phantom dispatch.
+ */
+async function resolveWhatsAppDispatchTemplate(
+  notification: Notification,
+): Promise<{ name: string; language: string; parameters: string[] }> {
+  const spec = resolveWhatsAppTemplate(notification.template);
+  if (!spec) {
+    throw new Error(
+      `Notification template '${notification.template}' has no WhatsApp registration.`,
+    );
+  }
+  const metadata = (notification.metadata ?? null) as {
+    calloutId?: string;
+  } | null;
+  const organization = await prisma.organization.findUniqueOrThrow({
+    where: { id: notification.organizationId },
+    select: { name: true },
+  });
+  // The short subject is the callout title when the request carries
+  // callout context; otherwise the stored notification subject (which
+  // is operator-authored, not member data).
+  let subject = notification.subject;
+  if (metadata?.calloutId) {
+    const callout = await prisma.callout.findUnique({
+      where: {
+        id: metadata.calloutId,
+        organizationId: notification.organizationId,
+      },
+      select: { title: true },
+    });
+    subject = callout?.title ?? subject;
+  }
+  const secureLink = spec.requiresSecureLink
+    ? await resolveSecureLink(notification)
+    : null;
+  if (spec.requiresSecureLink && secureLink == null) {
+    throw new Error(
+      `Notification ${notification.id} requires a secure-link parameter that cannot be resolved.`,
+    );
+  }
+  return {
+    name: spec.metaName,
+    language: spec.language,
+    parameters: spec.parameters({
+      organizationName: organization.name,
+      subject,
+      secureLink,
+    }),
+  };
 }
 
 /**
@@ -435,6 +553,15 @@ async function dispatchAttempt(
   // retry alike. A placeholder that cannot be resolved fails loudly
   // rather than emailing a member a dead link.
   const dispatchText = await resolveDispatchBodyText(notification);
+
+  // Template channels resolve their Meta envelope the same way —
+  // BEFORE the attempt row, so an unregistered template fails the
+  // request loudly instead of stranding a DISPATCHING attempt. EMAIL
+  // carries no template; providers for it ignore the field entirely.
+  const whatsappTemplate =
+    notification.channel === "WHATSAPP"
+      ? await resolveWhatsAppDispatchTemplate(notification)
+      : null;
 
   let attempt;
   try {
@@ -498,6 +625,7 @@ async function dispatchAttempt(
       // re-invoked SAME attempt dedupes at the provider; a deliberate
       // retry is a new attempt number and a new provider operation.
       idempotencyKey: `${notification.id}/attempt-${attempt.attemptNumber}`,
+      template: whatsappTemplate,
     });
   } catch (error) {
     // A provider that throws instead of returning a failure outcome is

@@ -16,6 +16,7 @@ import { prisma } from "@/lib/prisma";
 import {
   recordMemberAvailability,
   setMemberContactPreference,
+  setMemberWhatsappConsent,
   AvailabilityInputError,
   ContactPreferenceDestinationError,
 } from "@/lib/domain/availability";
@@ -28,6 +29,7 @@ import {
   availabilityUpdateSchema,
   calloutResponseSchema,
   contactPreferenceSchema,
+  whatsappConsentSchema,
   memberContactDetailsSchema,
   memberSubmissionInputSchema,
   attachmentMutationSchema,
@@ -205,11 +207,51 @@ export async function updateMyContactPreferencesAction(
     notifySms: formData.get("notifySms"),
     notifyWhatsapp: formData.get("notifyWhatsapp"),
     notifyPush: formData.get("notifyPush"),
+    preferredChannel: formData.get("preferredChannel") ?? undefined,
   });
   if (!parsed.success) return zodErrors(parsed.error);
 
   try {
     await setMemberContactPreference(member.id, parsed.data);
+  } catch (error) {
+    return mapError(error);
+  }
+  revalidatePath("/account");
+  return {};
+}
+
+/**
+ * WhatsApp consent (issue #100) — self-service ONLY by design. This
+ * action exists only on the member's own account surface; there is
+ * deliberately no admin counterpart, so staff can never manufacture a
+ * member's consent. Granting and opting out are both explicit,
+ * timestamped, and audited (MemberContactChange).
+ */
+export async function updateMyWhatsappConsentAction(
+  memberId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  let ctx: AuthContext;
+  let member;
+  try {
+    ctx = await getAuthContextOrThrow();
+    member = resolveOwnMember(ctx, memberId);
+  } catch (error) {
+    return mapError(error);
+  }
+
+  const parsed = whatsappConsentSchema.safeParse(formData.get("consent"));
+  if (!parsed.success) {
+    return { message: "Choose whether to consent to WhatsApp messages." };
+  }
+
+  try {
+    await setMemberWhatsappConsent(
+      member.id,
+      parsed.data === "true",
+      ctx.identity.id,
+    );
   } catch (error) {
     return mapError(error);
   }
