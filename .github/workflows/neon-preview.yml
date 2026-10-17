@@ -125,6 +125,12 @@ jobs:
 
       # Idempotent: reuses the existing branch on synchronize, recreates
       # it on reopened. Always a child of `testing`, never `main`.
+      # The provision step stamps/renews a 14-day expires_at TTL on the
+      # branch via the Neon API (deliberately not via this action's
+      # expires_at input: a rejected input would fail the whole step,
+      # while the script's PATCH degrades gracefully to
+      # teardown/reconcile cleanup — expiration is Early Access). The
+      # weekly reconcile renews the TTL for still-open PRs.
       - if: steps.gate.outputs.provision == 'true'
         name: Create or reuse Neon branch preview/pr-${{ github.event.pull_request.number }}
         id: neon
@@ -212,6 +218,10 @@ jobs:
 
   reconcile:
     name: Reconcile stale preview branches
+    # Weekly sweep (Mondays 04:17 UTC): renews the expires_at TTL on
+    # preview branches whose PR is still open — the heartbeat that keeps
+    # quiet long-lived PRs' databases alive — and reports branches whose
+    # PR is closed (dry-run only; deletion stays manual).
     if: >-
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
       vars.NEON_PROJECT_ID != ''

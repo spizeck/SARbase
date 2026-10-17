@@ -22,18 +22,28 @@
  *     same-repo, non-Dependabot open PR is eligible automatically —
  *     no label required. Denies Dependabot-authored PRs outright,
  *     fork PRs, and PRs that are not open.
- *   reconcile — scheduled sweep: delete `preview/pr-*` branches whose
- *     PR is no longer open (e.g. teardown missed because of a race or
- *     a force-deleted head), plus their Vercel env vars. Dry-run is the
- *     default — deletion requires DRY_RUN=false, which the workflow
- *     only allows on manual dispatch. Branches whose owning PR cannot
- *     be verified, and branches for recently-closed PRs, are retained.
+ *   reconcile — scheduled sweep: renew the expiration on `preview/pr-*`
+ *     branches whose PR is still open (the heartbeat that keeps quiet
+ *     long-lived PRs' databases alive), and report `preview/pr-*`
+ *     branches whose PR is no longer open. Deletion reporting is
+ *     dry-run only — deletion requires DRY_RUN=false, which the
+ *     workflow only allows on manual dispatch.
+ *
+ * Branch expiration: every preview branch carries an `expires_at` TTL
+ * (PREVIEW_BRANCH_TTL_MS, 14 days) — stamped during provisioning and
+ * renewed on every provision and weekly reconcile while its PR is
+ * open. TTL is
+ * the backstop for missed teardowns; reconcile's weekly renewal keeps
+ * quiet open PRs alive (TTL >> sweep interval gives every open branch
+ * two renewal chances before expiry). Permanent branches (main,
+ * testing) can never receive an expiry — setBranchExpiration refuses
+ * non-preview names.
  *
  * Safety invariants enforced here, not just in YAML:
  *   - preview branches must match `preview/pr-<digits>` exactly;
  *   - a preview branch's parent must be the `testing` branch;
  *   - primary/protected branches and `main`/`testing` are never
- *     deleted;
+ *     deleted and never receive an expiry;
  *   - Dependabot PRs can never provision, no matter which code path is
  *     taken;
  *   - no credential is ever printed — URLs are masked before first use.
@@ -62,6 +72,23 @@ const DENIED_PROVISIONING_AUTHORS = new Set(["dependabot[bot]"]);
  * just-closed PR. On a weekly sweep an extra hour is free.
  */
 const RECONCILE_CLOSE_GRACE_MS = 60 * 60 * 1000;
+
+/**
+ * Lifetime of a preview branch between renewals. Renewed at creation,
+ * on every provision (push/reopen), and by the weekly reconcile for
+ * branches whose PR is still open — so a quiet long-lived PR's
+ * database survives, while a leaked branch (missed teardown) still
+ * self-deletes within ~2 weeks even if every cleanup path fails.
+ */
+const PREVIEW_BRANCH_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * RFC 3339 expiry timestamp `PREVIEW_BRANCH_TTL_MS` from now, used by
+ * every TTL stamp/renewal (Neon's 30-day ceiling leaves ample room).
+ */
+export function previewBranchExpiry(now: number = Date.now()): string {
+  return new Date(now + PREVIEW_BRANCH_TTL_MS).toISOString();
+}
 
 const PREVIEW_ENV_KEYS = [
   "DATABASE_URL",
@@ -269,6 +296,48 @@ export async function deletePreviewBranch(
     fail(`Neon DELETE branch ${branch.id} -> ${res.status}`);
   }
   console.log(`${TAG} deleted Neon branch ${branchName} (${branch.id})`);
+  return true;
+}
+
+/**
+ * Set or renew a preview branch's `expires_at`. Only ever applied to
+ * `preview/pr-<n>` branches — a permanent branch must never carry a
+ * TTL, so the name check is a hard fail, not a skip.
+ *
+ * API failures are non-fatal (warn + false): branch expiration is an
+ * Early Access feature and the account may not have it, in which case
+ * teardown and reconcile still provide complete cleanup — TTL is a
+ * bonus safety net, never the primary mechanism.
+ */
+export async function setBranchExpiration(
+  env: Env,
+  fetcher: Fetcher,
+  branch: NeonBranch,
+): Promise<boolean> {
+  if (!PREVIEW_BRANCH_RE.test(branch.name)) {
+    fail(
+      `refusing to set expiration on ${JSON.stringify(branch.name)} — only preview/pr-<number> branches may expire`,
+    );
+  }
+  const expiresAt = previewBranchExpiry();
+  const res = await neon(
+    env,
+    fetcher,
+    `/projects/${env.NEON_PROJECT_ID}/branches/${branch.id}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ branch: { expires_at: expiresAt } }),
+    },
+  );
+  if (!res.ok) {
+    console.warn(
+      `${TAG} ${branch.name} expires_at update failed (${res.status}) — ` +
+        `branch expiration may be unavailable (Early Access feature); ` +
+        `teardown/reconcile cleanup is unaffected`,
+    );
+    return false;
+  }
+  console.log(`${TAG} ${branch.name} expiration set to ${expiresAt}`);
   return true;
 }
 
@@ -643,6 +712,13 @@ export async function provision(env: Env, fetcher: Fetcher): Promise<void> {
   }
   console.log(`${TAG} verified ${branchName} is a child of ${parent}`);
 
+  // Stamp/renew the TTL as soon as the branch is verified a preview
+  // child of `testing` — before the refusal checks below, so even a
+  // provision that is later refused (e.g. shared-head-ref collision)
+  // leaves the branch self-expiring rather than immortal. Non-fatal:
+  // a Neon API failure degrades to teardown/reconcile cleanup.
+  await setBranchExpiration(env, fetcher, resolved);
+
   // The connection strings must belong to the verified branch endpoint.
   const pooledHost = canonicalHost(env.NEON_DB_URL_POOLED!);
   const directHost = canonicalHost(env.NEON_DB_URL!);
@@ -846,6 +922,15 @@ export async function reconcile(env: Env, fetcher: Fetcher): Promise<void> {
     );
     const verdict = classifyPreviewBranch(prNumber, pr);
     console.log(`${TAG} ${branch.name} — ${verdict.reason}`);
+    // Weekly renewal heartbeat: an open PR's branch gets a fresh TTL
+    // here even if it never sees another provision event. Without this,
+    // a quiet long-lived PR's database would silently expire. A failed
+    // renewal is non-fatal (warn inside setBranchExpiration): the
+    // current TTL still holds and the next sweep retries; worst case
+    // the branch expires and is recreated on the PR's next event.
+    if (pr?.state === "open") {
+      await setBranchExpiration(env, fetcher, branch);
+    }
     if (!verdict.eligible) {
       retained++;
       continue;

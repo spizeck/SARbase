@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,9 +8,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   classifyPreviewBranch,
   deletePreviewBranch,
+  gate,
+  previewBranchExpiry,
   provision,
   provisioningDecision,
   reconcile,
+  setBranchExpiration,
   teardown,
   type Fetcher,
 } from "./neon-preview";
@@ -77,6 +81,9 @@ function makeFetch(fixture: Fixture): { fetcher: Fetcher; calls: Call[] } {
       if (branchMatch && method === "GET") {
         const branch = fixture.branchesById?.[branchMatch[1]!];
         return branch ? json(branch) : json({}, 404);
+      }
+      if (branchMatch && method === "PATCH") {
+        return json({ branch: { id: branchMatch[1] } });
       }
       if (branchMatch && method === "DELETE") {
         return json({}, 200);
@@ -417,7 +424,11 @@ describe("provision", () => {
       ),
     ).rejects.toThrow(/do not resolve/);
     // No Vercel writes may happen before the endpoint check passes.
-    expect(calls.every((c) => c.method === "GET")).toBe(true);
+    // (A Neon PATCH to stamp the branch TTL does occur — it is
+    // deliberately issued as soon as the branch is verified a preview
+    // child of `testing`, so refused provisions still leave a
+    // self-expiring branch rather than an immortal orphan.)
+    expect(calls.every((c) => !c.url.includes("api.vercel.com"))).toBe(true);
   });
 
   it("writes the three branch-scoped preview env vars and is repeatable", async () => {
@@ -454,7 +465,11 @@ describe("provision", () => {
       ],
     });
     await expect(provision(PROVISION_ENV, fetcher)).rejects.toThrow(/#50/);
-    expect(calls.every((c) => c.method === "GET")).toBe(true);
+    // No Vercel writes — the surviving PR's env vars are authoritative.
+    expect(calls.every((c) => !c.url.includes("api.vercel.com"))).toBe(true);
+    // But the branch still got its TTL stamped (issued right after
+    // branch identity verification, before the collision refusal).
+    expect(calls.some((c) => c.method === "PATCH")).toBe(true);
   });
 
   it("proceeds when only this PR uses the head ref", async () => {
@@ -466,6 +481,23 @@ describe("provision", () => {
     expect(
       calls.some((c) => c.method === "POST" && c.url.includes("/v10/")),
     ).toBe(true);
+  });
+
+  it("renews the preview branch's expires_at on every provision", async () => {
+    const { fetcher, calls } = makeFetch(BASE_FIXTURE);
+    const before = Date.now();
+    await provision(PROVISION_ENV, fetcher);
+    const patches = calls.filter((c) => c.method === "PATCH");
+    expect(patches).toHaveLength(1);
+    expect(patches[0]!.url).toContain("br-preview-1");
+    const expiresAt = Date.parse(
+      (patches[0]!.body as { branch: { expires_at: string } }).branch
+        .expires_at,
+    );
+    // ~14 days out — renewed even though the create action only sets
+    // expires_at at creation time.
+    expect(expiresAt - before).toBeGreaterThan(13 * 24 * 60 * 60 * 1000);
+    expect(expiresAt - before).toBeLessThan(15 * 24 * 60 * 60 * 1000);
   });
 
   it("triggers a redeployment only when TRIGGER_DEPLOY=true", async () => {
@@ -481,6 +513,44 @@ describe("provision", () => {
     expect(second.calls.some((c) => c.url.includes("/v13/deployments"))).toBe(
       false,
     );
+  });
+});
+
+describe("gate", () => {
+  it("emits provision=true for the create step", async () => {
+    const out = join(mkdtempSync(join(tmpdir(), "neon-preview-gate-")), "out");
+    await gate({
+      PR_AUTHOR_LOGIN: "chad",
+      PR_HEAD_REPO: "spizeck/SARbase",
+      PR_STATE: "open",
+      PR_BASE_REF: "main",
+      DEFAULT_BRANCH: "main",
+      GITHUB_REPOSITORY: "spizeck/SARbase",
+      GITHUB_OUTPUT: out,
+    });
+    const text = readFileSync(out, "utf-8");
+    expect(text).toContain("provision=true");
+  });
+});
+
+describe("setBranchExpiration / previewBranchExpiry", () => {
+  it("refuses to expire a non-preview branch (main, testing)", async () => {
+    const { fetcher, calls } = makeFetch(BASE_FIXTURE);
+    for (const name of ["main", "testing", "preview/pr-x"]) {
+      await expect(
+        setBranchExpiration(ENV, fetcher, { id: "br-x", name }),
+      ).rejects.toThrow(/non-preview|preview\/pr/);
+      expect(calls).toHaveLength(0);
+      process.exitCode = undefined;
+    }
+  });
+
+  it("emits a ~14-day expiry timestamp", () => {
+    const before = Date.now();
+    const expiresAt = Date.parse(previewBranchExpiry());
+    expect(expiresAt - before).toBeGreaterThan(13 * 24 * 60 * 60 * 1000);
+    expect(expiresAt - before).toBeLessThan(15 * 24 * 60 * 60 * 1000);
+    expect(Number.isFinite(expiresAt)).toBe(true);
   });
 });
 
@@ -623,6 +693,75 @@ describe("reconcile", () => {
       .map((c) => c.url);
     expect(deleted).toHaveLength(1);
     expect(deleted[0]).toContain("br-preview-1");
+  });
+
+  it("renews expires_at only for branches whose PR is still open", async () => {
+    const { fetcher, calls } = makeFetch({
+      branches: [
+        { id: "br-testing", name: "testing" },
+        PREVIEW_BRANCH, // pr-42 closed
+        { id: "br-p9", name: "preview/pr-9", parent_id: "br-testing" }, // open
+        { id: "br-p7", name: "preview/pr-7", parent_id: "br-testing" }, // unverifiable
+      ],
+      pulls: {
+        "42": {
+          state: "closed",
+          head: { ref: "feat/thing" },
+          closed_at: closedLongAgo,
+        },
+        "9": { state: "open", head: { ref: "feat/open" } },
+      },
+    });
+    await reconcile(reconcileEnv, fetcher);
+    const renewed = calls.filter((c) => c.method === "PATCH").map((c) => c.url);
+    // Only the still-open PR's branch is renewed — this is what keeps a
+    // quiet long-lived PR's database alive between synchronize events.
+    expect(renewed).toHaveLength(1);
+    expect(renewed[0]).toContain("br-p9");
+    const expiresAt = Date.parse(
+      (
+        calls.find((c) => c.method === "PATCH")!.body as {
+          branch: { expires_at: string };
+        }
+      ).branch.expires_at,
+    );
+    expect(expiresAt).toBeGreaterThan(Date.now() + 13 * 24 * 60 * 60 * 1000);
+  });
+
+  it("survives a failed TTL renewal without aborting the sweep", async () => {
+    const { fetcher, calls } = makeFetch({
+      branches: [
+        { id: "br-testing", name: "testing" },
+        { id: "br-p9", name: "preview/pr-9", parent_id: "br-testing" },
+        PREVIEW_BRANCH,
+      ],
+      pulls: {
+        // br-p9's PR is open but the fetcher below will 500 its PATCH;
+        // pr-42 must still be reported/deleted normally.
+        "9": { state: "open", head: { ref: "feat/open" } },
+        "42": {
+          state: "closed",
+          head: { ref: "feat/thing" },
+          closed_at: closedLongAgo,
+        },
+      },
+    });
+    const failing = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PATCH" && String(input).includes("br-p9")) {
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({}),
+        } as Response;
+      }
+      return fetcher(input, init);
+    }) as Fetcher;
+    await reconcile({ ...reconcileEnv, DRY_RUN: "false" }, failing);
+    expect(
+      calls.some(
+        (c) => c.method === "DELETE" && c.url.includes("br-preview-1"),
+      ),
+    ).toBe(true);
   });
 
   it("continues the sweep when one branch is refused, and keeps shared-ref env vars", async () => {

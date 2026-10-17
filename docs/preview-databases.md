@@ -12,11 +12,11 @@ nothing here requires local credentials.
 
 ## Topology
 
-| Neon branch      | Lifetime  | Parent    | Data            | Created/deleted by        |
-| ---------------- | --------- | --------- | --------------- | ------------------------- |
-| `main`           | permanent | —         | production      | never touched by the flow |
-| `testing`        | permanent | `main`¹   | fictional seeds | created once by the owner |
-| `preview/pr-<n>` | per PR    | `testing` | fictional       | the neon-preview workflow |
+| Neon branch      | Lifetime        | Parent    | Data            | Created/deleted by        |
+| ---------------- | --------------- | --------- | --------------- | ------------------------- |
+| `main`           | permanent       | —         | production      | never touched by the flow |
+| `testing`        | permanent       | `main`¹   | fictional seeds | created once by the owner |
+| `preview/pr-<n>` | per PR, 14d TTL | `testing` | fictional       | the neon-preview workflow |
 
 ¹ `testing` may only be created from `main` while production holds no
 real data. Once production is populated, `testing` is maintained by
@@ -128,14 +128,33 @@ Variables:
 - **Close/merge the PR** → the Neon branch and its branch-scoped env
   vars are deleted unconditionally (cleanup is deliberately not gated
   on eligibility).
+- **Branch expiration (TTL)** → provisioning stamps an `expires_at`
+  14 days out on the `preview/pr-<n>` branch via the Neon API and
+  renews it on each subsequent provision. If a teardown is ever missed,
+  the branch self-deletes within ~2 weeks even if reconcile never runs
+  — the safety net for abandoned previews. Permanent branches (`main`,
+  `testing`) can never receive an expiry; the script refuses
+  non-`preview/pr-<n>` names. Note: Neon branch expiration is an Early
+  Access feature — if it is unavailable on the account the renewal
+  warns and provisioning continues; teardown + reconcile still provide
+  complete cleanup without it.
+- **Long-lived quiet PRs** → a PR with no pushes would otherwise expire
+  mid-review. The weekly reconcile renews `expires_at` on every preview
+  branch whose PR is still open, giving each open branch two renewal
+  chances inside one TTL window. If a branch does expire while its PR
+  is open (e.g. reconcile disabled for weeks), the next
+  push/reopen/edit recreates it; nothing else breaks.
 - **Dependabot and fork PRs** → never provisioned; denied in the
   workflow `if`, the `gate` step, and the script itself.
-- **Weekly reconcile** (Mondays 04:17 UTC) → dry-run report of orphaned
-  `preview/pr-*` branches: retained when the owning PR is open, the PR
-  lookup fails, or the close happened within the last hour.
+- **Weekly reconcile** (Mondays 04:17 UTC) → renews `expires_at` on
+  open-PR preview branches (the TTL heartbeat), then a dry-run report
+  of orphaned `preview/pr-*` branches: retained when the owning PR is
+  open, the PR lookup fails, or the close happened within the last
+  hour.
 - **Manual reconcile** → Actions → "Neon preview databases" → Run
   workflow with `dry_run` unchecked to actually delete reported orphans.
-  Deletion never happens on the schedule.
+  Deletion never happens on the schedule; TTL expiry covers orphans
+  that are never manually cleaned.
 
 `vercel.json` disables Vercel preview builds for `dependabot/**`
 branches on top of the database-side denial.
@@ -336,8 +355,15 @@ APP_PREVIEW_DB_HOST — applying committed migrations`.
   is never promoted. Recovery is fix-forward: land a corrective
   migration in a new commit; never `migrate reset`/`migrate dev` a
   hosted branch and never assume automatic rollback.
-- **Teardown misses** → the weekly reconcile reports the orphan; delete
-  it via manual dispatch (dry_run unchecked) or the Neon console.
+- **Teardown misses** → the branch's `expires_at` deletes it
+  automatically within ~14 days. The weekly reconcile also reports the
+  orphan; delete sooner via manual dispatch (dry_run unchecked) or the
+  Neon console.
+- **Preview DB expires while its PR is still open** → the next
+  push/reopen/edit event recreates the branch and env vars. A truly
+  quiet PR loses preview-DB-backed deploys until then — the weekly
+  reconcile's renewal heartbeat makes this unlikely; check the Neon
+  console if a preview suddenly reports a missing database.
 - **Rollback of this feature** → set the `NEON_PROJECT_ID` GitHub
   variable empty: the workflow no-ops everywhere while remaining
   installed. Deleting the workflow file is the fuller removal.
@@ -348,7 +374,8 @@ APP_PREVIEW_DB_HOST — applying committed migrations`.
 - A preview branch must be a verified child of `testing`; deletions
   verify the parent too.
 - `main`, `testing`, primary, and protected branches can never be
-  created-over or deleted by the script.
+  created-over, deleted, or given an expiry by the script —
+  `setBranchExpiration` hard-fails on any non-`preview/pr-<n>` name.
 - Connection URLs are masked before use and never printed; env values
   are never read back from Vercel.
 - Provider secrets are unreachable from PR code: `pull_request_target`
