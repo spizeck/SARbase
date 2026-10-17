@@ -12,6 +12,15 @@ issue #6's replacement for the temporary issue #5 admin gate (now removed).
 > so a second provider can coexist without reshaping the model. A
 > generalized pluggable-auth framework was deliberately not built.
 
+> Client SDK dependency note (issue #57): SARbase depends on
+> `@firebase/app` + `@firebase/auth` directly — **not** the `firebase`
+> umbrella package. The umbrella pulls in `@firebase/firestore` →
+> `google-gax` → `@grpc/grpc-js`, a subtree the app never executes but
+> that has carried high-severity advisories. Generic Firebase setup
+> guides that say `npm install firebase` or `import { getFirestore }`
+> do not apply here: adding the umbrella back reintroduces the flagged
+> dependency chain.
+
 ## Architecture
 
 ```
