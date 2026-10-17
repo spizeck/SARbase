@@ -79,6 +79,8 @@ function healthyAws(): AwsFn {
         });
       case "events describe-api-destination":
         return ok({
+          ApiDestinationArn:
+            "arn:aws:events:us-east-1:123:api-destination/sarbase-prod-scan-ingest/x",
           ApiDestinationState: "ACTIVE",
           InvocationEndpoint: ENDPOINT,
           HttpMethod: "POST",
@@ -92,6 +94,8 @@ function healthyAws(): AwsFn {
       case "sqs get-queue-attributes":
         return ok({
           Attributes: {
+            QueueArn:
+              "arn:aws:sqs:us-east-1:123:sarbase-prod-guardduty-scan-dlq",
             ApproximateNumberOfMessages: "0",
             ApproximateNumberOfMessagesNotVisible: "0",
             ApproximateNumberOfMessagesDelayed: "0",
@@ -352,6 +356,8 @@ describe("verifyGuardDutyDelivery", () => {
       aws: (args) =>
         args[1] === "describe-api-destination"
           ? ok({
+              ApiDestinationArn:
+                "arn:aws:events:us-east-1:123:api-destination/sarbase-prod-scan-ingest/x",
               ApiDestinationState: "ACTIVE",
               InvocationEndpoint: "https://evil.example.com/hook",
               HttpMethod: "POST",
@@ -370,6 +376,8 @@ describe("verifyGuardDutyDelivery", () => {
       aws: (args) =>
         args[1] === "describe-api-destination"
           ? ok({
+              ApiDestinationArn:
+                "arn:aws:events:us-east-1:123:api-destination/sarbase-prod-scan-ingest/x",
               ApiDestinationState: "ACTIVE",
               InvocationEndpoint: ENDPOINT,
               HttpMethod: "GET",
@@ -471,5 +479,39 @@ describe("verifyGuardDutyDelivery", () => {
           : healthyAws()(args),
     });
     expect(byName(results, "GuardDuty protection plan").status).toBe("MANUAL");
+  });
+
+  it("reports MANUAL (not FAIL) when the plan is WARNING", async () => {
+    const results = await run({
+      aws: (args) =>
+        args[1] === "get-malware-protection-plan"
+          ? ok({
+              ProtectedResource: { S3Bucket: { BucketName: BUCKET } },
+              Actions: { Tagging: { Status: "ENABLED" } },
+              Status: "WARNING",
+            })
+          : healthyAws()(args),
+    });
+    expect(byName(results, "GuardDuty protection plan").status).toBe("MANUAL");
+  });
+
+  it("fails when a DLQ attribute is missing — empty cannot be proven", async () => {
+    const results = await run({
+      aws: (args) =>
+        args[1] === "get-queue-attributes"
+          ? ok({
+              Attributes: {
+                QueueArn:
+                  "arn:aws:sqs:us-east-1:123:sarbase-prod-guardduty-scan-dlq",
+                ApproximateNumberOfMessages: "0",
+                ApproximateNumberOfMessagesNotVisible: "0",
+                // ApproximateNumberOfMessagesDelayed omitted.
+              },
+            })
+          : healthyAws()(args),
+    });
+    const check = byName(results, "dead-letter queue exists and is empty");
+    expect(check.status).toBe("FAIL");
+    expect(check.detail).toContain("missing/non-numeric");
   });
 });

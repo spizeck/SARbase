@@ -89,6 +89,8 @@ function aws(args: string[]): AwsResult {
 function awsVersion(): boolean {
   const result = spawnSync("aws", ["--version"], {
     encoding: "utf8",
+    // Same ceiling as aws() — a stalled shim must not hang the report.
+    timeout: 30_000,
     shell: process.platform === "win32",
   });
   return !result.error && result.status === 0;
@@ -172,12 +174,23 @@ export async function verifyGuardDutyDelivery(
   const results: CheckResult[] = [];
   const push = (r: CheckResult) => results.push(r);
 
-  if (!awsVersionFn() || !awsCli(["sts", "get-caller-identity"]).ok) {
+  if (!awsVersionFn()) {
     push({
       name: "aws CLI available + authenticated",
       status: "FAIL",
       detail:
-        "aws CLI unusable — install it and configure read-only credentials before running this script",
+        "aws --version failed — CLI is missing, not on PATH, or cannot start (permissions/shim). Install or repair AWS CLI v2.",
+    });
+    return results;
+  }
+  const identity = awsCli(["sts", "get-caller-identity"]);
+  if (!identity.ok) {
+    push({
+      name: "aws CLI available + authenticated",
+      status: "FAIL",
+      detail:
+        `CLI runs but sts get-caller-identity failed (${identity.stderr}) — ` +
+        "credentials are missing or expired; configure read-only credentials for the target account",
     });
     return results;
   }
@@ -255,14 +268,22 @@ export async function verifyGuardDutyDelivery(
           Status?: string;
         };
         if (plan.ProtectedResource?.S3Bucket?.BucketName !== bucket) continue;
-        const active = plan.Status === "ACTIVE";
         const tagging = plan.Actions?.Tagging?.Status === "ENABLED";
+        // ACTIVE+tagging proves scanning. WARNING is degraded, not
+        // necessarily broken — an operator must look, so MANUAL.
+        // Anything else (ERROR/unknown) cannot scan: FAIL.
+        const status: CheckResult["status"] =
+          plan.Status === "ACTIVE" && tagging
+            ? "PASS"
+            : plan.Status === "WARNING"
+              ? "MANUAL"
+              : "FAIL";
         found = {
           name: "GuardDuty protection plan",
-          status: active && tagging ? "PASS" : "FAIL",
+          status,
           detail:
             `bucket protected; plan status=${plan.Status ?? "?"} ` +
-            `(expected ACTIVE); tagging=${plan.Actions?.Tagging?.Status ?? "?"} ` +
+            `(expected ACTIVE; WARNING = investigate in console); tagging=${plan.Actions?.Tagging?.Status ?? "?"} ` +
             `(expected ENABLED — runbook Phase 3)`,
         };
         break;
@@ -351,19 +372,71 @@ export async function verifyGuardDutyDelivery(
       )?.Targets ?? [];
     const t = targets[0];
     const problems: string[] = [];
+
+    // Canonical ARNs for the named resources — a name-shaped ARN that
+    // actually points at an unrelated resource must not pass.
+    const destLookup = awsCli([
+      "events",
+      "describe-api-destination",
+      "--name",
+      destinationName,
+      "--region",
+      region,
+    ]);
+    const expectedTargetArn = destLookup.ok
+      ? (destLookup.json as { ApiDestinationArn?: string }).ApiDestinationArn
+      : undefined;
+    const dlqUrlLookup = awsCli([
+      "sqs",
+      "get-queue-url",
+      "--queue-name",
+      dlqName,
+      "--region",
+      region,
+    ]);
+    const dlqUrl = dlqUrlLookup.ok
+      ? (dlqUrlLookup.json as { QueueUrl?: string }).QueueUrl
+      : undefined;
+    const dlqArnLookup = dlqUrl
+      ? awsCli([
+          "sqs",
+          "get-queue-attributes",
+          "--queue-url",
+          dlqUrl,
+          "--attribute-names",
+          "QueueArn",
+          "--region",
+          region,
+        ])
+      : { ok: false, json: null, stderr: "queue URL lookup failed" };
+    const expectedDlqArn = dlqArnLookup.ok
+      ? (dlqArnLookup.json as { Attributes?: Record<string, string> })
+          .Attributes?.QueueArn
+      : undefined;
+
     if (!r.ok) problems.push(r.stderr);
     if (!t) problems.push("no targets on the rule");
     if (t) {
-      if (!t.Arn?.includes(`api-destination/${destinationName}`)) {
+      if (!expectedTargetArn) {
         problems.push(
-          `target ARN ${t.Arn ?? "?"} is not the ${destinationName} api-destination`,
+          `cannot resolve ${destinationName} ARN (${destLookup.ok ? "no ApiDestinationArn in response" : destLookup.stderr}) — cannot prove the target wiring`,
+        );
+      } else if (t.Arn !== expectedTargetArn) {
+        problems.push(
+          `target ARN ${t.Arn ?? "?"} != ${expectedTargetArn} (${destinationName})`,
         );
       }
       if (!t.RoleArn?.endsWith(`role/${invokeRoleName}`)) {
         problems.push(`invoke role is not ${invokeRoleName}`);
       }
-      if (!t.DeadLetterConfig?.Arn?.endsWith(dlqName)) {
-        problems.push(`DLQ is not ${dlqName}`);
+      if (!expectedDlqArn) {
+        problems.push(
+          `cannot resolve ${dlqName} ARN — cannot prove the DLQ wiring`,
+        );
+      } else if (t.DeadLetterConfig?.Arn !== expectedDlqArn) {
+        problems.push(
+          `DLQ ARN ${t.DeadLetterConfig?.Arn ?? "?"} != ${expectedDlqArn}`,
+        );
       }
       const retry = t.RetryPolicy;
       if (
@@ -504,13 +577,18 @@ export async function verifyGuardDutyDelivery(
       const visible = Number(a?.ApproximateNumberOfMessages ?? NaN);
       const inFlight = Number(a?.ApproximateNumberOfMessagesNotVisible ?? NaN);
       const delayed = Number(a?.ApproximateNumberOfMessagesDelayed ?? NaN);
-      const total = (visible || 0) + (inFlight || 0) + (delayed || 0);
+      // Fail closed: a missing/non-numeric attribute is unverifiable,
+      // not "empty".
+      const countsKnown = [visible, inFlight, delayed].every(Number.isFinite);
+      const total = countsKnown ? visible + inFlight + delayed : NaN;
       push({
         name: "dead-letter queue exists and is empty",
-        status: attrs.ok && total === 0 ? "PASS" : "FAIL",
-        detail: attrs.ok
-          ? `visible=${visible}, in-flight=${inFlight}, delayed=${delayed} (nonzero = delivery failures to investigate/replay)`
-          : attrs.stderr,
+        status: attrs.ok && countsKnown && total === 0 ? "PASS" : "FAIL",
+        detail: !attrs.ok
+          ? attrs.stderr
+          : countsKnown
+            ? `visible=${visible}, in-flight=${inFlight}, delayed=${delayed} (nonzero = delivery failures to investigate/replay)`
+            : `attributes missing/non-numeric (visible=${a?.ApproximateNumberOfMessages ?? "?"}, in-flight=${a?.ApproximateNumberOfMessagesNotVisible ?? "?"}, delayed=${a?.ApproximateNumberOfMessagesDelayed ?? "?"}) — cannot prove the DLQ is empty`,
       });
     }
   }
