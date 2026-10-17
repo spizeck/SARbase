@@ -101,6 +101,23 @@ half-provisioned pipeline. Recovery:
 
 ### Verify the delivery path
 
+**Automated (preferred)** — one read-only command runs every check in
+this section plus the endpoint probe and reports a PASS/FAIL matrix:
+
+```
+npm run attachments:guardduty-verify -- \
+  --region us-east-1 \
+  --bucket sarbase-documents-prod-983902695382 \
+  --env prod \
+  --endpoint https://<domain>/api/internal/guardduty-scan-result
+```
+
+It uses the operator's own aws CLI credentials, makes only read-only
+calls, and never reads or prints secrets. Exit code 0 = every check
+passed; a `MANUAL` result names the console page to inspect.
+
+**Manual** — the same checks individually:
+
 - Rule `sarbase-prod-guardduty-scan-result` is ENABLED on the default
   bus, pattern bucket `sarbase-documents-prod-983902695382`, key prefix
   `organizations/`:
