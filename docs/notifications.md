@@ -1,8 +1,9 @@
 # Notifications (issue #13)
 
 The notification foundation is communication infrastructure: a provider-neutral
-abstraction, one real email provider (Resend), a deterministic test provider,
-and durable records of every request and provider attempt.
+abstraction, two real providers (Resend email, Meta WhatsApp Cloud API —
+inactive until configured), deterministic test providers, and durable
+records of every request and provider attempt.
 
 > SARbase records and delivers communication requests. Delivery state is a
 > factual record and is not an operational readiness or response conclusion.
@@ -62,7 +63,7 @@ returns — and never deleted (`Restrict` on both FKs).
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `PENDING`             | Recorded; dispatch in flight or an attempt's outcome unknown.                                                               |
 | `SUPPRESSED`          | Never dispatched; `statusReason` says why (`preference_disabled`, `destination_missing`, `consent_missing`). Not a failure. |
-| `ACCEPTED`            | The provider accepted the message. **Not** proof of delivery — delivery confirmation needs a provider webhook (deferred).   |
+| `ACCEPTED`            | The provider accepted the message. **Not** proof of delivery — delivery/read confirmation arrives via provider webhook.     |
 | `FAILED`              | Dispatched and not accepted; the last attempt carries the classification.                                                   |
 
 Attempt statuses: `DISPATCHING` (written before the provider call;
@@ -195,6 +196,37 @@ only inside the adapter; `error.message` from Resend is never propagated
 (it can echo recipient addresses or payloads) — `name`/`statusCode` map
 to SARbase codes and fixed operator-facing summaries.
 
+### Meta WhatsApp Cloud API (real provider, inactive by default)
+
+`src/lib/notifications/whatsapp.ts` calls `POST /v{WHATSAPP_API_VERSION}/{WHATSAPP_PHONE_NUMBER_ID}/messages` over a structural `WhatsAppClientLike` interface — tests inject a fake client. Only approved `template` sends are supported (Meta's business-initiated rule). The `wamid` response id lands on `providerMessageId` for webhook correlation. Meta errors map to SARbase codes by status/code — `error.message` is never propagated (it can echo the recipient number). Bearer token lives server-side only.
+
+A `FakeWhatsAppProvider` exists for development/tests; production never silently falls back to it (`NotificationConfigError` instead), and preview deployments refuse real sends unless `ALLOW_WHATSAPP_IN_PREVIEW=true` — an explicit, logged opt-in.
+
+### Delivery status webhooks (issue #101)
+
+`POST /api/webhooks/whatsapp` receives Meta status callbacks; `GET` answers Meta's hub-challenge verification using `WHATSAPP_WEBHOOK_VERIFY_TOKEN` (constant-time compare).
+
+- **Signature**: every POST requires `X-Hub-Signature-256` —
+  `sha256=<HMAC-SHA256(body, WHATSAPP_APP_SECRET)>`, compared
+  constant-time over the raw body. Invalid → 401.
+- **Correlation**: each callback `statuses[].id` (`wamid`) resolves to a
+  `NotificationAttempt.providerMessageId` in that organization only — a
+  foreign organization's `wamid` cannot touch our rows.
+- **Append-only events**: matched events write
+  `NotificationDeliveryEvent` rows deduplicated on
+  `(attemptId, providerStatus)` — replays are acknowledged without
+  rewriting history.
+- **Monotonic reconciliation**: `SENT < DELIVERED < READ` via
+  `src/lib/domain/notification-delivery.ts`; out-of-order or regressive
+  callbacks are recorded as events but never move the attempt or
+  notification backwards. `read` implies `delivered`.
+- **Unmatched/unknown**: acknowledged without storage — Meta retries
+  unacknowledged webhooks, and unknown `wamid`s can arrive for messages
+  sent outside SARbase.
+- Delivery/read state is a fact about the **message**, never the
+  volunteer — it can never become an acknowledgment, availability
+  signal, or readiness input.
+
 ### Fake provider
 
 `FakeNotificationProvider` never touches the network. It records every
@@ -264,6 +296,13 @@ serverless instances; development and tests use the per-process
 | `RESEND_API_KEY`                | server, **secret** | Resend API credential                                              |
 | `NOTIFICATION_EMAIL_FROM`       | server             | Verified sender, e.g. `SARbase Notifications <notify@example.org>` |
 | `CALLOUT_RESPONSE_TOKEN_SECRET` | server, **secret** | Pepper for derived callout response links; required in production  |
+| `WHATSAPP_PROVIDER`             | server             | `meta` or `fake`; defaults to `fake` outside production            |
+| `WHATSAPP_ACCESS_TOKEN`         | server, **secret** | Meta system-user bearer token                                      |
+| `WHATSAPP_PHONE_NUMBER_ID`      | server             | Numeric sender id (not the phone number itself)                    |
+| `WHATSAPP_API_VERSION`          | server             | Pinned Graph API version, e.g. `v24.0`                             |
+| `WHATSAPP_APP_SECRET`           | server, **secret** | Meta app secret — HMAC key for webhook signatures                  |
+| `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | server, **secret** | Shared token for Meta's hub-challenge GET                          |
+| `ALLOW_WHATSAPP_IN_PREVIEW`     | server             | `true` to permit real sends from preview deployments (off default) |
 
 CI runs with none of these set — the resolver returns the fake outside
 production, so CI never sends real email and needs no credentials.
@@ -283,8 +322,7 @@ production, so CI never sends real email and needs no credentials.
 
 SMS/push providers, multi-channel escalation, automatic/background
 retries, a generic workflow engine, incident workflow (#15), and global
-search (#18). WhatsApp delivery-status webhooks (real `DELIVERED`/`READ`
-state) land with issue #101. Callout orchestration (#14)
+search (#18). Callout orchestration (#14)
 builds on this foundation — one `callout_invitation` request per
 invitation with a deterministic idempotency key — see
 [`docs/callouts.md`](callouts.md).
