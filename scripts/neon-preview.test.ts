@@ -545,12 +545,26 @@ describe("setBranchExpiration / previewBranchExpiry", () => {
     }
   });
 
-  it("emits a ~14-day expiry timestamp", () => {
+  it("emits a ~14-day expiry timestamp with whole-second precision", () => {
     const before = Date.now();
-    const expiresAt = Date.parse(previewBranchExpiry());
+    const stamp = previewBranchExpiry();
+    // Neon's contract: RFC 3339, precision up to seconds — no .NNN
+    // fractional part, which the API may reject.
+    expect(stamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    const expiresAt = Date.parse(stamp);
     expect(expiresAt - before).toBeGreaterThan(13 * 24 * 60 * 60 * 1000);
     expect(expiresAt - before).toBeLessThan(15 * 24 * 60 * 60 * 1000);
-    expect(Number.isFinite(expiresAt)).toBe(true);
+  });
+
+  it("warns and returns false when the PATCH transport fails", async () => {
+    const throwing = (async () => {
+      throw new Error("network down");
+    }) as Fetcher;
+    await expect(
+      setBranchExpiration(ENV, throwing, PREVIEW_BRANCH),
+    ).resolves.toBe(false);
+    // Must not poison the process exit code — callers continue.
+    expect(process.exitCode).toBeUndefined();
   });
 });
 
@@ -726,6 +740,30 @@ describe("reconcile", () => {
       ).branch.expires_at,
     );
     expect(expiresAt).toBeGreaterThan(Date.now() + 13 * 24 * 60 * 60 * 1000);
+  });
+
+  it("does not renew a preview-named branch outside the testing lifecycle", async () => {
+    const { fetcher, calls } = makeFetch({
+      branches: [
+        { id: "br-testing", name: "testing" },
+        { id: "br-main", name: "main" },
+        // Preview-SHAPED but parented to main — renewal must skip it.
+        { id: "br-p9", name: "preview/pr-9", parent_id: "br-main" },
+        // A genuinely protected/preview branch too.
+        {
+          id: "br-p8",
+          name: "preview/pr-8",
+          parent_id: "br-testing",
+          protected: true,
+        },
+      ],
+      pulls: {
+        "9": { state: "open", head: { ref: "feat/x" } },
+        "8": { state: "open", head: { ref: "feat/y" } },
+      },
+    });
+    await reconcile(reconcileEnv, fetcher);
+    expect(calls.every((c) => c.method === "GET")).toBe(true);
   });
 
   it("survives a failed TTL renewal without aborting the sweep", async () => {

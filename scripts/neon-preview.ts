@@ -87,7 +87,11 @@ const PREVIEW_BRANCH_TTL_MS = 14 * 24 * 60 * 60 * 1000;
  * every TTL stamp/renewal (Neon's 30-day ceiling leaves ample room).
  */
 export function previewBranchExpiry(now: number = Date.now()): string {
-  return new Date(now + PREVIEW_BRANCH_TTL_MS).toISOString();
+  // Neon's contract is RFC 3339 with precision up to whole seconds —
+  // strip toISOString()'s milliseconds, which the API may reject.
+  return new Date(now + PREVIEW_BRANCH_TTL_MS)
+    .toISOString()
+    .replace(/\.\d{3}Z$/, "Z");
 }
 
 const PREVIEW_ENV_KEYS = [
@@ -320,15 +324,27 @@ export async function setBranchExpiration(
     );
   }
   const expiresAt = previewBranchExpiry();
-  const res = await neon(
-    env,
-    fetcher,
-    `/projects/${env.NEON_PROJECT_ID}/branches/${branch.id}`,
-    {
-      method: "PATCH",
-      body: JSON.stringify({ branch: { expires_at: expiresAt } }),
-    },
-  );
+  let res: Response;
+  try {
+    res = await neon(
+      env,
+      fetcher,
+      `/projects/${env.NEON_PROJECT_ID}/branches/${branch.id}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ branch: { expires_at: expiresAt } }),
+      },
+    );
+  } catch (error) {
+    // A transport failure must not abort provisioning or the reconcile
+    // sweep — TTL is a bonus safety net, not the primary cleanup path.
+    console.warn(
+      `${TAG} ${branch.name} expires_at update failed: ` +
+        `${error instanceof Error ? error.message : String(error)} — ` +
+        `teardown/reconcile cleanup is unaffected`,
+    );
+    return false;
+  }
   if (!res.ok) {
     console.warn(
       `${TAG} ${branch.name} expires_at update failed (${res.status}) — ` +
@@ -928,8 +944,22 @@ export async function reconcile(env: Env, fetcher: Fetcher): Promise<void> {
     // renewal is non-fatal (warn inside setBranchExpiration): the
     // current TTL still holds and the next sweep retries; worst case
     // the branch expires and is recreated on the PR's next event.
+    // Same identity bar as deletion: only a verified `testing` child
+    // that is neither primary nor protected may carry an expiry — a
+    // preview-named branch under another parent is outside the preview
+    // lifecycle and must not be given an auto-delete timestamp.
     if (pr?.state === "open") {
-      await setBranchExpiration(env, fetcher, branch);
+      const parentName = env.NEON_PARENT_BRANCH ?? "testing";
+      const parent = data.branches.find((b) => b.id === branch.parent_id);
+      if (branch.primary || branch.protected || parent?.name !== parentName) {
+        console.warn(
+          `${TAG} ${branch.name} TTL renewal skipped — not a verified ` +
+            `child of ${parentName} (primary=${!!branch.primary}, ` +
+            `protected=${!!branch.protected}, parent=${parent?.name ?? "unknown"})`,
+        );
+      } else {
+        await setBranchExpiration(env, fetcher, branch);
+      }
     }
     if (!verdict.eligible) {
       retained++;

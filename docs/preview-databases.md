@@ -136,8 +136,9 @@ Variables:
   `testing`) can never receive an expiry; the script refuses
   non-`preview/pr-<n>` names. Note: Neon branch expiration is an Early
   Access feature — if it is unavailable on the account the renewal
-  warns and provisioning continues; teardown + reconcile still provide
-  complete cleanup without it.
+  warns and provisioning continues; teardown on PR close is unchanged
+  and reconcile still reports orphans, which an operator then deletes
+  via manual dispatch or the Neon console.
 - **Long-lived quiet PRs** → a PR with no pushes would otherwise expire
   mid-review. The weekly reconcile renews `expires_at` on every preview
   branch whose PR is still open, giving each open branch two renewal
