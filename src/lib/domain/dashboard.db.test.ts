@@ -252,7 +252,12 @@ describe.skipIf(!hasDb)("organization dashboard", () => {
         ).id,
       );
     }
-    const [avail, unavail, offIsland, expired] = memberIds;
+    const [avail, unavail, offIsland, expired] = memberIds as [
+      string,
+      string,
+      string,
+      string,
+    ];
     // memberIds[4] records nothing — never-recorded UNKNOWN.
     const mk = (memberId: string, status: string, until?: Date) =>
       prisma.memberAvailabilityUpdate.create({
@@ -369,7 +374,7 @@ describe.skipIf(!hasDb)("organization dashboard", () => {
       today,
     );
     expect(a.activeCallouts).toHaveLength(1);
-    expect(a.activeCallouts![0].counts).toEqual({
+    expect(a.activeCallouts?.[0]?.counts).toEqual({
       total: 1,
       coming: 1,
       unavailable: 0,
