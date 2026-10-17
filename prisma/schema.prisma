@@ -129,10 +129,11 @@ model Organization {
   assetMeters              AssetMeter[]
   assetMeterReadings       AssetMeterReading[]
 
-  availabilityUpdates     MemberAvailabilityUpdate[]
-  notificationPreferences MemberNotificationPreference[]
-  notifications           Notification[]
-  notificationAttempts    NotificationAttempt[]
+  availabilityUpdates        MemberAvailabilityUpdate[]
+  notificationPreferences    MemberNotificationPreference[]
+  notifications              Notification[]
+  notificationAttempts       NotificationAttempt[]
+  notificationDeliveryEvents NotificationDeliveryEvent[]
 
   callouts               Callout[]
   calloutInvitations     CalloutInvitation[]
@@ -1691,26 +1692,88 @@ model Notification {
 // - resolvedAt is when SARbase recorded the provider outcome. ACCEPTED
 //   means "the provider accepted the message" — real delivery would be
 //   a later webhook (deferred), not this timestamp.
+// Provider-reported delivery progression for one attempt (issue #101).
+// These are facts about the MESSAGE reported by the provider — never
+// facts about the recipient. A READ callback does not mean the member
+// acknowledged, is available, or accepted a callout.
+//
+// Ranking for the attempt's aggregate `deliveryStatus`:
+// OTHER < SENT < FAILED < DELIVERED < READ — "the furthest confirmed
+// state". FAILED ranks above SENT because "accepted then failed to
+// deliver" is the more informative terminal fact; a later DELIVERED
+// (Meta retry succeeding) still advances it. The append-only event
+// table keeps every callback regardless, so the ranking only affects
+// the convenience aggregate, never the audit history.
+enum NotificationDeliveryStatus {
+  OTHER
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
 model NotificationAttempt {
-  id                String                    @id @default(cuid())
+  id                String                      @id @default(cuid())
   organizationId    String
   notificationId    String
   attemptNumber     Int
   provider          String
-  status            NotificationAttemptStatus @default(DISPATCHING)
+  status            NotificationAttemptStatus   @default(DISPATCHING)
   providerMessageId String?
+  // Furthest confirmed provider-reported delivery state for this
+  // attempt (updated non-regressively from delivery events). Null when
+  // no callback has been received — the normal state for email, which
+  // has no delivery webhooks.
+  deliveryStatus    NotificationDeliveryStatus?
   errorCode         String?
   errorSummary      String?
-  retryable         Boolean                   @default(false)
-  attemptedAt       DateTime                  @default(now())
+  retryable         Boolean                     @default(false)
+  attemptedAt       DateTime                    @default(now())
   resolvedAt        DateTime?
 
-  notification Notification @relation(fields: [notificationId, organizationId], references: [id, organizationId], onDelete: Restrict)
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  notification   Notification                @relation(fields: [notificationId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  organization   Organization                @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  deliveryEvents NotificationDeliveryEvent[]
 
   @@unique([notificationId, attemptNumber])
+  // Composite-FK target so NotificationDeliveryEvent enforces same-org
+  // rows.
+  @@unique([id, organizationId])
   @@index([organizationId, attemptedAt])
   @@index([notificationId])
+  // Webhook reconciliation looks attempts up by the provider's own
+  // message id (e.g. Meta wamid).
+  @@index([providerMessageId])
+}
+
+// Append-only record of one provider delivery callback matched to a
+// NotificationAttempt (issue #101 — WhatsApp status webhooks).
+//
+// - One row per (attempt, status, provider-reported timestamp): Meta
+//   retries webhooks and can deliver statuses more than once; the
+//   unique constraint makes replays durable no-ops instead of
+//   duplicate history.
+// - Rows are never updated or deleted — out-of-order and regressive
+//   callbacks are preserved as facts; only the attempt's aggregate
+//   deliveryStatus applies ranking.
+// - providerErrorCode is a safe machine code from the provider's error
+//   object — never the provider's message text, which can echo
+//   recipient data.
+model NotificationDeliveryEvent {
+  id                String                     @id @default(cuid())
+  organizationId    String
+  attemptId         String
+  status            NotificationDeliveryStatus
+  // Provider-reported event time (Meta unix seconds → Date).
+  occurredAt        DateTime
+  receivedAt        DateTime                   @default(now())
+  providerErrorCode String?
+
+  attempt      NotificationAttempt @relation(fields: [attemptId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@unique([attemptId, status, occurredAt])
+  @@index([organizationId, receivedAt])
 }
 
 // ---------------------------------------------------------------------------
