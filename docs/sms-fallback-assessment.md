@@ -21,11 +21,15 @@ already implemented.
 
 ## Constraints that argue against rushing SMS
 
-- **Cost.** SMS is billed per segment (~$0.05–0.15/segment via
-  Twilio/MessageBird-class providers to Caribbean numbers — often
-  higher than WhatsApp's per-conversation UTILITY price, and paid per
-  message rather than per 24h window). Every callout to N members is
-  N paid messages; retries and long bodies multiply it.
+- **Cost.** SMS to Caribbean Netherlands numbers runs roughly
+  **$0.07–0.18 per segment** (Sinch ~$0.07, Twilio ~$0.17; verify
+  current rate cards). WhatsApp moved to **per-message** pricing in
+  July 2025 — utility templates land around **$0.008–0.02 per
+  delivered message** depending on Meta's market mapping, billed only
+  on delivery, so SMS is roughly an order of magnitude more expensive
+  per alert _and_ billed on send rather than delivery. Every callout
+  to N members is N paid messages either way; retries and long bodies
+  (multi-segment) multiply SMS further.
 - **No delivery guarantee either.** SMS delivery receipts (DLRs) are
   carrier- and region-dependent and unreliable on many Caribbean
   routes; "sent" is usually all you get. WhatsApp's delivered/read

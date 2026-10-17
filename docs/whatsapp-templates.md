@@ -22,8 +22,8 @@ contract is stricter still:
   knows (their org's name).
 - **No sensitive incident content.** A callout title is the most
   specific thing transmitted. Coordinators should write callout titles
-  as they would a radio check — "Missing hiker, Mount Scenery area",
-  not a medical narrative.
+  as they would a radio check — "Missing hiker — respond if
+  available", not a location, a medical narrative, or names.
 - **Body parameters only.** Meta body parameters cannot contain
   newlines, tabs, or runs of more than 4 spaces —
   `whatsapp-templates.ts` sanitizes for this; keep proposed wording
