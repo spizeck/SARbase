@@ -27,6 +27,23 @@ const BADGE_AVAILABLE = "bg-green-100 text-green-800";
 const BADGE_UNAVAILABLE = "bg-amber-100 text-amber-800";
 const BADGE_UNKNOWN = "bg-neutral-100 text-neutral-600";
 
+interface BoardMember {
+  id: string;
+  displayName: string;
+  memberUnits: { unit: { name: string } }[];
+}
+
+interface Row {
+  member: BoardMember;
+  status: AvailabilityStatus;
+  until: Date | null;
+  updatedAt: Date | null;
+  expiredStatement: boolean;
+}
+
+const unitNames = (member: BoardMember) =>
+  member.memberUnits.map((mu) => mu.unit.name).join(", ");
+
 function MemberName({
   orgId,
   member,
@@ -45,6 +62,97 @@ function MemberName({
     </Link>
   ) : (
     <span className="font-medium text-neutral-900">{member.displayName}</span>
+  );
+}
+
+function RowList({
+  rows,
+  orgId,
+  canViewMembers,
+}: {
+  rows: Row[];
+  orgId: string;
+  canViewMembers: boolean;
+}) {
+  return (
+    <ul className="divide-y divide-neutral-100">
+      {rows.map((row) => (
+        <li key={row.member.id} className="px-4 py-2.5">
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="min-w-0">
+              <MemberName
+                orgId={orgId}
+                member={row.member}
+                canLink={canViewMembers}
+              />
+              {unitNames(row.member) && (
+                <span className="text-xs text-neutral-500">
+                  {" "}
+                  — {unitNames(row.member)}
+                </span>
+              )}
+            </span>
+            <span className="shrink-0 text-xs text-neutral-500">
+              {AVAILABILITY_STATUS_LABELS[row.status]}
+            </span>
+          </div>
+          <p className="mt-0.5 text-xs text-neutral-500">
+            {row.until && row.status !== "UNKNOWN" && (
+              <>until {formatDateOnly(row.until)} · </>
+            )}
+            {row.updatedAt ? (
+              <>
+                {row.expiredStatement ? "expired — " : ""}updated{" "}
+                {relativeTimeLabel(row.updatedAt)}
+              </>
+            ) : (
+              "no statement recorded"
+            )}
+          </p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function Group({
+  id,
+  title,
+  badge,
+  rows,
+  empty,
+  orgId,
+  canViewMembers,
+}: {
+  id: string;
+  title: string;
+  badge: string;
+  rows: Row[];
+  empty: string;
+  orgId: string;
+  canViewMembers: boolean;
+}) {
+  return (
+    <section
+      aria-labelledby={id}
+      className="rounded-lg border border-neutral-200"
+    >
+      <div className="flex items-baseline justify-between gap-3 border-b border-neutral-200 px-4 py-2.5">
+        <h2 id={id} className="text-sm font-semibold text-neutral-900">
+          {title}
+        </h2>
+        <span
+          className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${badge}`}
+        >
+          {rows.length}
+        </span>
+      </div>
+      {rows.length === 0 ? (
+        <p className="px-4 py-3 text-sm text-neutral-500">{empty}</p>
+      ) : (
+        <RowList rows={rows} orgId={orgId} canViewMembers={canViewMembers} />
+      )}
+    </section>
   );
 }
 
@@ -85,13 +193,6 @@ export default async function AvailabilityBoardPage({
   ]);
   const active = members.filter((m) => m.status === "ACTIVE");
 
-  type Row = {
-    member: (typeof active)[number];
-    status: AvailabilityStatus;
-    until: Date | null;
-    updatedAt: Date | null;
-    expiredStatement: boolean;
-  };
   const available: Row[] = [];
   const unavailable: Row[] = [];
   const unknown: Row[] = [];
@@ -110,88 +211,6 @@ export default async function AvailabilityBoardPage({
     else if (row.status === "UNAVAILABLE" || row.status === "OFF_ISLAND")
       unavailable.push(row);
     else unknown.push(row);
-  }
-
-  const units = (member: (typeof active)[number]) =>
-    member.memberUnits.map((mu) => mu.unit.name).join(", ");
-
-  function RowList({ rows }: { rows: Row[] }) {
-    return (
-      <ul className="divide-y divide-neutral-100">
-        {rows.map((row) => (
-          <li key={row.member.id} className="px-4 py-2.5">
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="min-w-0">
-                <MemberName
-                  orgId={orgId}
-                  member={row.member}
-                  canLink={canViewMembers}
-                />
-                {units(row.member) && (
-                  <span className="text-xs text-neutral-500">
-                    {" "}
-                    — {units(row.member)}
-                  </span>
-                )}
-              </span>
-              <span className="shrink-0 text-xs text-neutral-500">
-                {AVAILABILITY_STATUS_LABELS[row.status]}
-              </span>
-            </div>
-            <p className="mt-0.5 text-xs text-neutral-500">
-              {row.until && row.status !== "UNKNOWN" && (
-                <>until {formatDateOnly(row.until)} · </>
-              )}
-              {row.updatedAt ? (
-                <>
-                  {row.expiredStatement ? "expired — " : ""}updated{" "}
-                  {relativeTimeLabel(row.updatedAt)}
-                </>
-              ) : (
-                "no statement recorded"
-              )}
-            </p>
-          </li>
-        ))}
-      </ul>
-    );
-  }
-
-  function Group({
-    id,
-    title,
-    badge,
-    rows,
-    empty,
-  }: {
-    id: string;
-    title: string;
-    badge: string;
-    rows: Row[];
-    empty: string;
-  }) {
-    return (
-      <section
-        aria-labelledby={id}
-        className="rounded-lg border border-neutral-200"
-      >
-        <div className="flex items-baseline justify-between gap-3 border-b border-neutral-200 px-4 py-2.5">
-          <h2 id={id} className="text-sm font-semibold text-neutral-900">
-            {title}
-          </h2>
-          <span
-            className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${badge}`}
-          >
-            {rows.length}
-          </span>
-        </div>
-        {rows.length === 0 ? (
-          <p className="px-4 py-3 text-sm text-neutral-500">{empty}</p>
-        ) : (
-          <RowList rows={rows} />
-        )}
-      </section>
-    );
   }
 
   return (
@@ -233,6 +252,8 @@ export default async function AvailabilityBoardPage({
           badge={BADGE_AVAILABLE}
           rows={available}
           empty="No member currently reports available."
+          orgId={orgId}
+          canViewMembers={canViewMembers}
         />
         <Group
           id="group-unavailable"
@@ -240,6 +261,8 @@ export default async function AvailabilityBoardPage({
           badge={BADGE_UNAVAILABLE}
           rows={unavailable}
           empty="No member currently reports unavailable."
+          orgId={orgId}
+          canViewMembers={canViewMembers}
         />
         <Group
           id="group-unknown"
@@ -247,6 +270,8 @@ export default async function AvailabilityBoardPage({
           badge={BADGE_UNKNOWN}
           rows={unknown}
           empty="Every active member has a current statement."
+          orgId={orgId}
+          canViewMembers={canViewMembers}
         />
       </div>
       <p className="mt-3 text-xs text-neutral-500">
