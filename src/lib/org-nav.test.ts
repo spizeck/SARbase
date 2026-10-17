@@ -49,6 +49,7 @@ describe("orgNavGroups", () => {
       "/incidents",
       "/training",
       "/members",
+      "/availability",
       "/access",
       "/reviews",
       "/units",
@@ -93,6 +94,25 @@ describe("orgNavGroups", () => {
     ]) {
       expect(hrefs).not.toContain(`/admin/organizations/org-1${absent}`);
     }
+  });
+
+  it("anyOf items show for either capability and hide with neither", () => {
+    const ops = orgNavGroups(
+      "org-1",
+      ["OPERATIONS_MANAGE"] as OrgCapability[],
+      MANAGER,
+    );
+    const opsHrefs = ops.flatMap((g) => g.items.map((i) => i.href));
+    expect(opsHrefs).toContain("/admin/organizations/org-1/availability");
+    expect(opsHrefs).not.toContain("/admin/organizations/org-1/members");
+
+    const other = orgNavGroups(
+      "org-1",
+      ["TRAINING_MANAGE"] as OrgCapability[],
+      MANAGER,
+    );
+    const otherHrefs = other.flatMap((g) => g.items.map((i) => i.href));
+    expect(otherHrefs).not.toContain("/admin/organizations/org-1/availability");
   });
 
   it("managers never see admin-only destinations", () => {

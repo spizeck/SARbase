@@ -18,6 +18,7 @@ import { listMemberTraining } from "@/lib/domain/training";
 import {
   getMemberAvailability,
   getMemberContactPreference,
+  listMemberAvailabilityHistory,
   AVAILABILITY_STATUS_LABELS,
 } from "@/lib/domain/availability";
 import {
@@ -117,6 +118,7 @@ export default async function AccountPage() {
       member,
       availability: await getMemberAvailability(member.id),
       preference: await getMemberContactPreference(member.id),
+      history: await listMemberAvailabilityHistory(member.id, 5),
     })),
   );
 
@@ -248,121 +250,160 @@ export default async function AccountPage() {
             with. These are factual statements — your organization decides what
             they mean.
           </p>
-          {ownAvailability.map(({ member, availability, preference }) => (
-            <div
-              key={member.id}
-              className="mt-3 rounded-md border border-neutral-200 p-4"
-            >
-              <h3 className="text-sm font-medium text-neutral-500">
-                {member.displayName} — {orgName(member.organizationId)}
-              </h3>
-              <div className="mt-2 text-sm">
-                <span
-                  className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                    availability.status === "AVAILABLE"
-                      ? "bg-green-100 text-green-800"
-                      : availability.status === "UNKNOWN"
-                        ? "bg-neutral-100 text-neutral-600"
-                        : "bg-amber-100 text-amber-800"
-                  }`}
-                >
-                  {AVAILABILITY_STATUS_LABELS[availability.status]}
-                </span>
-                {availability.latest?.until &&
-                  !availability.expired &&
-                  availability.status !== "UNKNOWN" && (
-                    <span className="ml-2 text-neutral-600">
-                      Until{" "}
-                      {new Intl.DateTimeFormat("en-US", {
-                        dateStyle: "medium",
-                        timeZone: "UTC",
-                      }).format(availability.latest.until)}
-                    </span>
-                  )}
-              </div>
-              <p className="mt-1 text-xs text-neutral-500">
-                {availability.latest
-                  ? `Last updated ${relativeTimeLabel(availability.latest.createdAt)}`
-                  : "Not recorded yet"}
-                {availability.expired && availability.latest
-                  ? ` — last recorded as ${
-                      AVAILABILITY_STATUS_LABELS[availability.latest.status]
-                    }${
-                      availability.latest.until
-                        ? ` until ${formatDateOnly(availability.latest.until)}`
-                        : ""
-                    }, which has passed`
-                  : ""}
-              </p>
-              <details className="mt-3">
-                <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
-                  Update availability
-                </summary>
-                <div className="mt-2">
-                  <AvailabilityForm
-                    action={updateMyAvailabilityAction.bind(null, member.id)}
-                    defaultStatus={availability.status}
-                    defaultUntil={formatDateOnly(availability.latest?.until)}
-                    defaultNote={availability.latest?.note}
-                    idPrefix={`availability-${member.id}`}
-                  />
-                </div>
-              </details>
-              <details className="mt-3">
-                <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
-                  Contact details
-                </summary>
-                <p className="mt-1 text-xs text-neutral-500">
-                  Changes are recorded in your record&apos;s history.
-                </p>
-                <div className="mt-2">
-                  <ContactDetailsForm
-                    action={updateMyContactDetailsAction.bind(null, member.id)}
-                    defaults={{
-                      email: member.email,
-                      phone: member.phone,
-                      emergencyContactName: member.emergencyContactName,
-                      emergencyContactPhone: member.emergencyContactPhone,
-                    }}
-                    regions={phoneRegions}
-                    idPrefix={`details-${member.id}`}
-                  />
-                </div>
-              </details>
-              <details className="mt-3">
-                <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
-                  Contact preferences
-                </summary>
-                <div className="mt-2">
-                  <ContactPreferencesForm
-                    action={updateMyContactPreferencesAction.bind(
-                      null,
-                      member.id,
+          {ownAvailability.map(
+            ({ member, availability, preference, history }) => (
+              <div
+                key={member.id}
+                className="mt-3 rounded-md border border-neutral-200 p-4"
+              >
+                <h3 className="text-sm font-medium text-neutral-500">
+                  {member.displayName} — {orgName(member.organizationId)}
+                </h3>
+                <div className="mt-2 text-sm">
+                  <span
+                    className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                      availability.status === "AVAILABLE"
+                        ? "bg-green-100 text-green-800"
+                        : availability.status === "UNKNOWN"
+                          ? "bg-neutral-100 text-neutral-600"
+                          : "bg-amber-100 text-amber-800"
+                    }`}
+                  >
+                    {AVAILABILITY_STATUS_LABELS[availability.status]}
+                  </span>
+                  {availability.latest?.until &&
+                    !availability.expired &&
+                    availability.status !== "UNKNOWN" && (
+                      <span className="ml-2 text-neutral-600">
+                        Until{" "}
+                        {new Intl.DateTimeFormat("en-US", {
+                          dateStyle: "medium",
+                          timeZone: "UTC",
+                        }).format(availability.latest.until)}
+                      </span>
                     )}
-                    email={member.email}
-                    phone={member.phone}
-                    whatsappConsented={
-                      preference?.whatsappConsentAt != null &&
-                      preference.whatsappOptedOutAt == null
-                    }
-                    defaults={preference}
-                    idPrefix={`contact-${member.id}`}
-                  />
-                  <div className="mt-4 border-t border-neutral-200 pt-3">
-                    <WhatsAppConsentForm
-                      action={updateMyWhatsappConsentAction.bind(
+                </div>
+                <p className="mt-1 text-xs text-neutral-500">
+                  {availability.latest
+                    ? `Last updated ${relativeTimeLabel(availability.latest.createdAt)}`
+                    : "Not recorded yet"}
+                  {availability.expired && availability.latest
+                    ? ` — last recorded as ${
+                        AVAILABILITY_STATUS_LABELS[availability.latest.status]
+                      }${
+                        availability.latest.until
+                          ? ` until ${formatDateOnly(availability.latest.until)}`
+                          : ""
+                      }, which has passed`
+                    : ""}
+                </p>
+                <details className="mt-3">
+                  <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+                    Update availability
+                  </summary>
+                  <div className="mt-2">
+                    <AvailabilityForm
+                      action={updateMyAvailabilityAction.bind(null, member.id)}
+                      defaultStatus={availability.status}
+                      defaultUntil={formatDateOnly(availability.latest?.until)}
+                      defaultNote={availability.latest?.note}
+                      idPrefix={`availability-${member.id}`}
+                    />
+                  </div>
+                </details>
+                {history.length > 0 && (
+                  <details className="mt-3">
+                    <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+                      Recent statements ({history.length})
+                    </summary>
+                    <ul className="mt-2 space-y-1">
+                      {history.map((update) => (
+                        <li
+                          key={update.id}
+                          className="rounded border border-neutral-100 bg-neutral-50 px-3 py-1.5 text-xs text-neutral-700"
+                        >
+                          <span className="font-medium">
+                            {AVAILABILITY_STATUS_LABELS[update.status]}
+                          </span>
+                          {update.until && (
+                            <span> until {formatDateOnly(update.until)}</span>
+                          )}
+                          <span className="text-neutral-500">
+                            {" "}
+                            · recorded {relativeTimeLabel(update.createdAt)}
+                            {update.selfReported
+                              ? " by you"
+                              : ` by ${update.actorDisplayName}`}
+                          </span>
+                          {update.note && (
+                            <span className="block text-neutral-500">
+                              {update.note}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+                <details className="mt-3">
+                  <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+                    Contact details
+                  </summary>
+                  <p className="mt-1 text-xs text-neutral-500">
+                    Changes are recorded in your record&apos;s history.
+                  </p>
+                  <div className="mt-2">
+                    <ContactDetailsForm
+                      action={updateMyContactDetailsAction.bind(
                         null,
                         member.id,
                       )}
-                      phone={member.phone}
-                      consentedAt={preference?.whatsappConsentAt ?? null}
-                      optedOutAt={preference?.whatsappOptedOutAt ?? null}
+                      defaults={{
+                        email: member.email,
+                        phone: member.phone,
+                        emergencyContactName: member.emergencyContactName,
+                        emergencyContactPhone: member.emergencyContactPhone,
+                      }}
+                      regions={phoneRegions}
+                      idPrefix={`details-${member.id}`}
                     />
                   </div>
-                </div>
-              </details>
-            </div>
-          ))}
+                </details>
+                <details className="mt-3">
+                  <summary className="cursor-pointer text-sm font-medium text-neutral-700 hover:text-neutral-900">
+                    Contact preferences
+                  </summary>
+                  <div className="mt-2">
+                    <ContactPreferencesForm
+                      action={updateMyContactPreferencesAction.bind(
+                        null,
+                        member.id,
+                      )}
+                      email={member.email}
+                      phone={member.phone}
+                      whatsappConsented={
+                        preference?.whatsappConsentAt != null &&
+                        preference.whatsappOptedOutAt == null
+                      }
+                      defaults={preference}
+                      idPrefix={`contact-${member.id}`}
+                    />
+                    <div className="mt-4 border-t border-neutral-200 pt-3">
+                      <WhatsAppConsentForm
+                        action={updateMyWhatsappConsentAction.bind(
+                          null,
+                          member.id,
+                        )}
+                        phone={member.phone}
+                        consentedAt={preference?.whatsappConsentAt ?? null}
+                        optedOutAt={preference?.whatsappOptedOutAt ?? null}
+                      />
+                    </div>
+                  </div>
+                </details>
+              </div>
+            ),
+          )}
         </section>
       )}
 

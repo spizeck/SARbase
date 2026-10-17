@@ -17,6 +17,8 @@ export interface OrgNavItem {
   label: string;
   /** Staff capability required to see the item (absent = any staff). */
   capability?: OrgCapability;
+  /** Visible when the caller holds ANY of these capabilities. */
+  anyOf?: OrgCapability[];
   /** Reserved to ADMIN regardless of manager capabilities. */
   adminOnly?: boolean;
   /** Staff surface with no specific capability (visible to any staff). */
@@ -69,6 +71,11 @@ export function orgNavGroups(
           href: admin("/members"),
           label: "Members",
           capability: "MEMBERS_MANAGE",
+        },
+        {
+          href: admin("/availability"),
+          label: "Availability",
+          anyOf: ["MEMBERS_MANAGE", "OPERATIONS_MANAGE"],
         },
         { href: admin("/access"), label: "Access & roles", adminOnly: true },
         {
@@ -165,7 +172,8 @@ export function orgNavGroups(
         (i) =>
           (!i.adminOnly || isAdmin) &&
           (!i.staffOnly || isStaff) &&
-          (!i.capability || caps.has(i.capability)),
+          (!i.capability || caps.has(i.capability)) &&
+          (!i.anyOf || i.anyOf.some((c) => caps.has(c))),
       ),
     }))
     .filter((g) => g.items.length > 0);
