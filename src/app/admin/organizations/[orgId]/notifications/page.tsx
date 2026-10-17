@@ -11,9 +11,11 @@ import {
   isRetryableNotification,
   listOrganizationNotifications,
   NOTIFICATION_ATTEMPT_STATUS_LABELS,
+  NOTIFICATION_DELIVERY_STATUS_LABELS,
   NOTIFICATION_STATUS_LABELS,
   SUPPRESSION_REASON_LABELS,
 } from "@/lib/domain/notifications";
+import { CALLOUT_RESPONSE_LABELS } from "@/lib/domain/callouts";
 import { relativeTimeLabel } from "@/lib/dates";
 
 import {
@@ -35,6 +37,26 @@ const statusBadgeClass: Record<string, string> = {
   ACCEPTED: "bg-green-100 text-green-800",
   FAILED: "bg-red-100 text-red-800",
 };
+
+const deliveryBadgeClass: Record<string, string> = {
+  SENT: "bg-neutral-100 text-neutral-600",
+  DELIVERED: "bg-green-100 text-green-800",
+  READ: "bg-green-100 text-green-800",
+  FAILED: "bg-red-100 text-red-800",
+};
+
+/**
+ * WhatsApp destinations are phone numbers — higher-risk PII than the
+ * member-record email admins already see. Show enough to disambiguate
+ * (last 4 digits), not the dialable number.
+ */
+function destinationLabel(channel: string, destination: string | null) {
+  if (!destination) return "no destination";
+  if (channel === "WHATSAPP" && destination.length > 4) {
+    return `WhatsApp ••••${destination.slice(-4)}`;
+  }
+  return destination;
+}
 
 export default async function OrganizationNotificationsPage({
   params,
@@ -135,6 +157,7 @@ export default async function OrganizationNotificationsPage({
             {notifications.map((notification) => {
               const latestAttempt = notification.attempts.at(-1);
               const retryable = isRetryableNotification(notification);
+              const linkedInvitation = notification.calloutInvitations[0];
               return (
                 <li key={notification.id} className="px-4 py-3 text-sm">
                   <div className="flex items-center justify-between gap-3">
@@ -168,13 +191,36 @@ export default async function OrganizationNotificationsPage({
                     </span>
                   </div>
                   <div className="mt-1 text-xs text-neutral-600">
-                    <span>{notification.destination ?? "no destination"}</span>
+                    <span>
+                      {destinationLabel(
+                        notification.channel,
+                        notification.destination,
+                      )}
+                    </span>
                     <span className="text-neutral-400">
                       {" "}
                       · {notification.subject ?? "—"} ·{" "}
                       {relativeTimeLabel(notification.createdAt)}
                     </span>
                   </div>
+                  {linkedInvitation && (
+                    <p className="mt-1 text-xs text-neutral-600">
+                      Callout:{" "}
+                      <Link
+                        href={`/admin/organizations/${orgId}/callouts/${linkedInvitation.callout.id}`}
+                        className="font-medium text-neutral-800 hover:underline"
+                      >
+                        {linkedInvitation.callout.title}
+                      </Link>
+                      <span className="text-neutral-500">
+                        {" "}
+                        · member response:{" "}
+                        {linkedInvitation.response
+                          ? CALLOUT_RESPONSE_LABELS[linkedInvitation.response]
+                          : "none"}
+                      </span>
+                    </p>
+                  )}
                   {notification.statusReason && (
                     <p className="mt-1 text-xs text-neutral-600">
                       {SUPPRESSION_REASON_LABELS[notification.statusReason] ??
@@ -204,6 +250,20 @@ export default async function OrganizationNotificationsPage({
                               attempt.status
                             ] ?? attempt.status}
                           </span>
+                          {attempt.deliveryStatus &&
+                            NOTIFICATION_DELIVERY_STATUS_LABELS[
+                              attempt.deliveryStatus
+                            ] && (
+                              <span
+                                className={`ml-1 inline-block rounded-full px-2 py-0.5 font-medium ${deliveryBadgeClass[attempt.deliveryStatus] ?? "bg-neutral-100 text-neutral-600"}`}
+                              >
+                                {
+                                  NOTIFICATION_DELIVERY_STATUS_LABELS[
+                                    attempt.deliveryStatus
+                                  ]
+                                }
+                              </span>
+                            )}
                           <span className="text-neutral-500">
                             {" "}
                             · {attempt.provider} · attempted{" "}

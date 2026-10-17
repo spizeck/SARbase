@@ -136,6 +136,17 @@ export const SUPPRESSION_REASON_LABELS: Record<string, string> = {
   consent_missing: "Member has not granted WhatsApp consent",
 };
 
+// Provider-reported delivery facts (issue #101) — facts about the
+// MESSAGE, never about the member. "Read" is a WhatsApp client report
+// that the conversation was opened; it is not acknowledgment, consent,
+// or a callout response.
+export const NOTIFICATION_DELIVERY_STATUS_LABELS: Record<string, string> = {
+  SENT: "Sent (provider report)",
+  DELIVERED: "Delivered (provider report)",
+  READ: "Read (provider report)",
+  FAILED: "Delivery failed",
+};
+
 export interface NotificationRequestInput {
   organizationId: string;
   channel: NotificationChannelName;
@@ -909,6 +920,16 @@ export function listOrganizationNotifications(
     include: {
       member: { select: { id: true, displayName: true } },
       attempts: { orderBy: { attemptNumber: "asc" } },
+      // The callout invitation this request was sent for, when any —
+      // surfaces the linked callout and the member's response next to
+      // (never merged into) the delivery facts.
+      calloutInvitations: {
+        take: 1,
+        select: {
+          response: true,
+          callout: { select: { id: true, title: true } },
+        },
+      },
     },
   });
 }

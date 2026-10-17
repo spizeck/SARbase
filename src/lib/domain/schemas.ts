@@ -929,6 +929,10 @@ export const adminNotificationSendSchema = z
   .object({
     memberId: optionalId,
     destination: emailSchema,
+    // Issue #103 — a member-targeted test send may ride WHATSAPP (the
+    // member's consent + preference still gate it downstream). One-off
+    // destinations remain email-only.
+    channel: z.enum(["EMAIL", "WHATSAPP"]).default("EMAIL"),
     subject: z
       .string()
       .trim()
@@ -942,12 +946,20 @@ export const adminNotificationSendSchema = z
     idempotencyKey: idempotencyKeySchema,
   })
   .check((ctx) => {
-    const { memberId, destination } = ctx.value;
+    const { memberId, destination, channel } = ctx.value;
     if ((memberId == null) === (destination == null)) {
       ctx.issues.push({
         code: "custom",
         message: "Choose a member or enter an email address — not both.",
         path: ["memberId"],
+        input: ctx.value,
+      });
+    }
+    if (destination != null && channel !== "EMAIL") {
+      ctx.issues.push({
+        code: "custom",
+        message: "WhatsApp test sends require a member recipient.",
+        path: ["channel"],
         input: ctx.value,
       });
     }

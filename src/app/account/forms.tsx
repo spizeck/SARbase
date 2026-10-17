@@ -717,7 +717,9 @@ export function WhatsAppConsentForm({
         <p className="mt-1 text-xs text-neutral-500">
           {consented
             ? `You consented to SARbase WhatsApp messages on ${consentedAt!.toLocaleDateString()}. Consent covers operational notifications to ${phone ?? "your phone number"} — it is never proof a message was delivered or that you responded.`
-            : "SARbase can send operational messages (callout alerts, updates) to your phone number via WhatsApp — but only with your explicit consent. You can opt out at any time; opting out stops future WhatsApp sends without changing any delivery history."}
+            : optedOutAt
+              ? `You opted out of SARbase WhatsApp messages on ${optedOutAt.toLocaleDateString()}. Opting out stops future WhatsApp sends without changing any delivery history — you can consent again at any time.`
+              : "SARbase can send operational messages (callout alerts, updates) to your phone number via WhatsApp — but only with your explicit consent. You can opt out at any time; opting out stops future WhatsApp sends without changing any delivery history."}
         </p>
         {!phone && (
           <p className="mt-1 text-xs text-neutral-500">

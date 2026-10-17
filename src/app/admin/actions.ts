@@ -2519,6 +2519,7 @@ export async function sendAdminNotificationAction(
   const parsed = adminNotificationSendSchema.safeParse({
     memberId: formData.get("memberId"),
     destination: formData.get("destination"),
+    channel: formData.get("channel") ?? undefined,
     subject: formData.get("subject"),
     body: formData.get("body"),
     idempotencyKey: formData.get("idempotencyKey"),
@@ -2529,10 +2530,13 @@ export async function sendAdminNotificationAction(
     await requestNotification(
       {
         organizationId,
-        channel: "EMAIL",
+        channel: parsed.data.channel,
+        // WhatsApp test sends ride the generic admin_notice template —
+        // never a callout template, which would mint a response link.
+        template:
+          parsed.data.channel === "WHATSAPP" ? "admin_notice" : "admin_test",
         memberId: parsed.data.memberId,
         destination: parsed.data.destination,
-        template: "admin_test",
         subject: parsed.data.subject,
         bodyText: `${parsed.data.body}\n\n—\nThis is an administrative test notification sent via SARbase. It is not an operational alert.`,
         metadata: { source: "admin_test_send" },

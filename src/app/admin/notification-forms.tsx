@@ -82,6 +82,31 @@ export function NotificationTestSendForm({
         />
       </div>
       <div>
+        <label htmlFor="ntf-channel" className={labelClass}>
+          Channel
+        </label>
+        <select
+          id="ntf-channel"
+          name="channel"
+          defaultValue="EMAIL"
+          aria-invalid={Boolean(state.fieldErrors?.channel)}
+          aria-describedby="ntf-channel-error ntf-channel-hint"
+          className={inputClass}
+        >
+          <option value="EMAIL">Email</option>
+          <option value="WHATSAPP">WhatsApp</option>
+        </select>
+        <p id="ntf-channel-hint" className="mt-1 text-xs text-neutral-500">
+          WhatsApp requires a member recipient with live consent — it is a
+          template message, not the free-text body below. One-off addresses are
+          email only.
+        </p>
+        <FieldError
+          id="ntf-channel-error"
+          errors={state.fieldErrors?.channel}
+        />
+      </div>
+      <div>
         <label htmlFor="ntf-destination" className={labelClass}>
           One-off email address
         </label>
