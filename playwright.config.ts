@@ -23,7 +23,21 @@ export default defineConfig({
     // not flake on transition timing.
     reducedMotion: "reduce",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    {
+      name: "chromium",
+      use: { ...devices["Desktop Chrome"] },
+      grepInvert: /@mobile/,
+    },
+    // Mobile regressions (issue #119): specs tagged @mobile run on a
+    // phone-sized viewport — small-screen layout, tap-target, and
+    // horizontal-overflow bugs that a desktop viewport cannot catch.
+    {
+      name: "mobile-chromium",
+      use: { ...devices["Pixel 5"] },
+      grep: /@mobile/,
+    },
+  ],
   webServer: {
     command: process.env.CI
       ? `npx next start -p ${port}`
