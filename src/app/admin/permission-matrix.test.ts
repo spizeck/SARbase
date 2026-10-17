@@ -293,6 +293,8 @@ const PAGE_MATRIX: Record<string, string> = {
   "units/page.tsx": "OrgCapability.MEMBERS_MANAGE",
   "reviews/page.tsx": "OrgCapability.QUALIFICATIONS_VERIFY",
   "qualifications/page.tsx": "OrgCapability.QUALIFICATIONS_MANAGE",
+  "qualifications/[definitionId]/page.tsx":
+    "OrgCapability.QUALIFICATIONS_MANAGE",
   "expiring/page.tsx": "OrgCapability.QUALIFICATIONS_MANAGE",
   "assets/page.tsx": "OrgCapability.EQUIPMENT_MANAGE",
   "assets/[assetId]/page.tsx": "OrgCapability.EQUIPMENT_MANAGE",
