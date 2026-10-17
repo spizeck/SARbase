@@ -18,6 +18,9 @@ export function normalizePhoneToE164Digits(
   if (!raw) return null;
   try {
     const number = parsePhoneNumberWithError(raw.trim());
+    // Parsing succeeds for plausible-but-invalid numbers (wrong length
+    // for the country) — validity is a separate check.
+    if (!number.isValid()) return null;
     return number.number.slice(1); // strip the leading "+"
   } catch {
     return null;
