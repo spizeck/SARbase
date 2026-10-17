@@ -130,6 +130,7 @@ const MATRIX: Record<string, Guard[]> = {
     "requireOrgCapability(ctx, organizationId, OrgCapability.OPERATIONS_MANAGE)",
   ],
   closeCalloutAction: ["requireOrgCapabilityForCallout"],
+  updateCalloutAction: ["requireOrgCapabilityForCallout"],
   recordCalloutResponseAction: ["requireOrgCapabilityForCalloutInvitation"],
   createIncidentAction: [
     "requireOrgCapability(ctx, organizationId, OrgCapability.OPERATIONS_MANAGE)",

@@ -238,8 +238,7 @@ export default async function CalloutDetailPage({
                 </span>
                 <span className="text-neutral-500">
                   {" "}
-                  · {change.actorDisplay ?? "unknown"} ·{" "}
-                  {formatInstant(change.createdAt)} UTC
+                  · {change.actorDisplay ?? "unknown"} · {fmt(change.createdAt)}
                 </span>
                 <span className="mt-0.5 block">
                   Before: {change.beforeValue ?? "(empty)"}

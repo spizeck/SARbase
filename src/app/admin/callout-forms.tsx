@@ -406,6 +406,11 @@ export function CalloutEditForm({
         <button type="submit" disabled={pending} className={buttonClass}>
           {pending ? "Saving…" : "Save correction"}
         </button>
+        {state.notice && (
+          <p className="text-xs text-amber-800" role="status">
+            {state.notice}
+          </p>
+        )}
         {state.message && (
           <p className="text-xs text-red-700" role="alert">
             {state.message}
