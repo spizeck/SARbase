@@ -67,10 +67,16 @@ export class PostgresRateLimitStore implements RateLimitStore {
 
     if (Math.random() < this.sweepProbability) {
       // Fire-and-forget: a failed sweep must never fail the request;
-      // the next hit gets another chance.
-      void prisma.$executeRaw`DELETE FROM "RateLimitWindow" WHERE "resetAt" <= ${nowBig}`.catch(
-        () => {},
-      );
+      // the next hit gets another chance. Batched so a pathologically
+      // large backlog cannot take a long row lock on one unlucky call.
+      void prisma.$executeRaw`
+        DELETE FROM "RateLimitWindow"
+        WHERE "key" IN (
+          SELECT "key" FROM "RateLimitWindow"
+          WHERE "resetAt" <= ${nowBig}
+          LIMIT 500
+        )
+      `.catch(() => {});
     }
 
     return { count: Number(row.count), resetAt: Number(row.resetAt) };
