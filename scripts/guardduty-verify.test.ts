@@ -35,7 +35,9 @@ function healthyAws(): AwsFn {
       case "s3api get-bucket-versioning":
         return ok({ Status: "Enabled" });
       case "guardduty list-malware-protection-plans":
-        return ok({ MalwareProtectionPlans: [{ MalwareProtectionPlanId: "p1" }] });
+        return ok({
+          MalwareProtectionPlans: [{ MalwareProtectionPlanId: "p1" }],
+        });
       case "guardduty get-malware-protection-plan":
         return ok({
           ProtectedResource: { S3Bucket: { BucketName: BUCKET } },
@@ -86,7 +88,11 @@ function healthyAws(): AwsFn {
 }
 
 function stubCliVersion() {
-  spawnSyncMock.mockReturnValue({ status: 0, stdout: "aws-cli/2.x", error: null });
+  spawnSyncMock.mockReturnValue({
+    status: 0,
+    stdout: "aws-cli/2.x",
+    error: null,
+  });
 }
 
 function healthyFetch(): typeof fetch {
@@ -99,7 +105,9 @@ const base = {
   endpoint: ENDPOINT,
 };
 
-async function run(overrides: Partial<Parameters<typeof verifyGuardDutyDelivery>[0]> = {}) {
+async function run(
+  overrides: Partial<Parameters<typeof verifyGuardDutyDelivery>[0]> = {},
+) {
   stubCliVersion();
   return verifyGuardDutyDelivery({
     ...base,
@@ -109,7 +117,10 @@ async function run(overrides: Partial<Parameters<typeof verifyGuardDutyDelivery>
   });
 }
 
-function byName(results: Awaited<ReturnType<typeof verifyGuardDutyDelivery>>, name: string) {
+function byName(
+  results: Awaited<ReturnType<typeof verifyGuardDutyDelivery>>,
+  name: string,
+) {
   const r = results.find((x) => x.name === name);
   expect(r, `missing check: ${name}`).toBeTruthy();
   return r!;
@@ -163,9 +174,9 @@ describe("verifyGuardDutyDelivery", () => {
             })
           : healthyAws()(args),
     });
-    expect(
-      byName(results, "EventBridge rule enabled and scoped").status,
-    ).toBe("FAIL");
+    expect(byName(results, "EventBridge rule enabled and scoped").status).toBe(
+      "FAIL",
+    );
   });
 
   it("fails when the API destination points at a different endpoint", async () => {
@@ -198,7 +209,8 @@ describe("verifyGuardDutyDelivery", () => {
 
   it("fails when the ingest endpoint 404s (route not deployed)", async () => {
     const results = await run({
-      fetch: (async () => new Response("nope", { status: 404 })) as typeof fetch,
+      fetch: (async () =>
+        new Response("nope", { status: 404 })) as typeof fetch,
     });
     expect(
       byName(results, "ingest endpoint reachable and fails closed").status,
@@ -212,8 +224,6 @@ describe("verifyGuardDutyDelivery", () => {
           ? fail("AccessDenied")
           : healthyAws()(args),
     });
-    expect(byName(results, "GuardDuty protection plan").status).toBe(
-      "MANUAL",
-    );
+    expect(byName(results, "GuardDuty protection plan").status).toBe("MANUAL");
   });
 });

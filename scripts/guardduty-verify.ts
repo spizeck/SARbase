@@ -213,7 +213,8 @@ export async function verifyGuardDutyDelivery(
       EventBusName?: string;
     } | null;
     const pattern = rule?.EventPattern ?? "";
-    const scoped = pattern.includes(bucket) && pattern.includes("organizations/");
+    const scoped =
+      pattern.includes(bucket) && pattern.includes("organizations/");
     push({
       name: "EventBridge rule enabled and scoped",
       status: r.ok && rule?.State === "ENABLED" && scoped ? "PASS" : "FAIL",
@@ -245,7 +246,11 @@ export async function verifyGuardDutyDelivery(
       )?.Targets ?? [];
     const t = targets[0];
     const isApiDest = t?.Arn?.includes("api-destination") ?? false;
-    const ok = r.ok && isApiDest && Boolean(t?.RoleArn) && Boolean(t?.DeadLetterConfig?.Arn);
+    const ok =
+      r.ok &&
+      isApiDest &&
+      Boolean(t?.RoleArn) &&
+      Boolean(t?.DeadLetterConfig?.Arn);
     push({
       name: "rule targets API destination with invoke role + DLQ",
       status: ok ? "PASS" : "FAIL",
