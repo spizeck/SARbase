@@ -1036,6 +1036,23 @@ export const calloutActivationSchema = z
 export type CalloutActivationInput = z.infer<typeof calloutActivationSchema>;
 
 /** Factual response choices offered on the response surface. */
+/**
+ * Coordinator correction of a callout's title/message (issue #117).
+ * Same bounds as activation — the fields are the same fields; only the
+ * append-only CalloutChange audit differs. Submitting an identical
+ * value is valid input — the domain no-ops it rather than recording a
+ * fake change.
+ */
+export const calloutEditSchema = z.object({
+  title: z
+    .string()
+    .trim()
+    .min(1, "Title is required.")
+    .max(120, "Keep the title under 120 characters."),
+  message: optionalText(1000),
+});
+export type CalloutEditInput = z.infer<typeof calloutEditSchema>;
+
 export const calloutResponseSchema = z.enum(["COMING", "UNAVAILABLE"]);
 export type CalloutResponseInput = z.infer<typeof calloutResponseSchema>;
 

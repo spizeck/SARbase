@@ -47,6 +47,7 @@ import {
   contactPreferenceSchema,
   adminNotificationSendSchema,
   calloutActivationSchema,
+  calloutEditSchema,
   adminCalloutResponseSchema,
   incidentCreateSchema,
   incidentUpdateSchema,
@@ -228,6 +229,7 @@ import { getFileStorageProvider } from "@/lib/storage/resolve";
 import {
   activateCallout,
   closeCallout,
+  updateCallout,
   recordInvitationResponse,
   CalloutAudienceError,
   CalloutClosedError,
@@ -2692,6 +2694,48 @@ export async function closeCalloutAction(
   );
   revalidatePath(`/admin/organizations/${callout.organizationId}/callouts`);
   return {};
+}
+
+/**
+ * Correct a callout's title or message (issue #117). Allowed on ACTIVE
+ * and CLOSED callouts — closing ends responses, not recordkeeping.
+ * Every changed field appends a CalloutChange audit row; editing never
+ * re-notifies invitees.
+ */
+export async function updateCalloutAction(
+  calloutId: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const ctx = await requireAuth();
+  let callout;
+  try {
+    callout = await requireOrgCapabilityForCallout(ctx, calloutId);
+  } catch (error) {
+    return mapDomainError(error);
+  }
+
+  const parsed = calloutEditSchema.safeParse({
+    title: formData.get("title"),
+    message: formData.get("message"),
+  });
+  if (!parsed.success) return zodErrors(parsed.error);
+
+  try {
+    const result = await updateCallout(
+      callout.id,
+      { title: parsed.data.title, message: parsed.data.message ?? null },
+      ctx.identity.id,
+    );
+    revalidatePath(
+      `/admin/organizations/${callout.organizationId}/callouts/${callout.id}`,
+    );
+    return result.changedFields.length === 0
+      ? { notice: "No changes to save." }
+      : {};
+  } catch (error) {
+    return mapDomainError(error);
+  }
 }
 
 /**

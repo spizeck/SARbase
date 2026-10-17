@@ -138,6 +138,7 @@ model Organization {
   callouts               Callout[]
   calloutInvitations     CalloutInvitation[]
   calloutResponseChanges CalloutResponseChange[]
+  calloutChanges         CalloutChange[]
 
   incidents               Incident[]
   incidentSequences       IncidentSequence[]
@@ -1842,6 +1843,7 @@ model Callout {
   organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   unit         Unit?               @relation(fields: [unitId, organizationId], references: [id, organizationId], onDelete: Restrict)
   invitations  CalloutInvitation[]
+  changes      CalloutChange[]
   // Issue #15 — at most one incident record may link to this callout
   // (unique calloutId on Incident). The callout itself never changes
   // when an incident is created: its invitations and responses remain
@@ -1894,6 +1896,31 @@ model CalloutInvitation {
   @@unique([id, organizationId])
   @@index([organizationId, invitedAt])
   @@index([calloutId, response])
+}
+
+// Append-only history of coordinator edits to a callout's title/message
+// (issue #117). The current text lives on Callout for fast reads; every
+// correction is recorded here with the acting identity so a re-sent
+// alert is never presented as the original. Edits never re-notify
+// invitees — that is a deliberate, documented choice, not an omission.
+// actorAuthIdentityId is a plain scalar reference (no FK), matching
+// every other audit table: history must survive identity removal.
+model CalloutChange {
+  id                  String   @id @default(cuid())
+  organizationId      String
+  calloutId           String
+  // The edited field — "title" or "message".
+  field               String
+  beforeValue         String?
+  afterValue          String?
+  actorAuthIdentityId String
+  createdAt           DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  callout      Callout      @relation(fields: [calloutId, organizationId], references: [id, organizationId], onDelete: Restrict)
+
+  @@unique([id, organizationId])
+  @@index([calloutId, createdAt])
 }
 
 // Append-only history of response changes on an invitation. The current

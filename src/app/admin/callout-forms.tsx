@@ -350,3 +350,65 @@ export function AdminResponseForm({
     </form>
   );
 }
+
+/**
+ * Correct a callout's title/message (issue #117). Every changed field
+ * appends an audited CalloutChange row; editing never re-notifies
+ * invitees — the existing alerts stay the factual record of what was
+ * sent.
+ */
+export function CalloutEditForm({
+  action,
+  defaults,
+}: {
+  action: BoundAction;
+  defaults: { title: string; message: string | null };
+}) {
+  const [state, formAction, pending] = useActionState(action, {});
+  return (
+    <form action={formAction} className="space-y-3">
+      <div>
+        <label htmlFor="callout-edit-title" className={labelClass}>
+          Title
+        </label>
+        <input
+          id="callout-edit-title"
+          name="title"
+          type="text"
+          required
+          maxLength={120}
+          defaultValue={defaults.title}
+          className={inputClass}
+        />
+        <FieldError id="callout-edit-title-error" errors={state.fieldErrors?.title} />
+      </div>
+      <div>
+        <label htmlFor="callout-edit-message" className={labelClass}>
+          Message to invitees
+        </label>
+        <textarea
+          id="callout-edit-message"
+          name="message"
+          rows={3}
+          maxLength={1000}
+          defaultValue={defaults.message ?? ""}
+          className={inputClass}
+        />
+        <FieldError
+          id="callout-edit-message-error"
+          errors={state.fieldErrors?.message}
+        />
+      </div>
+      <div className="flex items-center gap-3">
+        <button type="submit" disabled={pending} className={buttonClass}>
+          {pending ? "Saving…" : "Save correction"}
+        </button>
+        {state.message && (
+          <p className="text-xs text-red-700" role="alert">
+            {state.message}
+          </p>
+        )}
+      </div>
+    </form>
+  );
+}

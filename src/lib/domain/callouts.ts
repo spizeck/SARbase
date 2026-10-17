@@ -804,6 +804,84 @@ export async function respondToCalloutToken(
  * closing an already-closed callout returns it unchanged so a
  * double-click is a no-op rather than an error.
  */
+/**
+ * Correct a callout's title or message (issue #117). Works on ACTIVE
+ * and CLOSED callouts — closing ends responses, not the need for an
+ * accurate record. Every changed field appends a CalloutChange row
+ * inside the same transaction as the update, under the callout row
+ * lock so concurrent edits never interleave half-written diffs.
+ *
+ * Deliberately NOT re-notifying invitees: the notification log is a
+ * factual record of what was sent; an edit is a record correction, not
+ * a new alert. The UI says so next to the form.
+ *
+ * Fields unchanged from current values produce no audit rows — a
+ * no-op submit is a no-op, not a fake change.
+ */
+export async function updateCallout(
+  calloutId: string,
+  input: { title: string; message: string | null },
+  actorAuthIdentityId: string,
+): Promise<{ callout: Callout; changedFields: string[] }> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`
+      SELECT id FROM "Callout" WHERE id = ${calloutId} FOR UPDATE
+    `;
+    const callout = await tx.callout.findUniqueOrThrow({
+      where: { id: calloutId },
+    });
+    const diffs: {
+      field: string;
+      beforeValue: string | null;
+      afterValue: string | null;
+    }[] = [];
+    if (input.title !== callout.title) {
+      diffs.push({
+        field: "title",
+        beforeValue: callout.title,
+        afterValue: input.title,
+      });
+    }
+    if ((input.message ?? null) !== (callout.message ?? null)) {
+      diffs.push({
+        field: "message",
+        beforeValue: callout.message,
+        afterValue: input.message,
+      });
+    }
+    if (diffs.length === 0) {
+      return { callout, changedFields: [] };
+    }
+    const updated = await tx.callout.update({
+      where: { id: calloutId },
+      data: {
+        title: input.title,
+        message: input.message,
+      },
+    });
+    await tx.calloutChange.createMany({
+      data: diffs.map((d) => ({
+        organizationId: callout.organizationId,
+        calloutId,
+        field: d.field,
+        beforeValue: d.beforeValue,
+        afterValue: d.afterValue,
+        actorAuthIdentityId,
+      })),
+    });
+    log({
+      event: "callout.corrected",
+      subsystem: "callouts",
+      entityType: "Callout",
+      entityId: calloutId,
+      organizationId: callout.organizationId,
+      actorId: actorAuthIdentityId,
+      changedFields: diffs.map((d) => d.field),
+    });
+    return { callout: updated, changedFields: diffs.map((d) => d.field) };
+  });
+}
+
 export async function closeCallout(
   calloutId: string,
   closedByAuthIdentityId: string,
@@ -895,6 +973,7 @@ export async function getCalloutForAdmin(calloutId: string) {
       incident: {
         select: { id: true, reference: true, title: true, status: true },
       },
+      changes: { orderBy: [{ createdAt: "desc" }, { id: "desc" }] },
       invitations: {
         orderBy: { member: { displayName: "asc" } },
         include: {
@@ -939,6 +1018,7 @@ export async function getCalloutForAdmin(calloutId: string) {
       [
         callout.createdByAuthIdentityId,
         callout.closedByAuthIdentityId,
+        ...callout.changes.map((c) => c.actorAuthIdentityId),
         ...callout.invitations.flatMap((i) =>
           i.changes.map((c) => c.actorAuthIdentityId),
         ),
@@ -952,6 +1032,10 @@ export async function getCalloutForAdmin(calloutId: string) {
     ...callout,
     createdByDisplay: actorName(callout.createdByAuthIdentityId),
     closedByDisplay: actorName(callout.closedByAuthIdentityId),
+    changes: callout.changes.map((change) => ({
+      ...change,
+      actorDisplay: actorName(change.actorAuthIdentityId),
+    })),
     invitations: callout.invitations.map((invitation) => ({
       ...invitation,
       changes: invitation.changes.map((change) => ({

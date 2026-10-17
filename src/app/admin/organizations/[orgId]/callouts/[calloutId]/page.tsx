@@ -23,9 +23,11 @@ import {
   closeCalloutAction,
   recordCalloutResponseAction,
   createIncidentFromCalloutAction,
+  updateCalloutAction,
 } from "../../../../actions";
 import {
   AdminResponseForm,
+  CalloutEditForm,
   CloseCalloutButton,
 } from "../../../../callout-forms";
 import { IncidentFieldsForm } from "../../../../incident-forms";
@@ -199,6 +201,57 @@ export default async function CalloutDetailPage({
           )}
         </dl>
       </section>
+
+      <details className="mt-4 rounded-md border border-neutral-200 p-4">
+        <summary className="cursor-pointer text-sm font-medium text-neutral-800">
+          Correct callout details
+        </summary>
+        <p className="mt-2 text-xs text-neutral-500">
+          Corrections are recorded with your name in the change history below.
+          Editing does not resend alerts — the notifications already delivered
+          stay the record of what invitees received.
+        </p>
+        <div className="mt-3">
+          <CalloutEditForm
+            action={updateCalloutAction.bind(null, callout.id)}
+            defaults={{ title: callout.title, message: callout.message }}
+          />
+        </div>
+      </details>
+
+      {callout.changes.length > 0 && (
+        <section aria-labelledby="callout-changes-heading" className="mt-6">
+          <h2
+            id="callout-changes-heading"
+            className="text-sm font-medium text-neutral-800"
+          >
+            Change history
+          </h2>
+          <ul className="mt-2 space-y-1">
+            {callout.changes.map((change) => (
+              <li
+                key={change.id}
+                className="rounded border border-neutral-100 bg-neutral-50 px-3 py-1.5 text-xs text-neutral-700"
+              >
+                <span className="font-medium">
+                  {change.field === "title" ? "Title" : "Message"} changed
+                </span>
+                <span className="text-neutral-500">
+                  {" "}
+                  · {change.actorDisplay ?? "unknown"} ·{" "}
+                  {formatInstant(change.createdAt)} UTC
+                </span>
+                <span className="mt-0.5 block">
+                  Before: {change.beforeValue ?? "(empty)"}
+                </span>
+                <span className="block">
+                  After: {change.afterValue ?? "(empty)"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section
         aria-labelledby="response-summary-heading"

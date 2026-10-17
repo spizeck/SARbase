@@ -17,7 +17,9 @@ import {
 
 import {
   activateCallout,
+  updateCallout,
   closeCallout,
+  getCalloutForAdmin,
   getInvitationForToken,
   hashResponseToken,
   recordInvitationResponse,
@@ -143,6 +145,7 @@ describe.skipIf(!hasDb)("callouts (issue #14)", () => {
   afterAll(async () => {
     const orgFilter = { organization: { name: { startsWith: PREFIX } } };
     await prisma.calloutResponseChange.deleteMany({ where: orgFilter });
+    await prisma.calloutChange.deleteMany({ where: orgFilter });
     await prisma.calloutInvitation.deleteMany({ where: orgFilter });
     await prisma.callout.deleteMany({ where: orgFilter });
     await prisma.notificationAttempt.deleteMany({ where: orgFilter });
@@ -1327,5 +1330,106 @@ describe.skipIf(!hasDb)("callouts (issue #14)", () => {
       include: { notification: true },
     });
     expect(invitation.notification?.channel).toBe("EMAIL");
+  });
+
+  describe("updateCallout (issue #117)", () => {
+    // Direct inserts — editing doesn't touch dispatch, so no provider
+    // fixture needed (keeps these fast).
+    const makeCallout = (title: string, message?: string | null) =>
+      prisma.callout.create({
+        data: {
+          organizationId: orgA.id,
+          createdByAuthIdentityId: actor.id,
+          audience: "ORGANIZATION",
+          title,
+          message: message ?? null,
+          activationKey: key("edit"),
+          intentHash: key("edit-intent"),
+        },
+      });
+
+    it("records each changed field as an audited CalloutChange row", async () => {
+      const callout = await makeCallout(
+        uniq("original-title"),
+        "Original message",
+      );
+
+      const result = await updateCallout(
+        callout.id,
+        { title: uniq("corrected-title"), message: "Fixed message" },
+        actor.id,
+      );
+      expect(result.changedFields.sort()).toEqual(["message", "title"]);
+
+      const changes = await prisma.calloutChange.findMany({
+        where: { calloutId: callout.id },
+        orderBy: { field: "asc" },
+      });
+      expect(changes).toHaveLength(2);
+      expect(changes[0]).toMatchObject({
+        organizationId: orgA.id,
+        field: "message",
+        beforeValue: "Original message",
+        afterValue: "Fixed message",
+        actorAuthIdentityId: actor.id,
+      });
+      expect(changes[1]).toMatchObject({
+        field: "title",
+        beforeValue: expect.stringContaining("original-title"),
+        afterValue: expect.stringContaining("corrected-title"),
+      });
+
+      const stored = await prisma.callout.findUniqueOrThrow({
+        where: { id: callout.id },
+      });
+      expect(stored.title).toContain("corrected-title");
+      expect(stored.message).toBe("Fixed message");
+    });
+
+    it("a no-op submit writes no change rows", async () => {
+      const callout = await makeCallout(uniq("stable"));
+      const result = await updateCallout(
+        callout.id,
+        { title: callout.title, message: null },
+        actor.id,
+      );
+      expect(result.changedFields).toEqual([]);
+      expect(
+        await prisma.calloutChange.count({
+          where: { calloutId: callout.id },
+        }),
+      ).toBe(0);
+    });
+
+    it("corrections still work on a CLOSED callout", async () => {
+      const callout = await makeCallout(uniq("closed"));
+      await closeCallout(callout.id, actor.id);
+
+      const result = await updateCallout(
+        callout.id,
+        { title: uniq("closed-corrected"), message: callout.message },
+        actor.id,
+      );
+      expect(result.changedFields).toEqual(["title"]);
+      expect(
+        await prisma.calloutChange.count({
+          where: { calloutId: callout.id },
+        }),
+      ).toBe(1);
+    });
+
+    it("getCalloutForAdmin surfaces change history with actor display", async () => {
+      const callout = await makeCallout(uniq("displayed"));
+      await updateCallout(
+        callout.id,
+        { title: uniq("displayed-2"), message: null },
+        actor.id,
+      );
+
+      const view = await getCalloutForAdmin(callout.id);
+      expect(view?.changes).toHaveLength(1);
+      expect(view?.changes[0]?.actorDisplay).toBeTruthy();
+      expect(view?.changes[0]?.beforeValue).toContain("displayed");
+    });
   });
 });
