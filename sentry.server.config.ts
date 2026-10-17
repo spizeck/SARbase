@@ -42,9 +42,12 @@ if (config.enabled) {
       genAI: { inputs: false, outputs: false },
       databaseQueryData: false,
       queues: false,
-      // Matches the v10 restricted defaults for these categories.
-      urlQueryParams: true,
-      stackFrameVariables: true,
+      // Tighter than the v10 restricted defaults deliberately: query
+      // strings routinely carry bearer tokens (see privacy.ts), and
+      // frame locals can hold secrets/PII that the event scrubber does
+      // not redact.
+      urlQueryParams: false,
+      stackFrameVariables: false,
       frameContextLines: 7,
     },
     tracesSampleRate: 0,

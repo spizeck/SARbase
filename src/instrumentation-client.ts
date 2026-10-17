@@ -40,8 +40,10 @@ if (config.enabled) {
       genAI: { inputs: false, outputs: false },
       databaseQueryData: false,
       queues: false,
-      urlQueryParams: true,
-      stackFrameVariables: true,
+      // Same deliberate tightening as the server config: query strings
+      // can carry bearer tokens; frame locals are not scrubbed.
+      urlQueryParams: false,
+      stackFrameVariables: false,
       frameContextLines: 7,
     },
     // No replay, no performance tracing, no session tracking by default.

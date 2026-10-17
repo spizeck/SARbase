@@ -4,7 +4,9 @@
  *
  * Provenance: RISE Saba's scrubber, generalized. The policy it encodes:
  *
- * - `sendDefaultPii: false` AND we still strip defensively — defaults can
+ * - A fully restrictive `dataCollection` block in each `Sentry.init`
+ *   (SDK v11 — the old `sendDefaultPii` flag is gone and v11 defaults
+ *   are permissive) AND we still strip defensively — defaults can
  *   change, defense in depth should not depend on one flag.
  * - User identity is never reported: no `event.user`, no IP, no emails
  *   in any field.
