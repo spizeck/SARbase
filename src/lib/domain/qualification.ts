@@ -268,6 +268,101 @@ export async function listExpiringQualifications(
   });
 }
 
+/* ------------------------------------------------------------------ */
+/* Coverage view                                                       */
+/* ------------------------------------------------------------------ */
+
+export interface QualificationCoverageRow {
+  member: { id: string; displayName: string };
+  units: string[];
+  recordCount: number;
+  /** Most recent record by the same ordering the member page uses. */
+  latestRecord: {
+    id: string;
+    issuedOn: Date | null;
+    expiresOn: Date | null;
+  } | null;
+  expiry: ExpiryInfo;
+}
+
+/**
+ * Per-member coverage for one definition (issue #118): every ACTIVE
+ * member of the organization, their latest record for that definition,
+ * and the factual expiry state. Members with no record at all appear
+ * with `latestRecord: null` — missing information, not a judgement of
+ * competence or eligibility.
+ */
+export async function getQualificationCoverage(
+  organizationId: string,
+  definitionId: string,
+  options: { today?: Date; windowDays?: number } = {},
+) {
+  const definition = await prisma.qualificationDefinition.findFirst({
+    where: { id: definitionId, organizationId },
+  });
+  if (!definition) return null;
+
+  const org = await prisma.organization.findUniqueOrThrow({
+    where: { id: organizationId },
+    select: { timezone: true },
+  });
+  const today = options.today ?? calendarDateInZone(org.timezone);
+  const windowDays = options.windowDays ?? 30;
+
+  const [members, records] = await Promise.all([
+    prisma.member.findMany({
+      where: { organizationId, status: "ACTIVE" },
+      select: {
+        id: true,
+        displayName: true,
+        memberUnits: { select: { unit: { select: { name: true } } } },
+      },
+      orderBy: { displayName: "asc" },
+    }),
+    prisma.memberQualification.findMany({
+      where: { organizationId, definitionId },
+      orderBy: recordOrder,
+      select: {
+        id: true,
+        memberId: true,
+        issuedOn: true,
+        expiresOn: true,
+      },
+    }),
+  ]);
+
+  const latestByMember = new Map<string, (typeof records)[number]>();
+  const countByMember = new Map<string, number>();
+  for (const record of records) {
+    countByMember.set(
+      record.memberId,
+      (countByMember.get(record.memberId) ?? 0) + 1,
+    );
+    if (!latestByMember.has(record.memberId)) {
+      latestByMember.set(record.memberId, record);
+    }
+  }
+
+  const rows: QualificationCoverageRow[] = members.map((member) => {
+    const latest = latestByMember.get(member.id) ?? null;
+    return {
+      member: { id: member.id, displayName: member.displayName },
+      units: member.memberUnits.map((mu) => mu.unit.name).sort(),
+      recordCount: countByMember.get(member.id) ?? 0,
+      latestRecord: latest
+        ? {
+            id: latest.id,
+            issuedOn: latest.issuedOn,
+            expiresOn: latest.expiresOn,
+          }
+        : null,
+      expiry: expiryInfo(latest?.expiresOn ?? null, today, windowDays),
+    };
+  });
+
+  return { definition, today, windowDays, rows };
+}
+
 /**
  * Record a qualification for a member. The record's organizationId is
  * taken from the MEMBER record (never the caller); the definition must

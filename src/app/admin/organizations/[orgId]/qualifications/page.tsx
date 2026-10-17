@@ -80,6 +80,12 @@ export default async function QualificationsPage({
                     {def._count.memberQualifications} record
                     {def._count.memberQualifications === 1 ? "" : "s"}
                   </span>
+                  <Link
+                    href={`/admin/organizations/${orgId}/qualifications/${def.id}`}
+                    className="ml-2 text-xs font-medium text-neutral-700 underline"
+                  >
+                    Coverage
+                  </Link>
                   {def.status === "INACTIVE" && (
                     <span className="ml-2 inline-block rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-600">
                       Inactive

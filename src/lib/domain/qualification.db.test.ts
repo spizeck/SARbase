@@ -6,6 +6,7 @@ import { createOrganization } from "@/lib/domain/organization";
 import {
   createQualificationDefinition,
   createMemberQualification,
+  getQualificationCoverage,
   listExpiringQualifications,
   listMemberQualifications,
   listQualificationDefinitions,
@@ -45,6 +46,9 @@ describe.skipIf(!hasDb)("qualification domain", () => {
       where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.member.deleteMany({
+      where: { organization: { name: { startsWith: PREFIX } } },
+    });
+    await prisma.unit.deleteMany({
       where: { organization: { name: { startsWith: PREFIX } } },
     });
     await prisma.organization.deleteMany({
@@ -349,5 +353,80 @@ describe.skipIf(!hasDb)("qualification domain", () => {
     // way the query used the org's zone because `expiredLocally` is only
     // excluded when evaluated against orgToday.
     void utcToday;
+  });
+
+  describe("getQualificationCoverage (issue #118)", () => {
+    it("lists every active member with their latest record or none", async () => {
+      const org = await createTestOrg("cov");
+      const def = await createQualificationDefinition(org.id, {
+        name: uniqueName("cov-def"),
+      });
+      const unit = await prisma.unit.create({
+        data: { organizationId: org.id, name: uniqueName("unit") },
+      });
+      const holder = await createMember(org.id, {
+        displayName: uniqueName("holder"),
+      });
+      await prisma.memberUnit.create({
+        data: {
+          organizationId: org.id,
+          memberId: holder.id,
+          unitId: unit.id,
+        },
+      });
+      const missing = await createMember(org.id, {
+        displayName: uniqueName("missing"),
+      });
+      const inactive = await prisma.member.create({
+        data: {
+          organizationId: org.id,
+          displayName: uniqueName("inactive"),
+          status: "INACTIVE",
+        },
+      });
+
+      const older = await createMemberQualification(holder.id, {
+        definitionId: def.id,
+        issuedOn: D("2023-01-01"),
+        expiresOn: D("2024-01-01"),
+      });
+      const newer = await createMemberQualification(holder.id, {
+        definitionId: def.id,
+        issuedOn: D("2025-01-01"),
+        expiresOn: D("2027-01-01"),
+      });
+
+      const coverage = await getQualificationCoverage(org.id, def.id, {
+        today: D("2026-01-01"),
+      });
+      expect(coverage).not.toBeNull();
+      expect(coverage!.definition.id).toBe(def.id);
+
+      const byMember = new Map(coverage!.rows.map((r) => [r.member.id, r]));
+      // INACTIVE members are excluded.
+      expect(byMember.has(inactive.id)).toBe(false);
+
+      const holderRow = byMember.get(holder.id)!;
+      expect(holderRow.latestRecord!.id).toBe(newer.id);
+      expect(holderRow.latestRecord!.id).not.toBe(older.id);
+      expect(holderRow.recordCount).toBe(2);
+      expect(holderRow.expiry.state).toBe("current");
+      expect(holderRow.units).toEqual([unit.name]);
+
+      const missingRow = byMember.get(missing.id)!;
+      expect(missingRow.latestRecord).toBeNull();
+      expect(missingRow.recordCount).toBe(0);
+      expect(missingRow.expiry.state).toBe("no_expiry");
+    });
+
+    it("returns null for a definition from another organization", async () => {
+      const orgA = await createTestOrg("cov-a");
+      const orgB = await createTestOrg("cov-b");
+      const defB = await createQualificationDefinition(orgB.id, {
+        name: uniqueName("cov-def-b"),
+      });
+      const coverage = await getQualificationCoverage(orgA.id, defB.id);
+      expect(coverage).toBeNull();
+    });
   });
 });
