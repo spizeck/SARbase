@@ -11,7 +11,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/prisma";
 
-import { recordWhatsappDeliveryEvents } from "./notification-delivery";
+import {
+  recordWhatsappDeliveryEvents,
+  recordWhatsappOptOuts,
+} from "./notification-delivery";
 
 const hasDb = Boolean(process.env.DATABASE_URL);
 const PREFIX = "dlvtest-";
@@ -75,6 +78,11 @@ describe.skipIf(!hasDb)("whatsapp delivery reconciliation", () => {
       await prisma.notificationDeliveryEvent.deleteMany({ where: filter });
       await prisma.notificationAttempt.deleteMany({ where: filter });
       await prisma.notification.deleteMany({ where: filter });
+      await prisma.memberContactChange.deleteMany({ where: filter });
+      await prisma.memberNotificationPreference.deleteMany({
+        where: filter,
+      });
+      await prisma.member.deleteMany({ where: filter });
     }
     await prisma.organization.deleteMany({
       where: { name: { startsWith: PREFIX } },
@@ -196,5 +204,109 @@ describe.skipIf(!hasDb)("whatsapp delivery reconciliation", () => {
       where: { attempt: { providerMessageId: wamid } },
     });
     expect([orgA.id, orgB.id]).toContain(written.organizationId);
+  });
+
+  /* ---------- inbound STOP opt-out (issue #111) ---------- */
+
+  async function makeMemberWithPhone(
+    organizationId: string,
+    e164: string,
+    consented = true,
+  ) {
+    const member = await prisma.member.create({
+      data: {
+        organizationId,
+        displayName: uniq("member"),
+        status: "ACTIVE",
+        phone: e164,
+      },
+    });
+    if (consented) {
+      await prisma.memberNotificationPreference.create({
+        data: {
+          organizationId,
+          memberId: member.id,
+          notifyWhatsapp: true,
+          whatsappConsentAt: new Date(),
+        },
+      });
+    }
+    return member;
+  }
+
+  it("a STOP sender digits match opts out the consented member", async () => {
+    const member = await makeMemberWithPhone(orgA.id, "+5994161234");
+    const result = await recordWhatsappOptOuts(["5994161234"]);
+    expect(result.optedOut).toBe(1);
+
+    const pref = await prisma.memberNotificationPreference.findUniqueOrThrow({
+      where: {
+        memberId_organizationId: {
+          memberId: member.id,
+          organizationId: orgA.id,
+        },
+      },
+    });
+    expect(pref.whatsappOptedOutAt).not.toBeNull();
+    // Historical consent timestamp is preserved.
+    expect(pref.whatsappConsentAt).not.toBeNull();
+
+    const audit = await prisma.memberContactChange.findFirstOrThrow({
+      where: { memberId: member.id, field: "whatsappConsent" },
+    });
+    expect(audit).toMatchObject({
+      newValue: "opted_out",
+      selfReported: true,
+      actorAuthIdentityId: "whatsapp-webhook",
+    });
+  });
+
+  it("a shared sender opts out matching members across organizations", async () => {
+    const memberA = await makeMemberWithPhone(orgA.id, "+5994165555");
+    const memberB = await makeMemberWithPhone(orgB.id, "+5994165555");
+    const result = await recordWhatsappOptOuts(["5994165555"]);
+    expect(result.optedOut).toBe(2);
+    for (const memberId of [memberA.id, memberB.id]) {
+      const pref = await prisma.memberNotificationPreference.findFirstOrThrow({
+        where: { memberId },
+      });
+      expect(pref.whatsappOptedOutAt).not.toBeNull();
+    }
+  });
+
+  it("unknown digits and already-opted-out members are no-ops", async () => {
+    const member = await makeMemberWithPhone(orgA.id, "+5994167777");
+    await recordWhatsappOptOuts(["5994167777"]);
+    // Second STOP — already opted out, nothing changes.
+    const result = await recordWhatsappOptOuts([
+      "5994167777",
+      "5994160000", // nobody has this number
+    ]);
+    expect(result.optedOut).toBe(0);
+    expect(
+      await prisma.memberContactChange.count({
+        where: { memberId: member.id },
+      }),
+    ).toBe(1);
+  });
+
+  it("a member with no preference row still gets an audited opt-out", async () => {
+    const member = await makeMemberWithPhone(
+      orgA.id,
+      "+5994168888",
+      /* consented */ false,
+    );
+    const result = await recordWhatsappOptOuts(["5994168888"]);
+    expect(result.optedOut).toBe(1);
+    const pref = await prisma.memberNotificationPreference.findUniqueOrThrow({
+      where: {
+        memberId_organizationId: {
+          memberId: member.id,
+          organizationId: orgA.id,
+        },
+      },
+    });
+    expect(pref.whatsappOptedOutAt).not.toBeNull();
+    expect(pref.whatsappConsentAt).toBeNull();
   });
 });

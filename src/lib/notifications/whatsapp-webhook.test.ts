@@ -156,13 +156,50 @@ describe("parseWhatsappWebhookBody", () => {
     ).toEqual({ ok: false, reason: "malformed_status" });
   });
 
-  it("ignores inbound messages and changes without statuses", () => {
+  it("extracts inbound STOP texts as opt-out signals (issue #111)", () => {
     const body = webhookBody([]);
     (body.entry[0]!.changes[0]!.value as Record<string, unknown>).messages = [
-      { from: "5994161234", type: "text", text: { body: "STOP" } },
+      { from: "5994161234", type: "text", text: { body: " STOP " } },
+      { from: "5994161234", type: "text", text: { body: "stop" } },
+      { from: "5994169999", type: "text", text: { body: "unsubscribe" } },
     ];
     const parsed = parseWhatsappWebhookBody(body, PHONE_ID);
     expect(parsed.ok).toBe(true);
-    if (parsed.ok) expect(parsed.events).toHaveLength(0);
+    if (!parsed.ok) return;
+    expect(parsed.events).toHaveLength(0);
+    // Deduped to unique senders — the same number opting out twice
+    // produces one signal.
+    expect(parsed.optOutSenders.sort()).toEqual(["5994161234", "5994169999"]);
+  });
+
+  it("ignores inbound messages that are not bare opt-out keywords", () => {
+    const body = webhookBody([]);
+    (body.entry[0]!.changes[0]!.value as Record<string, unknown>).messages = [
+      // Substring/sentence usage must never opt a member out.
+      {
+        from: "5994161234",
+        type: "text",
+        text: { body: "please stop the drill" },
+      },
+      { from: "5994161234", type: "text", text: { body: "Yes, coming" } },
+      // Non-text inbound (reactions, images, buttons).
+      { from: "5994161234", type: "reaction", reaction: { emoji: "👍" } },
+      // Malformed sender — not digits.
+      { from: "not-a-number", type: "text", text: { body: "STOP" } },
+    ];
+    const parsed = parseWhatsappWebhookBody(body, PHONE_ID);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.optOutSenders).toHaveLength(0);
+  });
+
+  it("rejects inbound messages addressed to a different phone number id", () => {
+    const body = webhookBody([], "999999999999999");
+    (body.entry[0]!.changes[0]!.value as Record<string, unknown>).messages = [
+      { from: "5994161234", type: "text", text: { body: "STOP" } },
+    ];
+    expect(parseWhatsappWebhookBody(body, PHONE_ID)).toEqual({
+      ok: false,
+      reason: "phone_number_mismatch",
+    });
   });
 });

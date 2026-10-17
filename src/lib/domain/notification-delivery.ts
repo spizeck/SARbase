@@ -27,6 +27,7 @@ import { Prisma } from "@prisma/client";
 import type { NotificationDeliveryStatus } from "@prisma/client";
 
 import type { WhatsappStatusEvent } from "@/lib/notifications/whatsapp-webhook";
+import { log } from "@/lib/logging";
 import { prisma } from "@/lib/prisma";
 
 /** Statuses strictly below `s` — the conditional-update guard. */
@@ -111,4 +112,90 @@ export async function recordWhatsappDeliveryEvents(
     }
   }
   return result;
+}
+
+/**
+ * Audit-trail actor for webhook-driven consent changes — the plain
+ * `actorAuthIdentityId` scalar convention lets a non-identity sentinel
+ * attribute the write to the Meta callback itself (issue #111).
+ */
+const WHATSAPP_WEBHOOK_ACTOR = "whatsapp-webhook";
+
+/**
+ * Record a member-initiated WhatsApp opt-out signaled through the
+ * inbound-message webhook (a bare STOP-style keyword). The configured
+ * sender is deployment-wide, so the opt-out applies to EVERY member
+ * whose stored E.164 phone matches the sender digits — across
+ * organizations — exactly what the member means by "stop messaging
+ * this number".
+ *
+ * Idempotent: an already-opted-out (or never-consented-with-row)
+ * member is skipped silently; members with no preference row get one
+ * carrying only the opt-out timestamp — the STOP still lands on the
+ * MemberContactChange audit trail.
+ */
+export async function recordWhatsappOptOuts(
+  senderDigits: string[],
+): Promise<{ optedOut: number }> {
+  if (senderDigits.length === 0) return { optedOut: 0 };
+
+  // Member.phone is stored as canonical E.164 with the leading `+`;
+  // Meta's wa_id drops it.
+  const e164s = [...new Set(senderDigits)].map((digits) => `+${digits}`);
+  const members = await prisma.member.findMany({
+    where: { phone: { in: e164s } },
+    select: {
+      id: true,
+      organizationId: true,
+      notificationPreference: {
+        select: {
+          whatsappConsentAt: true,
+          whatsappOptedOutAt: true,
+        },
+      },
+    },
+  });
+
+  const now = new Date();
+  let optedOut = 0;
+  for (const member of members) {
+    const pref = member.notificationPreference;
+    if (pref?.whatsappOptedOutAt != null) continue;
+    await prisma.$transaction(async (tx) => {
+      await tx.memberNotificationPreference.upsert({
+        where: {
+          memberId_organizationId: {
+            memberId: member.id,
+            organizationId: member.organizationId,
+          },
+        },
+        create: {
+          organizationId: member.organizationId,
+          memberId: member.id,
+          whatsappOptedOutAt: now,
+        },
+        update: { whatsappOptedOutAt: now },
+      });
+      await tx.memberContactChange.create({
+        data: {
+          organizationId: member.organizationId,
+          memberId: member.id,
+          field: "whatsappConsent",
+          previousValue: pref?.whatsappConsentAt != null ? "granted" : null,
+          newValue: "opted_out",
+          selfReported: true,
+          actorAuthIdentityId: WHATSAPP_WEBHOOK_ACTOR,
+        },
+      });
+    });
+    optedOut += 1;
+    log({
+      event: "contact_preference.whatsapp_opt_out_via_webhook",
+      subsystem: "notifications",
+      entityType: "Member",
+      entityId: member.id,
+      organizationId: member.organizationId,
+    });
+  }
+  return { optedOut };
 }

@@ -11,11 +11,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * reject, and only verified events reach the domain.
  */
 
-const { parseWhatsAppEnvironmentMock, recordWhatsappDeliveryEventsMock } =
-  vi.hoisted(() => ({
-    parseWhatsAppEnvironmentMock: vi.fn(),
-    recordWhatsappDeliveryEventsMock: vi.fn(),
-  }));
+const {
+  parseWhatsAppEnvironmentMock,
+  recordWhatsappDeliveryEventsMock,
+  recordWhatsappOptOutsMock,
+} = vi.hoisted(() => ({
+  parseWhatsAppEnvironmentMock: vi.fn(),
+  recordWhatsappDeliveryEventsMock: vi.fn(),
+  recordWhatsappOptOutsMock: vi.fn(),
+}));
 
 vi.mock("@/lib/logging", async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -30,6 +34,7 @@ vi.mock("@/lib/env", async (importOriginal) => ({
 vi.mock("@/lib/domain/notification-delivery", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   recordWhatsappDeliveryEvents: recordWhatsappDeliveryEventsMock,
+  recordWhatsappOptOuts: recordWhatsappOptOutsMock,
 }));
 
 import { GET, POST } from "./route";
@@ -119,6 +124,7 @@ beforeEach(() => {
     deduplicated: 0,
     unmatched: 0,
   });
+  recordWhatsappOptOutsMock.mockResolvedValue({ optedOut: 0 });
 });
 
 describe("GET /api/webhooks/whatsapp (subscription challenge)", () => {
@@ -258,6 +264,7 @@ describe("POST /api/webhooks/whatsapp (status callbacks)", () => {
       recorded: 1,
       deduplicated: 0,
       unmatched: 0,
+      optedOut: 0,
     });
     const events = recordWhatsappDeliveryEventsMock.mock.calls[0]![0];
     expect(events).toHaveLength(1);
@@ -265,6 +272,22 @@ describe("POST /api/webhooks/whatsapp (status callbacks)", () => {
       providerMessageId: "wamid.TEST1",
       status: "DELIVERED",
     });
+  });
+
+  it("passes inbound STOP senders to opt-out recording (issue #111)", async () => {
+    const payload = validPayload();
+    const changeValue = payload.entry[0]!.changes[0]!.value as Record<
+      string,
+      unknown
+    >;
+    changeValue.messages = [
+      { from: "5994161234", type: "text", text: { body: "STOP" } },
+    ];
+    recordWhatsappOptOutsMock.mockResolvedValue({ optedOut: 1 });
+    const response = await callPost(payload);
+    expect(response.status).toBe(200);
+    expect(recordWhatsappOptOutsMock).toHaveBeenCalledWith(["5994161234"]);
+    expect(await response.json()).toMatchObject({ optedOut: 1 });
   });
 
   it("returns 200 for signed callbacks that match no attempts", async () => {

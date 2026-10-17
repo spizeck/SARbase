@@ -585,9 +585,9 @@ async function dispatchAttempt(
       ? await resolveWhatsAppDispatchTemplate(notification)
       : null;
 
-  let attempt;
+  let dispatched;
   try {
-    attempt = await prisma.$transaction(async (tx) => {
+    dispatched = await prisma.$transaction(async (tx) => {
       // Lock the request row: serializes concurrent dispatches against
       // each other for the whole eligibility-check-and-create window.
       const locked = await tx.$queryRaw<{ id: string }[]>`
@@ -607,8 +607,48 @@ async function dispatchAttempt(
             : new NotificationConcurrentDispatchError()
           : dispatchEligibilityError(fresh);
       if (eligibilityError) throw eligibilityError;
+
+      // Consent is live at request-creation time, but a member can opt
+      // out afterwards (account opt-out or an inbound STOP webhook).
+      // The row lock makes this re-check authoritative: a member-targeted
+      // WhatsApp send never dispatches against stale consent. A
+      // never-dispatched request becomes an honest late suppression;
+      // a retry of a previously-sent request refuses loudly.
+      if (fresh.channel === "WHATSAPP" && fresh.memberId) {
+        const preference = await tx.memberNotificationPreference.findUnique({
+          where: {
+            memberId_organizationId: {
+              memberId: fresh.memberId,
+              organizationId: fresh.organizationId,
+            },
+          },
+          select: { whatsappConsentAt: true, whatsappOptedOutAt: true },
+        });
+        const consented =
+          preference?.whatsappConsentAt != null &&
+          preference.whatsappOptedOutAt == null;
+        if (!consented) {
+          if (fresh.attempts.length === 0) {
+            // Never dispatched — late suppression is the honest record,
+            // whether this is the initial send or a resume of a request
+            // whose first dispatch crashed.
+            const suppressedNotification = await tx.notification.update({
+              where: { id: notification.id },
+              data: {
+                status: "SUPPRESSED",
+                statusReason: SUPPRESSION_REASONS.CONSENT_MISSING,
+              },
+            });
+            return { suppressed: true as const, suppressedNotification };
+          }
+          throw new NotificationRetryError(
+            "The member has opted out of WhatsApp messages.",
+          );
+        }
+      }
+
       const attemptNumber = fresh.attempts.length + 1;
-      return tx.notificationAttempt.create({
+      const attempt = await tx.notificationAttempt.create({
         data: {
           organizationId: notification.organizationId,
           notificationId: notification.id,
@@ -617,6 +657,7 @@ async function dispatchAttempt(
           status: "DISPATCHING",
         },
       });
+      return { suppressed: false as const, attempt };
     });
   } catch (error) {
     if (isUniqueViolation(error)) {
@@ -624,6 +665,21 @@ async function dispatchAttempt(
     }
     throw error;
   }
+
+  if (dispatched.suppressed) {
+    log({
+      event: "notification.suppressed",
+      subsystem: "notifications",
+      entityType: "Notification",
+      entityId: notification.id,
+      organizationId: notification.organizationId,
+      channel: notification.channel,
+      memberId: notification.memberId,
+      statusReason: SUPPRESSION_REASONS.CONSENT_MISSING,
+    });
+    return dispatched.suppressedNotification;
+  }
+  const attempt = dispatched.attempt;
 
   log({
     event: "notification.dispatch",

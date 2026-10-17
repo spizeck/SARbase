@@ -8,9 +8,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
  */
 
 import { prisma } from "@/lib/prisma";
-import { FakeNotificationProvider } from "@/lib/notifications/fake";
+import {
+  FakeNotificationProvider,
+  fakeFailure,
+} from "@/lib/notifications/fake";
 
-import { requestNotification, SUPPRESSION_REASONS } from "./notifications";
+import {
+  requestNotification,
+  retryNotification,
+  SUPPRESSION_REASONS,
+} from "./notifications";
 import {
   setMemberContactPreference,
   setMemberWhatsappConsent,
@@ -371,5 +378,83 @@ describe.skipIf(!hasDb)("whatsapp channel and consent", () => {
     );
     expect(notification.status).toBe("ACCEPTED");
     expect(provider.calls[0]!.template ?? null).toBeNull();
+  });
+
+  /* -------- dispatch-time consent re-check (issue #111) -------- */
+
+  it("a retry refuses loudly once the member has opted out", async () => {
+    const member = await makeMember({ phone: "+5994161234" });
+    await setMemberContactPreference(member.id, {
+      notifyEmail: false,
+      notifySms: false,
+      notifyWhatsapp: true,
+      notifyPush: false,
+    });
+    await setMemberWhatsappConsent(member.id, true, actor.id);
+
+    const provider = new FakeNotificationProvider({
+      channel: "WHATSAPP",
+      results: [fakeFailure.unavailable()],
+    });
+    const { notification } = await requestNotification(
+      {
+        organizationId: orgA.id,
+        channel: "WHATSAPP",
+        memberId: member.id,
+        template: "admin_notice",
+        subject: "Test",
+        idempotencyKey: uniq("key"),
+      },
+      actor.id,
+      { provider },
+    );
+    expect(notification.status).toBe("FAILED");
+
+    // Member opts out AFTER the request was created and failed.
+    await setMemberWhatsappConsent(member.id, false, actor.id);
+
+    await expect(
+      retryNotification(notification.id, { provider }),
+    ).rejects.toThrow(/opted out of WhatsApp/i);
+    // No new attempt row was appended — the provider was never re-invoked.
+    expect(
+      await prisma.notificationAttempt.count({
+        where: { notificationId: notification.id },
+      }),
+    ).toBe(1);
+    expect(provider.calls).toHaveLength(1);
+  });
+
+  it("a never-dispatched request suppresses on resume once consent is gone", async () => {
+    // Simulates the crash window: a PENDING request exists with no
+    // attempt (created but never dispatched), and the member has since
+    // opted out. Resume must not send — it becomes an honest late
+    // suppression instead.
+    const member = await makeMember({ phone: "+5994161234" });
+    await setMemberWhatsappConsent(member.id, true, actor.id);
+    await setMemberWhatsappConsent(member.id, false, actor.id);
+    const pending = await prisma.notification.create({
+      data: {
+        organizationId: orgA.id,
+        memberId: member.id,
+        channel: "WHATSAPP",
+        template: "admin_notice",
+        subject: "Test",
+        destination: "5994161234",
+        idempotencyKey: uniq("key"),
+        intentHash: uniq("hash"),
+        status: "PENDING",
+      },
+    });
+    const provider = whatsappProvider();
+    const resumed = await retryNotification(pending.id, { provider });
+    expect(resumed.status).toBe("SUPPRESSED");
+    expect(resumed.statusReason).toBe(SUPPRESSION_REASONS.CONSENT_MISSING);
+    expect(provider.calls).toHaveLength(0);
+    expect(
+      await prisma.notificationAttempt.count({
+        where: { notificationId: pending.id },
+      }),
+    ).toBe(0);
   });
 });

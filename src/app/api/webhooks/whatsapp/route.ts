@@ -1,7 +1,10 @@
 import { timingSafeEqual } from "node:crypto";
 
 import { ApiError, withApiObservability } from "@/lib/api";
-import { recordWhatsappDeliveryEvents } from "@/lib/domain/notification-delivery";
+import {
+  recordWhatsappDeliveryEvents,
+  recordWhatsappOptOuts,
+} from "@/lib/domain/notification-delivery";
 import { parseWhatsAppEnvironment } from "@/lib/env";
 import { logExpected } from "@/lib/logging";
 import {
@@ -113,7 +116,8 @@ async function handlePost(request: Request) {
   }
 
   const outcome = await recordWhatsappDeliveryEvents(parsed.events);
-  return Response.json(outcome, { status: 200 });
+  const optOuts = await recordWhatsappOptOuts(parsed.optOutSenders);
+  return Response.json({ ...outcome, ...optOuts }, { status: 200 });
 }
 
 // No path params — the context arg exists only to satisfy the router's

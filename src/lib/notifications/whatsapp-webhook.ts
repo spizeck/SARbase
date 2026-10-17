@@ -15,14 +15,20 @@
  *   an unsigned or mis-signed body is never inspected beyond rejecting
  *   it.
  *
- * This module normalizes the delivery `statuses` callbacks only.
- * Inbound user messages, reactions, and other change fields are
- * ignored — SARbase does not converse over WhatsApp, it only sends and
- * reconciles delivery.
+ * This module normalizes two kinds of callbacks:
+ *
+ * - `statuses` delivery events — reconciled against notification
+ *   attempts.
+ * - `messages` inbound texts that are a bare opt-out keyword (STOP
+ *   etc.). SARbase does not converse over WhatsApp, but a member's
+ *   STOP is a consent signal — the sender digits are surfaced for the
+ *   domain to record `whatsappOptedOutAt`. Every other inbound message
+ *   is ignored.
  *
  * Privacy: nothing here logs or returns raw payload content. Parsing
- * extracts ids, enum-like statuses, timestamps, and provider error
- * codes — never text fields, phone numbers, or profile data.
+ * extracts ids, enum-like statuses, timestamps, provider error codes,
+ * and opt-out sender digits — never message text beyond the keyword
+ * check, profile data, or recipient numbers.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -67,7 +73,7 @@ export interface WhatsappStatusEvent {
 }
 
 export type WhatsappWebhookParseResult =
-  | { ok: true; events: WhatsappStatusEvent[] }
+  | { ok: true; events: WhatsappStatusEvent[]; optOutSenders: string[] }
   | {
       ok: false;
       reason:
@@ -80,6 +86,26 @@ const STATUS_MAP: Record<string, NotificationDeliveryStatus> = {
   read: "READ",
   failed: "FAILED",
 };
+
+/**
+ * Meta-documented opt-out keywords, matched as the WHOLE message after
+ * trim+lowercase. Exact-match is deliberate: a member writing "can't
+ * stop thinking about the drill" must never be opted out; the account
+ * surface remains the primary opt-out and the webhook handles the
+ * single-word convention.
+ */
+const OPT_OUT_KEYWORDS = new Set([
+  "stop",
+  "stopall",
+  "stop all",
+  "unsubscribe",
+  "cancel",
+  "end",
+  "quit",
+]);
+
+/** Inbound `from` is the sender's wa_id — digits, no `+`. */
+const SENDER_DIGITS = /^\d{5,15}$/;
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null;
@@ -110,6 +136,7 @@ export function parseWhatsappWebhookBody(
   }
 
   const events: WhatsappStatusEvent[] = [];
+  const optOutSenders = new Set<string>();
   for (const entry of asArray(body.entry)) {
     if (!isRecord(entry)) return { ok: false, reason: "malformed_status" };
     for (const change of asArray(entry.changes)) {
@@ -119,10 +146,24 @@ export function parseWhatsappWebhookBody(
       const value = change.value;
       const metadata = isRecord(value.metadata) ? value.metadata : null;
       if (
-        asArray(value.statuses).length > 0 &&
+        (asArray(value.statuses).length > 0 ||
+          asArray(value.messages).length > 0) &&
         metadata?.phone_number_id !== expectedPhoneNumberId
       ) {
         return { ok: false, reason: "phone_number_mismatch" };
+      }
+      for (const raw of asArray(value.messages)) {
+        if (!isRecord(raw)) continue;
+        const from = typeof raw.from === "string" ? raw.from : null;
+        const text = isRecord(raw.text) ? raw.text.body : null;
+        if (
+          from &&
+          SENDER_DIGITS.test(from) &&
+          typeof text === "string" &&
+          OPT_OUT_KEYWORDS.has(text.trim().toLowerCase())
+        ) {
+          optOutSenders.add(from);
+        }
       }
       for (const raw of asArray(value.statuses)) {
         if (!isRecord(raw)) return { ok: false, reason: "malformed_status" };
@@ -155,5 +196,5 @@ export function parseWhatsappWebhookBody(
       }
     }
   }
-  return { ok: true, events };
+  return { ok: true, events, optOutSenders: [...optOutSenders] };
 }
