@@ -2526,6 +2526,8 @@ export async function sendAdminNotificationAction(
   });
   if (!parsed.success) return zodErrors(parsed.error);
 
+  const testFooter =
+    "This is an administrative test notification sent via SARbase. It is not an operational alert.";
   try {
     await requestNotification(
       {
@@ -2538,7 +2540,9 @@ export async function sendAdminNotificationAction(
         memberId: parsed.data.memberId,
         destination: parsed.data.destination,
         subject: parsed.data.subject,
-        bodyText: `${parsed.data.body}\n\n—\nThis is an administrative test notification sent via SARbase. It is not an operational alert.`,
+        bodyText: parsed.data.body
+          ? `${parsed.data.body}\n\n—\n${testFooter}`
+          : `Administrative test notification sent via SARbase (WhatsApp template: admin_notice). ${testFooter}`,
         metadata: { source: "admin_test_send" },
         idempotencyKey: parsed.data.idempotencyKey,
       },

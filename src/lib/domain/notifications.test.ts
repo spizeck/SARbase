@@ -261,6 +261,28 @@ describe("adminNotificationSendSchema", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("requires a body for EMAIL but not WHATSAPP", () => {
+    // Email test sends deliver the free-text body itself; WhatsApp
+    // renders the admin_notice template from the subject, so the body
+    // is optional history text only.
+    expect(
+      adminNotificationSendSchema.safeParse({
+        subject: "Radio check",
+        channel: "EMAIL",
+        memberId: "mem_1",
+        idempotencyKey: "550e8400-e29b-41d4-a716-446655440000",
+      }).success,
+    ).toBe(false);
+    expect(
+      adminNotificationSendSchema.safeParse({
+        subject: "Radio check",
+        channel: "WHATSAPP",
+        memberId: "mem_1",
+        idempotencyKey: "550e8400-e29b-41d4-a716-446655440000",
+      }).success,
+    ).toBe(true);
+  });
 });
 
 describe("idempotencyKeySchema", () => {

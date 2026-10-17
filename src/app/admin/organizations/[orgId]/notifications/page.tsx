@@ -77,6 +77,14 @@ export default async function OrganizationNotificationsPage({
     orgId,
     OrgCapability.MEMBERS_MANAGE,
   );
+  // Callout titles and member responses are operational data gated by
+  // OPERATIONS_MANAGE — a notification-only manager sees the delivery
+  // facts without the linked callout detail.
+  const canViewCallouts = hasOrgCapability(
+    ctx,
+    orgId,
+    OrgCapability.OPERATIONS_MANAGE,
+  );
 
   // The org exists — the admin grant already resolved it — so a missing
   // row here would be a genuine inconsistency.
@@ -157,7 +165,13 @@ export default async function OrganizationNotificationsPage({
             {notifications.map((notification) => {
               const latestAttempt = notification.attempts.at(-1);
               const retryable = isRetryableNotification(notification);
-              const linkedInvitation = notification.calloutInvitations[0];
+              const linkedInvitation = canViewCallouts
+                ? notification.calloutInvitations[0]
+                : undefined;
+              const isAdminTest =
+                notification.template === "admin_test" ||
+                (notification.metadata as { source?: string } | null)
+                  ?.source === "admin_test_send";
               return (
                 <li key={notification.id} className="px-4 py-3 text-sm">
                   <div className="flex items-center justify-between gap-3">
@@ -178,7 +192,7 @@ export default async function OrganizationNotificationsPage({
                       )}
                       <span className="ml-2 font-normal text-neutral-500">
                         {notification.channel.toLowerCase()}
-                        {notification.template === "admin_test"
+                        {isAdminTest
                           ? " · admin test"
                           : ` · ${notification.template}`}
                       </span>
