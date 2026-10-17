@@ -753,7 +753,7 @@ export async function getInvitationForToken(rawToken: string) {
           status: true,
           activatedAt: true,
           closedAt: true,
-          organization: { select: { name: true } },
+          organization: { select: { name: true, timezone: true } },
         },
       },
     },
@@ -886,7 +886,9 @@ export async function getCalloutForAdmin(calloutId: string) {
   const callout = await prisma.callout.findUnique({
     where: { id: calloutId },
     include: {
-      organization: { select: { id: true, name: true } },
+      organization: {
+        select: { id: true, name: true, timezone: true },
+      },
       unit: { select: { id: true, name: true } },
       // Issue #15 — at most one incident may link to this callout; the
       // admin page offers "create incident record" only when absent.

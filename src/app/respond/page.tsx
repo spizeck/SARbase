@@ -2,7 +2,7 @@ import {
   getInvitationForToken,
   CALLOUT_RESPONSE_LABELS,
 } from "@/lib/domain/callouts";
-import { relativeTimeLabel } from "@/lib/dates";
+import { formatInstantInZone, relativeTimeLabel } from "@/lib/dates";
 
 import { respondToCalloutTokenAction } from "./actions";
 import { TokenResponseForm } from "./response-form";
@@ -69,6 +69,14 @@ export default async function RespondPage({
       <h1 className="mt-1 text-xl font-semibold tracking-tight">
         {callout.title}
       </h1>
+      <p className="mt-1 text-xs text-neutral-500">
+        Issued{" "}
+        {formatInstantInZone(
+          callout.activatedAt,
+          callout.organization.timezone,
+        )}
+        {closed ? " · closed" : ""}
+      </p>
       {callout.message && (
         <p className="mt-2 whitespace-pre-line text-sm text-neutral-700">
           {callout.message}

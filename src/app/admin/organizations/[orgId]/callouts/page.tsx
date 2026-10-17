@@ -167,7 +167,14 @@ export default async function OrganizationCalloutsPage({
                 <p className="mt-1 text-xs text-neutral-600">
                   {callout.counts.total} invited · {callout.counts.coming}{" "}
                   coming · {callout.counts.unavailable} unavailable ·{" "}
-                  {callout.counts.noResponse} no response
+                  {callout.status === "ACTIVE" &&
+                  callout.counts.noResponse > 0 ? (
+                    <span className="font-medium text-amber-800">
+                      {callout.counts.noResponse} no response
+                    </span>
+                  ) : (
+                    <>{callout.counts.noResponse} no response</>
+                  )}
                 </p>
               </li>
             ))}

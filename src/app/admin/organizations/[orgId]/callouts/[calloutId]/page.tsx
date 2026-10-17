@@ -17,7 +17,7 @@ import {
   NOTIFICATION_STATUS_LABELS,
   SUPPRESSION_REASON_LABELS,
 } from "@/lib/domain/notifications";
-import { relativeTimeLabel } from "@/lib/dates";
+import { formatInstantInZone, relativeTimeLabel } from "@/lib/dates";
 
 import {
   closeCalloutAction,
@@ -79,14 +79,6 @@ const AUDIENCE_LABELS: Record<string, string> = {
   MEMBERS: "Selected members",
 };
 
-function formatInstant(date: Date) {
-  return new Intl.DateTimeFormat("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "UTC",
-  }).format(date);
-}
-
 export default async function CalloutDetailPage({
   params,
 }: {
@@ -112,6 +104,11 @@ export default async function CalloutDetailPage({
     OrgCapability.MEMBERS_MANAGE,
   );
 
+  // Times render in the organization's own timezone — coordinators
+  // think in their local clock during an event, not UTC.
+  const tz = callout.organization.timezone;
+  const fmt = (d: Date) => formatInstantInZone(d, tz);
+
   const coming = callout.invitations.filter(
     (i) => i.response === "COMING",
   ).length;
@@ -119,6 +116,10 @@ export default async function CalloutDetailPage({
     (i) => i.response === "UNAVAILABLE",
   ).length;
   const noResponse = callout.invitations.length - coming - unavailable;
+  // Separate unanswered invitees: during a live callout the coordinator
+  // is chasing exactly this group, not scanning a mixed list.
+  const awaiting = callout.invitations.filter((i) => i.response == null);
+  const responded = callout.invitations.filter((i) => i.response != null);
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-6">
@@ -179,7 +180,7 @@ export default async function CalloutDetailPage({
           <div>
             <dt className="text-xs text-neutral-500">Activated</dt>
             <dd className="text-neutral-800">
-              {formatInstant(callout.activatedAt)} UTC
+              {fmt(callout.activatedAt)}
               {callout.createdByDisplay
                 ? ` · by ${callout.createdByDisplay}`
                 : ""}
@@ -189,7 +190,7 @@ export default async function CalloutDetailPage({
             <div>
               <dt className="text-xs text-neutral-500">Closed</dt>
               <dd className="text-neutral-800">
-                {formatInstant(callout.closedAt)} UTC
+                {fmt(callout.closedAt)}
                 {callout.closedByDisplay
                   ? ` · by ${callout.closedByDisplay}`
                   : ""}
@@ -223,149 +224,184 @@ export default async function CalloutDetailPage({
         <h2 id="invitees-heading" className="text-lg font-medium">
           Invited members
         </h2>
-        <ul className="mt-3 divide-y divide-neutral-200 rounded-md border border-neutral-200">
-          {callout.invitations.map((invitation) => {
-            const latestAttempt = invitation.notification?.attempts.at(-1);
-            return (
-              <li key={invitation.id} className="px-4 py-3 text-sm">
-                <div className="flex items-center justify-between gap-3">
-                  {canViewMembers ? (
-                    <Link
-                      href={`/admin/organizations/${orgId}/members/${invitation.member.id}`}
-                      className="font-medium text-neutral-900 hover:underline"
-                    >
-                      {invitation.member.displayName}
-                    </Link>
-                  ) : (
-                    <span className="font-medium text-neutral-900">
-                      {invitation.member.displayName}
-                    </span>
-                  )}
-                  <span
-                    className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                      invitation.response
-                        ? (responseBadgeClass[invitation.response] ??
-                          "bg-neutral-100 text-neutral-600")
-                        : "bg-neutral-100 text-neutral-600"
-                    }`}
-                  >
-                    {invitation.response
-                      ? CALLOUT_RESPONSE_LABELS[invitation.response]
-                      : "No response"}
-                  </span>
-                </div>
-                <p className="mt-1 text-xs text-neutral-500">
-                  Invited {relativeTimeLabel(invitation.invitedAt)}
-                  {invitation.respondedAt &&
-                    ` · responded ${relativeTimeLabel(invitation.respondedAt)}`}
-                </p>
-                <p className="mt-1 text-xs text-neutral-600">
-                  Notification:{" "}
-                  {invitation.notification ? (
-                    <>
-                      <span className="text-neutral-500">
-                        {CHANNEL_LABELS[invitation.notification.channel] ??
-                          invitation.notification.channel}
-                        {" · "}
-                      </span>
-                      <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${notificationBadgeClass[invitation.notification.status] ?? "bg-neutral-100 text-neutral-600"}`}
-                      >
-                        {NOTIFICATION_STATUS_LABELS[
-                          invitation.notification.status
-                        ] ?? invitation.notification.status}
-                      </span>
-                      {latestAttempt?.deliveryStatus &&
-                        DELIVERY_STATUS_LABELS[
-                          latestAttempt.deliveryStatus
-                        ] && (
-                          <span
-                            className={`ml-1 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${deliveryBadgeClass[latestAttempt.deliveryStatus] ?? "bg-neutral-100 text-neutral-600"}`}
+        {(
+          [
+            {
+              key: "awaiting",
+              title: `Awaiting response (${awaiting.length})`,
+              rows: awaiting,
+            },
+            {
+              key: "responded",
+              title: `Responded (${responded.length})`,
+              rows: responded,
+            },
+          ] as const
+        ).map((group) => (
+          <div key={group.key}>
+            <h3 className="mt-4 text-sm font-medium text-neutral-700">
+              {group.title}
+            </h3>
+            {group.rows.length === 0 ? (
+              <p className="mt-2 text-sm text-neutral-500">
+                {group.key === "awaiting"
+                  ? "Every invited member has responded."
+                  : "No responses yet."}
+              </p>
+            ) : (
+              <ul className="mt-2 divide-y divide-neutral-200 rounded-md border border-neutral-200">
+                {group.rows.map((invitation) => {
+                  const latestAttempt =
+                    invitation.notification?.attempts.at(-1);
+                  return (
+                    <li key={invitation.id} className="px-4 py-3 text-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        {canViewMembers ? (
+                          <Link
+                            href={`/admin/organizations/${orgId}/members/${invitation.member.id}`}
+                            className="font-medium text-neutral-900 hover:underline"
                           >
-                            {
+                            {invitation.member.displayName}
+                          </Link>
+                        ) : (
+                          <span className="font-medium text-neutral-900">
+                            {invitation.member.displayName}
+                          </span>
+                        )}
+                        <span
+                          className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                            invitation.response
+                              ? (responseBadgeClass[invitation.response] ??
+                                "bg-neutral-100 text-neutral-600")
+                              : "bg-neutral-100 text-neutral-600"
+                          }`}
+                        >
+                          {invitation.response
+                            ? CALLOUT_RESPONSE_LABELS[invitation.response]
+                            : "No response"}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-neutral-500">
+                        Invited {relativeTimeLabel(invitation.invitedAt)}
+                        {invitation.respondedAt &&
+                          ` · responded ${relativeTimeLabel(invitation.respondedAt)}`}
+                      </p>
+                      <p className="mt-1 text-xs text-neutral-600">
+                        Notification:{" "}
+                        {invitation.notification ? (
+                          <>
+                            <span className="text-neutral-500">
+                              {CHANNEL_LABELS[
+                                invitation.notification.channel
+                              ] ?? invitation.notification.channel}
+                              {" · "}
+                            </span>
+                            <span
+                              className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${notificationBadgeClass[invitation.notification.status] ?? "bg-neutral-100 text-neutral-600"}`}
+                            >
+                              {NOTIFICATION_STATUS_LABELS[
+                                invitation.notification.status
+                              ] ?? invitation.notification.status}
+                            </span>
+                            {latestAttempt?.deliveryStatus &&
                               DELIVERY_STATUS_LABELS[
                                 latestAttempt.deliveryStatus
-                              ]
-                            }
-                          </span>
-                        )}
-                      {invitation.notification.statusReason && (
-                        <span className="ml-1 text-neutral-500">
-                          {SUPPRESSION_REASON_LABELS[
-                            invitation.notification.statusReason
-                          ] ?? invitation.notification.statusReason}
-                        </span>
-                      )}
-                      {latestAttempt?.status === "FAILED" &&
-                        latestAttempt.errorSummary && (
-                          <span className="ml-1 text-red-700">
-                            {latestAttempt.errorSummary}
-                          </span>
-                        )}
-                      {latestAttempt && (
-                        <span className="ml-1 text-neutral-500">
-                          via {latestAttempt.provider}
-                          {latestAttempt.resolvedAt
-                            ? ` · ${relativeTimeLabel(latestAttempt.resolvedAt)}`
-                            : " · outcome not recorded"}
-                        </span>
-                      )}
-                    </>
-                  ) : (
-                    <span className="text-neutral-500">
-                      No notification recorded
-                    </span>
-                  )}
-                </p>
-                {invitation.changes.length > 0 && (
-                  <details className="mt-1">
-                    <summary className="cursor-pointer text-xs font-medium text-neutral-600 hover:text-neutral-900">
-                      Response history ({invitation.changes.length})
-                    </summary>
-                    <ul className="mt-1 space-y-1">
-                      {invitation.changes.map((change) => (
-                        <li
-                          key={change.id}
-                          className="rounded border border-neutral-100 bg-neutral-50 px-3 py-1.5 text-xs text-neutral-700"
-                        >
-                          <span className="font-medium">
-                            {change.previousResponse
-                              ? `${CALLOUT_RESPONSE_LABELS[change.previousResponse]} → `
-                              : ""}
-                            {CALLOUT_RESPONSE_LABELS[change.response]}
-                          </span>
+                              ] && (
+                                <span
+                                  className={`ml-1 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${deliveryBadgeClass[latestAttempt.deliveryStatus] ?? "bg-neutral-100 text-neutral-600"}`}
+                                >
+                                  {
+                                    DELIVERY_STATUS_LABELS[
+                                      latestAttempt.deliveryStatus
+                                    ]
+                                  }
+                                </span>
+                              )}
+                            {invitation.notification.statusReason && (
+                              <span className="ml-1 text-neutral-500">
+                                {SUPPRESSION_REASON_LABELS[
+                                  invitation.notification.statusReason
+                                ] ?? invitation.notification.statusReason}
+                              </span>
+                            )}
+                            {latestAttempt?.status === "FAILED" &&
+                              latestAttempt.errorSummary && (
+                                <span className="ml-1 text-red-700">
+                                  {latestAttempt.errorSummary}
+                                </span>
+                              )}
+                            {latestAttempt && (
+                              <span className="ml-1 text-neutral-500">
+                                via {latestAttempt.provider}
+                                {latestAttempt.resolvedAt
+                                  ? ` · ${relativeTimeLabel(latestAttempt.resolvedAt)}`
+                                  : " · outcome not recorded"}
+                              </span>
+                            )}
+                          </>
+                        ) : (
                           <span className="text-neutral-500">
-                            {" "}
-                            · {CALLOUT_RESPONSE_SOURCE_LABELS[change.source]}
-                            {change.actorDisplay
-                              ? ` · ${change.actorDisplay}`
-                              : ""}
-                            {" · "}
-                            {relativeTimeLabel(change.createdAt)}
+                            No notification recorded
                           </span>
-                          {change.note && (
-                            <span className="block text-neutral-500">
-                              {change.note}
-                            </span>
+                        )}
+                      </p>
+                      {invitation.changes.length > 0 && (
+                        <details className="mt-1">
+                          <summary className="cursor-pointer text-xs font-medium text-neutral-600 hover:text-neutral-900">
+                            Response history ({invitation.changes.length})
+                          </summary>
+                          <ul className="mt-1 space-y-1">
+                            {invitation.changes.map((change) => (
+                              <li
+                                key={change.id}
+                                className="rounded border border-neutral-100 bg-neutral-50 px-3 py-1.5 text-xs text-neutral-700"
+                              >
+                                <span className="font-medium">
+                                  {change.previousResponse
+                                    ? `${CALLOUT_RESPONSE_LABELS[change.previousResponse]} → `
+                                    : ""}
+                                  {CALLOUT_RESPONSE_LABELS[change.response]}
+                                </span>
+                                <span className="text-neutral-500">
+                                  {" "}
+                                  ·{" "}
+                                  {
+                                    CALLOUT_RESPONSE_SOURCE_LABELS[
+                                      change.source
+                                    ]
+                                  }
+                                  {change.actorDisplay
+                                    ? ` · ${change.actorDisplay}`
+                                    : ""}
+                                  {" · "}
+                                  {relativeTimeLabel(change.createdAt)}
+                                </span>
+                                {change.note && (
+                                  <span className="block text-neutral-500">
+                                    {change.note}
+                                  </span>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
+                      {callout.status === "ACTIVE" && (
+                        <AdminResponseForm
+                          action={recordCalloutResponseAction.bind(
+                            null,
+                            invitation.id,
                           )}
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                )}
-                {callout.status === "ACTIVE" && (
-                  <AdminResponseForm
-                    action={recordCalloutResponseAction.bind(
-                      null,
-                      invitation.id,
-                    )}
-                    idPrefix={`resp-${invitation.id}`}
-                  />
-                )}
-              </li>
-            );
-          })}
-        </ul>
+                          idPrefix={`resp-${invitation.id}`}
+                        />
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        ))}
       </section>
 
       <section
