@@ -14,23 +14,23 @@ Status legend: **verified** (exercised end-to-end), **implemented**
 
 ## Readiness matrix
 
-| Area                    | Status            | Notes                                                                                                                                                                |
-| ----------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Database lifecycle      | verified          | Neon `testing` baseline + per-PR `preview/pr-N` branches, identity-checked migrations, teardown (PRs #46/#48/#49)                                                    |
-| Vercel build safeguards | verified          | `npm run build:vercel` identity-gates migrations; misconfigured envs fail the build closed (PR #50)                                                                  |
-| Firebase authentication | verified (design) | Session cookies verified with revocation; env vars configured prod + preview on shared project; preview sign-in still needs `ALLOW_FIREBASE_ADMIN_IN_PREVIEW`        |
-| Authorization           | verified          | `ADMIN`/`MANAGER`/`MEMBER` + explicit per-capability grants; org-scoped queries, composite same-org FKs, opaque cross-org failures (PRs #85–#87, #91)                |
-| Rate limiting           | verified          | `PostgresRateLimitStore` — windows shared across every serverless instance; in-memory store kept for dev/test (issue #55)                                            |
-| Application workflows   | implemented       | Incidents/callouts/expenses/assets/documents covered by db + unit + smoke tests; full hosted journeys need the authenticated smoke identity                          |
-| Attachment uploads      | implemented       | Direct-to-store prepare → browser POST → verified finalize; proxied fallback for providers without presigned POST                                                    |
-| Attachment downloads    | verified          | Authorized streaming route, private objects, `attachment`+`nosniff`, honest 404/410, scan-gated (fail-closed until clean)                                            |
-| Malware scanning        | implemented       | GuardDuty Malware Protection for S3 → EventBridge → signed webhook → verdict + S3 tag reconcile (PR #70, #81); live delivery verification is the owner runbook below |
-| Object storage          | implemented       | Code complete; bucket + IAM + Vercel vars configured by owner — pending redeploy and live smoke test (see below)                                                     |
-| Background processing   | not applicable    | No jobs/queues/schedulers exist; notification retries are operator-invoked actions                                                                                   |
-| External integrations   | implemented       | Resend notifications (fake provider otherwise); Sentry wired, credentials optional                                                                                   |
-| Monitoring              | partially         | Sentry SDK + structured request logs + `/api/health`; alert policy is an operator decision                                                                           |
-| Backup & recovery       | verified (db)     | `runbooks/database-backup-restore.md` + automated restore drill in CI; object-store backup is operator scope                                                         |
-| Deployment protection   | verified          | Vercel Deployment Protection stays on; automation uses the bypass header, never a public route                                                                       |
+| Area                    | Status            | Notes                                                                                                                                                                                              |
+| ----------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Database lifecycle      | verified          | Neon `testing` baseline + per-PR `preview/pr-N` branches, identity-checked migrations, teardown (PRs #46/#48/#49)                                                                                  |
+| Vercel build safeguards | verified          | `npm run build:vercel` identity-gates migrations; misconfigured envs fail the build closed (PR #50)                                                                                                |
+| Firebase authentication | verified (design) | Session cookies verified with revocation; env vars configured prod + preview on shared project; preview sign-in still needs `ALLOW_FIREBASE_ADMIN_IN_PREVIEW`                                      |
+| Authorization           | verified          | `ADMIN`/`MANAGER`/`MEMBER` + explicit per-capability grants; org-scoped queries, composite same-org FKs, opaque cross-org failures (PRs #85–#87, #91)                                              |
+| Rate limiting           | verified          | `PostgresRateLimitStore` — windows shared across every serverless instance; in-memory store kept for dev/test (issue #55)                                                                          |
+| Application workflows   | implemented       | Incidents/callouts/expenses/assets/documents covered by db + unit + smoke tests; full hosted journeys need the authenticated smoke identity                                                        |
+| Attachment uploads      | implemented       | Direct-to-store prepare → browser POST → verified finalize; proxied fallback for providers without presigned POST                                                                                  |
+| Attachment downloads    | verified          | Authorized streaming route, private objects, `attachment`+`nosniff`, honest 404/410; scan-gated when S3 storage is active (fail-closed until clean)                                                |
+| Malware scanning        | implemented       | GuardDuty Malware Protection for S3 → EventBridge → signed webhook → `scanStatus` set CLEAN by scan event or S3 tag reconcile (PR #70, #81); live delivery verification is the owner runbook below |
+| Object storage          | implemented       | Code complete; bucket + IAM + Vercel vars configured by owner — pending redeploy and live smoke test (see below)                                                                                   |
+| Background processing   | not applicable    | No jobs/queues/schedulers exist; notification retries are operator-invoked actions                                                                                                                 |
+| External integrations   | implemented       | Resend notifications (fake provider otherwise); Sentry wired, credentials optional                                                                                                                 |
+| Monitoring              | partially         | Sentry SDK + structured request logs + `/api/health`; alert policy is an operator decision                                                                                                         |
+| Backup & recovery       | verified (db)     | `runbooks/database-backup-restore.md` + automated restore drill in CI; object-store backup is operator scope                                                                                       |
+| Deployment protection   | verified          | Vercel Deployment Protection stays on; automation uses the bypass header, never a public route                                                                                                     |
 
 ## Environment matrix
 
@@ -146,8 +146,10 @@ not speculated now.
 - **Malware scanning live verification** — GuardDuty Malware
   Protection for S3 is implemented end-to-end in code and infra
   (EventBridge rule → API destination → signed webhook → verdict
-  persistence + S3 tag reconcile + DLQ alarm; PRs #70, #81), and the
-  download gate fails closed until a verdict and the object tag agree.
+  persistence + S3 tag reconcile + DLQ alarm; PRs #70, #81). The
+  download gate reads the attachment's `scanStatus` — a matching
+  scan event _or_ a tag reconcile can set `CLEAN`; anything else
+  stays blocked.
   What remains is the live pipeline check, which requires owner AWS
   credentials: `npm run attachments:guardduty-verify` automates every
   read-only check, then `runbooks/guardduty-scan-activation.md` Phase 5

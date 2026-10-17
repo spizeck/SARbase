@@ -214,7 +214,7 @@ Inherited from the foundation baseline, working today:
 
 ### Not yet implemented
 
-Background jobs (including automatic notification retries and provider delivery webhooks) and additional notification channels (SMS/WhatsApp/push) are **planned, not built**. `/admin` requires an authenticated identity with either an explicit `ADMIN` grant or a `MANAGER` grant carrying at least one capability for the target organization. Qualification, equipment, and maintenance records state facts only — they never conclude SAR operational readiness.
+Background jobs (including automatic notification retries and provider delivery webhooks) and additional notification channels (SMS/WhatsApp/push) are **planned, not built**. `/admin` requires an authenticated identity with either an explicit `ADMIN` grant or a `MANAGER` grant carrying at least one capability for the target organization; each destination inside `/admin` then enforces its own capability independently, so a manager sees only the surfaces their grants cover. Qualification, equipment, and maintenance records state facts only — they never conclude SAR operational readiness.
 
 ## Status
 
