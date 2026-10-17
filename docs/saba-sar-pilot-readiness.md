@@ -12,15 +12,15 @@ Companion docs: [production-readiness.md](production-readiness.md)
 
 ## Current deployment state (verified 2026-10-17)
 
-| Fact                     | State                                                                 |
-| ------------------------ | --------------------------------------------------------------------- |
-| Production deployment    | `sar-base` on Vercel — READY, running main `fe2f61a`                  |
-| Database                 | Neon `main` — all 36 committed migrations applied by the build        |
-| Rollback                 | Vercel instant-rollback to prior deployment (migrations are additive) |
-| Email notifications      | Implemented; real sending needs Resend env vars                       |
-| WhatsApp notifications   | Implemented, **inactive** until Meta activation                       |
-| File attachments         | Implemented, **fail-closed** until S3 env vars activate               |
-| Malware scanning         | Implemented, **unverified live** until GuardDuty activation           |
+| Fact                   | State                                                                 |
+| ---------------------- | --------------------------------------------------------------------- |
+| Production deployment  | `sar-base` on Vercel — READY, running main `fe2f61a`                  |
+| Database               | Neon `main` — all 36 committed migrations applied by the build        |
+| Rollback               | Vercel instant-rollback to prior deployment (migrations are additive) |
+| Email notifications    | Implemented; real sending needs Resend env vars                       |
+| WhatsApp notifications | Implemented, **inactive** until Meta activation                       |
+| File attachments       | Implemented, **fail-closed** until S3 env vars activate               |
+| Malware scanning       | Implemented, **unverified live** until GuardDuty activation           |
 
 ## Required environment variables — names only
 
