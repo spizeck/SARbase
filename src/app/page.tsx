@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { LegalFooter } from "@/components/legal-footer";
+
 export default function HomePage() {
   return (
     <main className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center px-6 py-16">
@@ -25,6 +27,7 @@ export default function HomePage() {
           Sign in
         </Link>
       </p>
+      <LegalFooter className="mt-16" />
     </main>
   );
 }

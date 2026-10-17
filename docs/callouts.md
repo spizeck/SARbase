@@ -6,6 +6,10 @@ invitee's factual response. This document covers the data model,
 activation and notification dispatch, the token-gated response flow,
 and the deliberate boundaries.
 
+> SARbase is a management and communications tool. It does not replace
+> established emergency communication systems, qualified operational
+> judgment, or your organization's command procedures.
+>
 > SARbase records who was invited and how they responded. It does not
 > determine whether the resulting crew is sufficient, qualified, ready,
 > or appropriate for an operation.

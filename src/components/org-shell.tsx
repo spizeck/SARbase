@@ -219,6 +219,14 @@ export function OrgShell({
         >
           My account
         </Link>
+        <div className="mt-2 flex gap-3 px-2 text-xs text-neutral-500">
+          <Link href="/privacy" className="hover:underline">
+            Privacy
+          </Link>
+          <Link href="/terms" className="hover:underline">
+            Terms
+          </Link>
+        </div>
       </div>
     </nav>
   );

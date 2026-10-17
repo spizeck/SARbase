@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 
 import { getAuthContext } from "@/lib/auth/context";
 import { tryParseFirebaseClientEnvironment } from "@/lib/env";
+import { LegalFooter } from "@/components/legal-footer";
 
 import { LoginForm } from "./login-form";
 
@@ -34,6 +35,7 @@ export default async function LoginPage() {
           <LoginForm configured={firebaseConfigured} />
         </Suspense>
       </div>
+      <LegalFooter className="mt-12" />
     </main>
   );
 }

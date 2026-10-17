@@ -3,6 +3,7 @@ import {
   CALLOUT_RESPONSE_LABELS,
 } from "@/lib/domain/callouts";
 import { formatInstantInZone, relativeTimeLabel } from "@/lib/dates";
+import { LegalFooter } from "@/components/legal-footer";
 
 import { respondToCalloutTokenAction } from "./actions";
 import { TokenResponseForm } from "./response-form";
@@ -30,6 +31,7 @@ function Card({ children }: { children: React.ReactNode }) {
   return (
     <main className="mx-auto max-w-md px-4 py-10">
       <div className="rounded-lg border border-neutral-200 p-5">{children}</div>
+      <LegalFooter className="mt-6 text-center" />
     </main>
   );
 }

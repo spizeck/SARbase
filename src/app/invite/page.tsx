@@ -4,6 +4,7 @@ import {
 } from "@/lib/domain/invitations";
 import { tryParseFirebaseClientEnvironment } from "@/lib/env";
 import { instantExpiryLabel } from "@/lib/dates";
+import { LegalFooter } from "@/components/legal-footer";
 
 import { acceptMemberInvitationAction } from "./actions";
 import { InviteAcceptForm } from "./invite-form";
@@ -34,6 +35,7 @@ function Card({ children }: { children: React.ReactNode }) {
   return (
     <main className="mx-auto max-w-md px-4 py-10">
       <div className="rounded-lg border border-neutral-200 p-5">{children}</div>
+      <LegalFooter className="mt-6 text-center" />
     </main>
   );
 }

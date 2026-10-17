@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, linkedMembersWithAccess } from "@/lib/auth/authorize";
 import { signOutAction } from "@/app/login/actions";
 import { AppearanceRadioGroup } from "@/components/theme";
+import { LegalFooter } from "@/components/legal-footer";
 import {
   listMemberQualifications,
   listQualificationDefinitions,
@@ -660,6 +661,8 @@ export default async function AccountPage() {
           </Link>
         </p>
       )}
+
+      <LegalFooter className="mt-10" />
     </main>
   );
 }
