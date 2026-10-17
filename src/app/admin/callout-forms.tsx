@@ -380,7 +380,10 @@ export function CalloutEditForm({
           defaultValue={defaults.title}
           className={inputClass}
         />
-        <FieldError id="callout-edit-title-error" errors={state.fieldErrors?.title} />
+        <FieldError
+          id="callout-edit-title-error"
+          errors={state.fieldErrors?.title}
+        />
       </div>
       <div>
         <label htmlFor="callout-edit-message" className={labelClass}>
