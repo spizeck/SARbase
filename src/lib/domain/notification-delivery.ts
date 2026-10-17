@@ -121,6 +121,11 @@ export async function recordWhatsappDeliveryEvents(
  */
 const WHATSAPP_WEBHOOK_ACTOR = "whatsapp-webhook";
 
+/** Internal sentinel: abort and retry the opt-out transaction. */
+class OptOutRetrySignal extends Error {}
+
+const OPT_OUT_TX_MAX_ATTEMPTS = 3;
+
 /**
  * Record a member-initiated WhatsApp opt-out signaled through the
  * inbound-message webhook (a bare STOP-style keyword). The configured
@@ -159,55 +164,88 @@ export async function recordWhatsappOptOuts(
   const now = new Date();
   let optedOut = 0;
   for (const member of members) {
-    const changed = await prisma.$transaction(async (tx) => {
-      // Conditional stamp — Meta can deliver the same STOP concurrently
-      // and exactly one winner may write the audit row.
-      const stamped = await tx.memberNotificationPreference.updateMany({
-        where: {
-          memberId: member.id,
-          organizationId: member.organizationId,
-          whatsappOptedOutAt: null,
-        },
-        data: { whatsappOptedOutAt: now },
-      });
-      if (stamped.count === 0) {
-        // No preference row yet, or a concurrent/earlier delivery
-        // already stamped it. A create races once — a unique violation
-        // means someone else opted this member out.
-        try {
-          await tx.memberNotificationPreference.create({
+    // Meta can deliver the same STOP concurrently. The transaction is
+    // retried when a concurrent preference create claims the unique row
+    // between the existence check and the create — the retry sees the
+    // new row and stamps it rather than leaving the member un-opted-out.
+    let changed = false;
+    for (
+      let attempt = 0;
+      attempt < OPT_OUT_TX_MAX_ATTEMPTS && !changed;
+      attempt++
+    ) {
+      try {
+        changed = await prisma.$transaction(async (tx) => {
+          const current = await tx.memberNotificationPreference.findUnique({
+            where: {
+              memberId_organizationId: {
+                memberId: member.id,
+                organizationId: member.organizationId,
+              },
+            },
+            select: { whatsappConsentAt: true, whatsappOptedOutAt: true },
+          });
+          // Already opted out — idempotent no-op, whoever stamped it
+          // wrote the audit row.
+          if (current?.whatsappOptedOutAt != null) return false;
+          if (current == null) {
+            try {
+              await tx.memberNotificationPreference.create({
+                data: {
+                  organizationId: member.organizationId,
+                  memberId: member.id,
+                  whatsappOptedOutAt: now,
+                },
+              });
+            } catch (error) {
+              if (
+                error instanceof Prisma.PrismaClientKnownRequestError &&
+                error.code === "P2002"
+              ) {
+                throw new OptOutRetrySignal();
+              }
+              throw error;
+            }
+          } else {
+            // Conditional stamp — a concurrent delivery that already
+            // wrote the opt-out wins; this becomes a clean no-op.
+            const stamped = await tx.memberNotificationPreference.updateMany({
+              where: {
+                memberId: member.id,
+                organizationId: member.organizationId,
+                whatsappOptedOutAt: null,
+              },
+              data: { whatsappOptedOutAt: now },
+            });
+            if (stamped.count === 0) return false;
+          }
+          await tx.memberContactChange.create({
             data: {
               organizationId: member.organizationId,
               memberId: member.id,
-              whatsappOptedOutAt: now,
+              field: "whatsappConsent",
+              previousValue:
+                current?.whatsappConsentAt != null ? "granted" : null,
+              newValue: "opted_out",
+              selfReported: true,
+              actorAuthIdentityId: WHATSAPP_WEBHOOK_ACTOR,
             },
           });
-        } catch (error) {
-          if (
-            error instanceof Prisma.PrismaClientKnownRequestError &&
-            error.code === "P2002"
-          ) {
-            return false;
-          }
+          return true;
+        });
+      } catch (error) {
+        // A dead transaction can never be queried again, so the re-read
+        // happens in a fresh one. Exhausting retries means the unique
+        // row keeps being claimed by other writers — fail loudly so the
+        // webhook 5xxs and Meta redelivers rather than losing a STOP.
+        if (
+          !(error instanceof OptOutRetrySignal) ||
+          attempt === OPT_OUT_TX_MAX_ATTEMPTS - 1
+        ) {
           throw error;
         }
       }
-      await tx.memberContactChange.create({
-        data: {
-          organizationId: member.organizationId,
-          memberId: member.id,
-          field: "whatsappConsent",
-          previousValue:
-            member.notificationPreference?.whatsappConsentAt != null
-              ? "granted"
-              : null,
-          newValue: "opted_out",
-          selfReported: true,
-          actorAuthIdentityId: WHATSAPP_WEBHOOK_ACTOR,
-        },
-      });
-      return true;
-    });
+    }
     if (!changed) continue;
     optedOut += 1;
     log({
