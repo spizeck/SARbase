@@ -342,16 +342,16 @@ model AuthIdentity {
 // source of organization access and role. One row per (identity, org);
 // the role column is the extensible point for future roles.
 model OrganizationAccess {
-  id             String   @id @default(cuid())
+  id             String          @id @default(cuid())
   organizationId String
   authIdentityId String
-  role           OrgRole  @default(MEMBER)
+  role           OrgRole         @default(MEMBER)
   // Explicit capability grants — meaningful only while role is
   // MANAGER. Cleared on every role change so a later promotion can
   // never silently restore stale privileges.
   capabilities   OrgCapability[]
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   authIdentity AuthIdentity @relation(fields: [authIdentityId], references: [id], onDelete: Cascade)
@@ -2945,4 +2945,24 @@ model DataExportEvent {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
 
   @@index([organizationId, createdAt])
+}
+
+// Issue #55 — shared rate-limit windows.
+//
+// Fixed-window counters shared across serverless instances so rate
+// limits are authoritative regardless of how many Vercel instances are
+// warm. Keys are opaque sha256 digests (rate-limit/keys.ts) — no IPs,
+// user ids, or other PII is ever stored here.
+// ---------------------------------------------------------------------------
+
+/// One fixed-window counter per opaque limiter key. Rows are created by
+/// an atomic upsert (PostgresRateLimitStore) and removed by a
+/// probabilistic sweep once their window has expired.
+model RateLimitWindow {
+  /// Opaque hashed limiter key: "rl:<scope>:<sha256-digest>".
+  key     String @id
+  /// Hits consumed in the current window.
+  count   Int
+  /// Epoch milliseconds when the current window ends.
+  resetAt BigInt
 }

@@ -194,9 +194,10 @@ session — never a form field.
 Admin sends and retries are rate-limited with the existing fixed-window
 foundation (`src/lib/rate-limit/`): 10 per 60s per (org, actor), keyed by
 `rateLimitKey(scope, organizationId, actorId)` — an opaque SHA-256 hash,
-never a raw address, member id, or message content. The bundled
-`InMemoryRateLimitStore` is a documented per-process best-effort
-throttle; a distributed store can replace it later.
+never a raw address, member id, or message content. Production uses
+`PostgresRateLimitStore` (issue #55) so limits are authoritative across
+serverless instances; development and tests use the per-process
+`InMemoryRateLimitStore`.
 
 ## Privacy and logging
 

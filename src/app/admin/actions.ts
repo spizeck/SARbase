@@ -271,7 +271,7 @@ import {
 } from "@/lib/domain/expenses";
 import { checkRateLimit } from "@/lib/rate-limit/rate-limit";
 import { rateLimitKey } from "@/lib/rate-limit/keys";
-import { InMemoryRateLimitStore } from "@/lib/rate-limit/memory-store";
+import { getRateLimitStore } from "@/lib/rate-limit/default-store";
 import { AuthenticationError, AuthorizationError } from "@/lib/auth/context";
 import { emailSchema } from "@/lib/domain/schemas";
 import { log, logExpected } from "@/lib/logging";
@@ -2458,7 +2458,7 @@ export async function updateMemberContactPreferenceAction(
 /* src/lib/rate-limit/rate-limit.ts for its documented limits.         */
 /* ------------------------------------------------------------------ */
 
-const notificationRateLimitStore = new InMemoryRateLimitStore();
+const notificationRateLimitStore = getRateLimitStore();
 const NOTIFICATION_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
 
 async function checkNotificationRateLimit(
@@ -2593,7 +2593,7 @@ export async function retryNotificationAction(
 /* callout is an invitation record plus its responses.                 */
 /* ------------------------------------------------------------------ */
 
-const calloutRateLimitStore = new InMemoryRateLimitStore();
+const calloutRateLimitStore = getRateLimitStore();
 const CALLOUT_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
 
 /**
@@ -2744,7 +2744,7 @@ export async function recordCalloutResponseAction(
 /* Nothing here is an operational decision or judgment.                */
 /* ------------------------------------------------------------------ */
 
-const incidentRateLimitStore = new InMemoryRateLimitStore();
+const incidentRateLimitStore = getRateLimitStore();
 const INCIDENT_RATE_LIMIT = { limit: 20, windowMs: 60_000 };
 
 async function checkIncidentRateLimit(
@@ -3150,7 +3150,7 @@ export async function correctIncidentNoteAction(
 /* Issue #16 — attachments and organizational documents               */
 /* ------------------------------------------------------------------ */
 
-const attachmentRateLimitStore = new InMemoryRateLimitStore();
+const attachmentRateLimitStore = getRateLimitStore();
 const ATTACHMENT_RATE_LIMIT = { limit: 60, windowMs: 60 * 60 * 1000 };
 
 /**
@@ -3910,7 +3910,7 @@ export async function setOrganizationDocumentStatusAction(
 /* expense entity is just another authorized target there.             */
 /* ------------------------------------------------------------------ */
 
-const expenseRateLimitStore = new InMemoryRateLimitStore();
+const expenseRateLimitStore = getRateLimitStore();
 const FINANCIAL_RATE_LIMIT = { limit: 30, windowMs: 60_000 };
 
 /**

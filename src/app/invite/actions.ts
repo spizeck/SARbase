@@ -18,7 +18,7 @@ import { hashMemberInvitationToken } from "@/lib/domain/invitationTokens";
 import { log, logExpected, summarizeError } from "@/lib/logging";
 import { checkRateLimit } from "@/lib/rate-limit/rate-limit";
 import { clientIpFromHeaders, rateLimitKey } from "@/lib/rate-limit/keys";
-import { InMemoryRateLimitStore } from "@/lib/rate-limit/memory-store";
+import { getRateLimitStore } from "@/lib/rate-limit/default-store";
 
 /**
  * Member-invitation acceptance — the public, token-gated counterpart of
@@ -35,7 +35,8 @@ import { InMemoryRateLimitStore } from "@/lib/rate-limit/memory-store";
  * this code runs.
  */
 
-const acceptRateLimitStore = new InMemoryRateLimitStore();
+const acceptRateLimitStore = getRateLimitStore();
+const ACCEPT_CLIENT_RATE_LIMIT = { limit: 30, windowMs: 60_000 };
 const ACCEPT_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
 
 const tokenSchema = z.string().min(1).max(512);
@@ -58,18 +59,28 @@ export async function acceptMemberInvitationAction(
   }
 
   const hdrs = await headers();
-  const limited = await checkRateLimit(
+  const clientIp = clientIpFromHeaders({
+    "x-forwarded-for": hdrs.get("x-forwarded-for") ?? undefined,
+    "x-real-ip": hdrs.get("x-real-ip") ?? undefined,
+  });
+
+  // Client-wide guard: token rotation must not refresh the budget.
+  const clientLimited = await checkRateLimit(
     acceptRateLimitStore,
-    rateLimitKey(
-      "invitation.accept",
-      hashMemberInvitationToken(parsedToken.data),
-      clientIpFromHeaders({
-        "x-forwarded-for": hdrs.get("x-forwarded-for") ?? undefined,
-        "x-real-ip": hdrs.get("x-real-ip") ?? undefined,
-      }),
-    ),
-    ACCEPT_RATE_LIMIT,
+    rateLimitKey("invitation.accept.client", clientIp),
+    ACCEPT_CLIENT_RATE_LIMIT,
   );
+  const limited = clientLimited.allowed
+    ? await checkRateLimit(
+        acceptRateLimitStore,
+        rateLimitKey(
+          "invitation.accept",
+          hashMemberInvitationToken(parsedToken.data),
+          clientIp,
+        ),
+        ACCEPT_RATE_LIMIT,
+      )
+    : clientLimited;
   if (!limited.allowed) {
     logExpected({
       event: "member_invitation.accept_rate_limited",
