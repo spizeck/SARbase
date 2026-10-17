@@ -8,14 +8,21 @@ legal advice.
 
 ## 1. Operator identity
 
-- **[OWNER]** Legal name of the person or entity operating SARbase —
-  fills `[OPERATOR LEGAL ENTITY]` in the Privacy Policy and Terms.
-- **[OWNER]** Registered address / principal place of business.
+- **[FACT — decided #139]** The operator is an **individual
+  developer**: SARbase is developed and maintained personally,
+  published under AGPL-3.0, and hosted voluntarily free of charge.
+- **[OWNER]** Legal name of the individual operating SARbase — fills
+  `[OPERATOR LEGAL ENTITY]` in the Privacy Policy and Terms.
 - **[OWNER]** Contact emails for privacy requests and legal notices —
   fills `[PRIVACY CONTACT]`.
-- **[COUNSEL]** Is a formal business entity needed/advisable before
-  serving organizations (liability shielding, contracting capacity,
-  local registration duties on Saba)?
+- **[COUNSEL]** Whether operating personally (no entity) creates
+  unacceptable personal liability exposure for the developer, and
+  whether forming an entity is advisable before serving organizations —
+  local registration duties on Saba/BES included. This is the single
+  largest open risk item.
+- **[COUNSEL]** Personal-liability implications of the free/voluntary
+  model: do the disclaimers and the no-fee posture materially reduce
+  exposure, and are any duties (e.g., negligence, privacy) unavoidable?
 
 ## 2. Governing law & jurisdiction
 
@@ -83,9 +90,15 @@ legal advice.
   availability, disclaimers, liability cap, indemnity,
   suspension/termination, governing law, changes, contact.
 - **[COUNSEL]** Liability cap figure/mechanism — `[LIABILITY CAP]`
-  placeholder (options: fees-paid-12-months, fixed sum, or per-claim
-  tier). Non-excludable-liability carve-out is drafted; confirm it
-  matches the chosen governing law.
+  placeholder. A fees-paid cap is meaningless (service is free);
+  drafted alternatives: modest fixed sum per organization or per
+  claim, or damage-category exclusions with a nominal cap. Confirm
+  which is enforceable in the chosen governing law.
+  Non-excludable-liability carve-out is drafted; confirm it matches
+  the chosen governing law.
+- **[COUNSEL]** Whether "no fee + voluntary hosting" language
+  materially changes what disclaimers/caps will hold up — some
+  jurisdictions weigh gratuitous provision differently.
 - **[COUNSEL]** Indemnity scope — drafted narrowly (unlawful use,
   unauthorized data submissions, operational decisions). Confirm it
   is enforceable and sufficiently protective.
@@ -108,7 +121,8 @@ legal advice.
 - **[COUNSEL]** Reacceptance on material change: current design
   requires a fresh acceptance row per version — confirm sufficiency.
 - **[OWNER]** Decide the first approved `version` and `effectiveDate`
-  after counsel sign-off (documents ship as `0.1-draft`).
+  after counsel sign-off (documents ship as `0.2-draft` — v0.2 is the
+  free/open-source revision of issue #139).
 
 ## 8. Organization agreement
 
@@ -138,15 +152,43 @@ legal advice.
 - **[OWNER]** Incident-response ownership for a data breach — see
   `runbooks/production-incident-response.md` for the technical plan.
 
+## 9b. Open-source & hosting model (added issue #139)
+
+- **[FACT]** License is AGPL-3.0, verbatim `LICENSE` in the repo,
+  unmodified. The Terms explicitly subordinate to it — hosted-service
+  terms never restrict license rights, and ending hosting cannot
+  revoke license grants already made.
+- **[FACT]** No fees are charged for software or current hosting;
+  drafted Terms say so and reserve any future paid arrangement as a
+  separate written agreement.
+- **[FACT — decided #139]** Infrastructure is developer-selected;
+  the operator does not undertake regional hosting, provider changes,
+  extra provider accounts, procurement/funding compliance, or
+  certifications not held. The alternative path is AGPL self-hosting
+  (`docs/legal/hosting-and-self-hosting.md`).
+- **[COUNSEL]** Confirm the AGPL-3.0 §13 network-source obligation is
+  described accurately for organizations that self-host.
+- **[COUNSEL]** Whether the "may discontinue with reasonable notice +
+  export window" framework is adequate for a safety-adjacent tool —
+  consider whether a minimum notice period should be committed.
+- **[COUNSEL]** Any disclosure duties triggered by processing
+  volunteer data on infrastructure outside the operator's
+  jurisdiction even though no fee is charged.
+
 ## 10. Outstanding questions for counsel (summary)
 
-1. Entity structure and governing law/venue choices (§§1–2).
-2. Which privacy statutes apply and to which data flows (§3).
-3. Controller/processor split + whether per-org DPAs are required (§4).
-4. Liability cap mechanism and indemnity enforceability (§6).
-5. Click-wrap enforceability and privacy-acknowledgment mechanics (§7).
-6. Whether organizations sign the agreement, and insurance needs (§8).
-7. Retention schedule and breach-notification duties (§9).
+1. Personal vs entity operation — personal liability exposure, and
+   whether a formal entity is advisable (§1).
+2. Governing law/venue choices (§2).
+3. Which privacy statutes apply and to which data flows (§3).
+4. Controller/processor split + whether per-org DPAs are required (§4).
+5. Liability cap mechanism for a free service + indemnity
+   enforceability (§6).
+6. Click-wrap enforceability and privacy-acknowledgment mechanics (§7).
+7. Whether organizations sign the agreement, and insurance needs (§8).
+8. Retention schedule and breach-notification duties (§9).
+9. AGPL-3.0 obligations for self-hosting organizations, and adequacy
+   of the discontinuation/notice framework (§9b).
 
 ## What remains before public use (gate)
 

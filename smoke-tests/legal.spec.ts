@@ -48,6 +48,27 @@ test.describe("legal pages", () => {
     }
   });
 
+  test("legal pages link to the AGPL-3.0-licensed source repository", async ({
+    page,
+  }) => {
+    for (const path of ["/privacy", "/terms"]) {
+      await page.goto(path);
+      const repo = page
+        .getByRole("link", { name: /source code|AGPL/i })
+        .first();
+      await expect(repo).toBeVisible();
+      await expect(repo).toHaveAttribute(
+        "href",
+        "https://github.com/spizeck/SARbase",
+      );
+    }
+    // Terms additionally links the hosting/self-hosting policy.
+    await page.goto("/terms");
+    await expect(
+      page.getByRole("link", { name: /self-hosting/i }),
+    ).toHaveAttribute("href", /hosting-and-self-hosting/);
+  });
+
   test("/legal/accept is not public — unauthenticated users go to sign-in", async ({
     page,
   }) => {

@@ -4,6 +4,8 @@ import {
   LEGAL_DOCUMENTS,
   PRIVACY_POLICY,
   TERMS_OF_SERVICE,
+  SARBASE_LICENSE_NAME,
+  SARBASE_REPOSITORY_URL,
   SAR_DISCLAIMER,
   getLegalDocument,
   legalDocumentHash,
@@ -62,7 +64,7 @@ describe("legal documents", () => {
       legalDocumentHash(PRIVACY_POLICY),
     );
     expect(
-      legalDocumentHash({ ...PRIVACY_POLICY, version: "0.2-draft" }),
+      legalDocumentHash({ ...PRIVACY_POLICY, version: "9.9-draft" }),
     ).not.toBe(legalDocumentHash(PRIVACY_POLICY));
     expect(
       legalDocumentHash({
@@ -77,5 +79,31 @@ describe("legal documents", () => {
       .flatMap((s) => s.blocks.map((b) => b.text ?? b.items?.join(" ") ?? ""))
       .join(" ");
     expect(joined).toContain(SAR_DISCLAIMER);
+  });
+
+  it("terms state the free/AGPL model — license, repo, no fees, no relocation duty", () => {
+    const joined = TERMS_OF_SERVICE.sections
+      .flatMap((s) => s.blocks.map((b) => b.text ?? b.items?.join(" ") ?? ""))
+      .join(" ");
+    // The license must be named, the repository reachable, the free
+    // provision explicit, and the no-relocation boundary present.
+    expect(joined).toContain(SARBASE_LICENSE_NAME);
+    expect(joined).toContain(SARBASE_REPOSITORY_URL);
+    expect(joined).toMatch(/free of charge|free and open-source/i);
+    expect(joined).toMatch(/will not relocate|does not undertake/i);
+    // No "fees paid" style cap for a service with no fees.
+    expect(joined).not.toMatch(/fees paid .* in the (?:twelve|12) months/i);
+  });
+
+  it("privacy policy covers self-hosted instances and international infra", () => {
+    const joined = PRIVACY_POLICY.sections
+      .flatMap((s) => s.blocks.map((b) => b.text ?? b.items?.join(" ") ?? ""))
+      .join(" ");
+    expect(joined).toMatch(/self-host|independently (?:operated|hosted)/i);
+    expect(joined).toMatch(/international cloud infrastructure/i);
+    // Must not promise EU/regional residency.
+    expect(joined).not.toMatch(
+      /data (?:is|remains|stays) (?:stored )?(?:only )?(?:in|within) the EU/i,
+    );
   });
 });

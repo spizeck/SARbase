@@ -7,13 +7,15 @@ Service, and legal-review checklist. Where something could not be
 verified from the repository it is marked **[unverified]** rather than
 assumed.
 
-## Parties (drafted model — Phase 2)
+## Parties (drafted model — Phase 2, revised issue #139)
 
-| Role                           | Entity                                   | Notes                                                                                                                                                                                         |
-| ------------------------------ | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Platform operator              | **[OWNER DECISION]**                     | Person or legal entity operating the SARbase deployment: hosting, code, infrastructure admin. Identity, address, and contact details are unresolved placeholders throughout the legal drafts. |
-| Participating SAR organization | e.g. Saba SAR                            | Controls its own members, records, callouts, incidents, and operational decisions.                                                                                                            |
-| Individual user                | Volunteers, coordinators, administrators | Authenticated people with an `AuthIdentity`; may hold member records and/or access grants in one or more organizations.                                                                       |
+| Role                           | Entity                                           | Notes                                                                                                                                                                                              |
+| ------------------------------ | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Software license               | **AGPL-3.0** (`LICENSE`)                         | SARbase is free open-source software; license rights exist independently of any hosted instance and cannot be revoked by discontinuing hosting.                                                    |
+| Platform operator              | **Individual developer — personally, no entity** | The project creator develops SARbase and voluntarily hosts the current instance free of charge. No SLA, no fees, no infrastructure-relocation obligations. Legal name/contact remain placeholders. |
+| Participating SAR organization | e.g. Saba SAR                                    | Controls its own members, records, callouts, incidents, and operational decisions; responsible for determining the hosted instance meets its own legal/funding requirements (else self-host).      |
+| Individual user                | Volunteers, coordinators, administrators         | Authenticated people with an `AuthIdentity`; may hold member records and/or access grants in one or more organizations.                                                                            |
+| Independent operator           | Anyone running a self-hosted copy                | AGPL-3.0 permits independent deployment; an independent operator determines its own infrastructure, privacy, and retention — see `hosting-and-self-hosting.md`.                                    |
 
 ## Personal data actually stored
 
@@ -113,7 +115,9 @@ holds theme and sidebar-pin UI preferences only (never transmitted).
 3. Emergency-contact third parties have no notice mechanism (the
    organization's member is the only channel).
 4. No DPA/subprocessor list surfaced to organizations in-app.
-5. Terms acceptance framework does not yet exist (PR C scope).
+5. ~~Terms acceptance framework does not yet exist~~ — **done:** PR
+   #134 added versioned, hashed, append-only acceptance with a
+   dual-gated enforcement flag (off while documents are drafts).
 
 ## Jurisdiction notes (Phase 2 findings — for counsel)
 
