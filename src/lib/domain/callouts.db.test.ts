@@ -29,7 +29,10 @@ import {
   CrossOrganizationCalloutError,
 } from "./callouts";
 import { retryNotification } from "./notifications";
-import { setMemberContactPreference } from "./availability";
+import {
+  setMemberContactPreference,
+  setMemberWhatsappConsent,
+} from "./availability";
 
 const hasDb = Boolean(process.env.DATABASE_URL);
 const PREFIX = "cotest-";
@@ -53,6 +56,7 @@ async function makeMember(
   orgId: string,
   overrides: {
     email?: string | null;
+    phone?: string | null;
     status?: "ACTIVE" | "INACTIVE";
   } = {},
 ) {
@@ -64,6 +68,7 @@ async function makeMember(
         overrides.email === undefined
           ? `${uniq("m")}@example.test`
           : overrides.email,
+      phone: overrides.phone ?? null,
       status: overrides.status ?? "ACTIVE",
     },
   });
@@ -153,6 +158,8 @@ describe.skipIf(!hasDb)("callouts (issue #14)", () => {
     await prisma.memberAvailabilityUpdate.deleteMany({
       where: { organizationId: { in: [orgA.id, orgB.id] } },
     });
+    // WhatsApp consent writes audit rows that Restrict member deletion.
+    await prisma.memberContactChange.deleteMany({ where: orgFilter });
     await prisma.member.deleteMany({ where: orgFilter });
     await prisma.unit.deleteMany({ where: orgFilter });
     await prisma.authIdentity.deleteMany({
@@ -1201,5 +1208,124 @@ describe.skipIf(!hasDb)("callouts (issue #14)", () => {
     const second = await closeCallout(callout.id, actor.id);
     expect(second.status).toBe("CLOSED");
     expect(second.closedAt?.getTime()).toBe(first.closedAt?.getTime());
+  });
+
+  /* ---------------- preferred-channel routing (issue #102) -------- */
+
+  it("routes the callout over WhatsApp when the member prefers it and consented", async () => {
+    const m = await makeMember(orgA.id, { phone: "+5994161234" });
+    await setMemberContactPreference(m.id, {
+      notifyEmail: true,
+      notifySms: false,
+      notifyWhatsapp: true,
+      notifyPush: false,
+      preferredChannel: "WHATSAPP",
+    });
+    await setMemberWhatsappConsent(m.id, true, actor.id);
+
+    const provider = new FakeNotificationProvider();
+    const { callout } = await activate(
+      orgA.id,
+      {
+        title: "WhatsApp-preferred",
+        audience: "MEMBERS",
+        memberIds: [m.id],
+      },
+      provider,
+    );
+
+    expect(provider.calls).toHaveLength(1);
+    const sent = provider.calls[0]!;
+    expect(sent.channel).toBe("WHATSAPP");
+    expect(sent.to).toBe("5994161234");
+    expect(sent.template?.name).toBe("sarbase_callout_alert");
+    // The secure link rides a template parameter — derived per send.
+    expect(sent.template?.parameters[2]).toMatch(/\/respond\?t=.+/);
+
+    const invitation = await prisma.calloutInvitation.findFirstOrThrow({
+      where: { calloutId: callout.id },
+      include: { notification: true },
+    });
+    expect(invitation.notification?.channel).toBe("WHATSAPP");
+    expect(invitation.notification?.status).toBe("ACCEPTED");
+    // The stored body still carries the placeholder — never the token.
+    expect(invitation.notification?.bodyText).toContain(
+      "{callout-response-url}",
+    );
+  });
+
+  it("suppresses a WhatsApp-preferred member without consent — no silent email fallback", async () => {
+    const m = await makeMember(orgA.id, { phone: "+5994161234" });
+    // Willing on email AND whatsapp, prefers whatsapp, never consented.
+    await setMemberContactPreference(m.id, {
+      notifyEmail: true,
+      notifySms: false,
+      notifyWhatsapp: true,
+      notifyPush: false,
+      preferredChannel: "WHATSAPP",
+    });
+
+    const provider = new FakeNotificationProvider();
+    const { callout } = await activate(
+      orgA.id,
+      {
+        title: "No consent",
+        audience: "MEMBERS",
+        memberIds: [m.id],
+      },
+      provider,
+    );
+
+    const invitation = await prisma.calloutInvitation.findFirstOrThrow({
+      where: { calloutId: callout.id },
+      include: { notification: true },
+    });
+    expect(invitation.notification?.channel).toBe("WHATSAPP");
+    expect(invitation.notification?.status).toBe("SUPPRESSED");
+    expect(invitation.notification?.statusReason).toBe("consent_missing");
+    // The provider was never invoked — no email substituted silently.
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it("a preference change after dispatch cannot duplicate the alert", async () => {
+    const m = await makeMember(orgA.id, { phone: "+5994161234" });
+    await setMemberContactPreference(m.id, {
+      notifyEmail: true,
+      notifySms: false,
+      notifyWhatsapp: true,
+      notifyPush: false,
+      preferredChannel: "EMAIL",
+    });
+    const provider = new FakeNotificationProvider();
+    const input = {
+      title: "Stable intent",
+      audience: "MEMBERS" as const,
+      memberIds: [m.id],
+      activationKey: key("pref-flip"),
+    };
+    const first = await activate(orgA.id, input, provider);
+    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls[0]!.channel).toBe("EMAIL");
+
+    // Member flips to WhatsApp + consents, then the SAME activation
+    // replays — the recorded notification (same deterministic key,
+    // original channel) is authoritative; no second send.
+    await setMemberContactPreference(m.id, {
+      notifyEmail: true,
+      notifySms: false,
+      notifyWhatsapp: true,
+      notifyPush: false,
+      preferredChannel: "WHATSAPP",
+    });
+    await setMemberWhatsappConsent(m.id, true, actor.id);
+    const replay = await activate(orgA.id, input, provider);
+    expect(replay.deduplicated).toBe(true);
+    expect(provider.calls).toHaveLength(1);
+
+    const invitation = await prisma.calloutInvitation.findFirstOrThrow({
+      where: { calloutId: first.callout.id },
+      include: { notification: true },
+    });
+    expect(invitation.notification?.channel).toBe("EMAIL");
   });
 });

@@ -52,6 +52,27 @@ const notificationBadgeClass: Record<string, string> = {
   FAILED: "bg-red-100 text-red-800",
 };
 
+const CHANNEL_LABELS: Record<string, string> = {
+  EMAIL: "Email",
+  WHATSAPP: "WhatsApp",
+};
+
+// Provider-reported delivery facts only — "read" means WhatsApp showed
+// the message, never that the member acknowledged or will respond.
+const DELIVERY_STATUS_LABELS: Record<string, string> = {
+  SENT: "Sent",
+  DELIVERED: "Delivered",
+  READ: "Read by provider report",
+  FAILED: "Delivery failed",
+};
+
+const deliveryBadgeClass: Record<string, string> = {
+  SENT: "bg-neutral-100 text-neutral-600",
+  DELIVERED: "bg-green-100 text-green-800",
+  READ: "bg-green-100 text-green-800",
+  FAILED: "bg-red-100 text-red-800",
+};
+
 const AUDIENCE_LABELS: Record<string, string> = {
   ORGANIZATION: "All active members",
   UNIT: "Unit members",
@@ -242,6 +263,11 @@ export default async function CalloutDetailPage({
                   Notification:{" "}
                   {invitation.notification ? (
                     <>
+                      <span className="text-neutral-500">
+                        {CHANNEL_LABELS[invitation.notification.channel] ??
+                          invitation.notification.channel}
+                        {" · "}
+                      </span>
                       <span
                         className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${notificationBadgeClass[invitation.notification.status] ?? "bg-neutral-100 text-neutral-600"}`}
                       >
@@ -249,6 +275,20 @@ export default async function CalloutDetailPage({
                           invitation.notification.status
                         ] ?? invitation.notification.status}
                       </span>
+                      {latestAttempt?.deliveryStatus &&
+                        DELIVERY_STATUS_LABELS[
+                          latestAttempt.deliveryStatus
+                        ] && (
+                          <span
+                            className={`ml-1 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${deliveryBadgeClass[latestAttempt.deliveryStatus] ?? "bg-neutral-100 text-neutral-600"}`}
+                          >
+                            {
+                              DELIVERY_STATUS_LABELS[
+                                latestAttempt.deliveryStatus
+                              ]
+                            }
+                          </span>
+                        )}
                       {invitation.notification.statusReason && (
                         <span className="ml-1 text-neutral-500">
                           {SUPPRESSION_REASON_LABELS[

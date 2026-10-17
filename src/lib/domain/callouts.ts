@@ -20,6 +20,8 @@ import {
   verifyInvitationResponseToken,
 } from "@/lib/domain/calloutTokens";
 
+import type { NotificationChannelName } from "@/lib/notifications/provider";
+
 import {
   requestNotification,
   retryNotification,
@@ -343,6 +345,7 @@ async function dispatchInvitation(
   organizationName: string,
   requestedByAuthIdentityId: string,
   deps: NotificationDispatchDeps,
+  channel: NotificationChannelName,
 ): Promise<void> {
   const key = calloutNotificationKey(callout.id, invitation.id);
   const keyWhere = {
@@ -389,7 +392,7 @@ async function dispatchInvitation(
     ({ notification } = await requestNotification(
       {
         organizationId: callout.organizationId,
-        channel: "EMAIL",
+        channel,
         memberId: invitation.memberId,
         template: CALLOUT_INVITATION_TEMPLATE,
         subject,
@@ -441,6 +444,24 @@ async function dispatchPendingInvitations(
   const pending = await prisma.calloutInvitation.findMany({
     where: { calloutId: callout.id, notificationId: null },
   });
+  // Issue #102 — each member's explicit preferred channel. Absent
+  // preference row or NULL means EMAIL. A preferred channel that cannot
+  // dispatch (no consent, preference off, unusable destination) is
+  // SUPPRESSED as an honest fact — SARbase never substitutes the other
+  // channel silently.
+  const preferences = await prisma.memberNotificationPreference.findMany({
+    where: {
+      organizationId: callout.organizationId,
+      memberId: { in: pending.map((i) => i.memberId) },
+    },
+    select: { memberId: true, preferredChannel: true },
+  });
+  const channelByMember = new Map(
+    preferences.map((p) => [
+      p.memberId,
+      (p.preferredChannel ?? "EMAIL") as NotificationChannelName,
+    ]),
+  );
   for (const invitation of pending) {
     await dispatchInvitation(
       invitation,
@@ -448,6 +469,7 @@ async function dispatchPendingInvitations(
       organizationName,
       requestedByAuthIdentityId,
       deps,
+      channelByMember.get(invitation.memberId) ?? "EMAIL",
     );
   }
 }
@@ -888,6 +910,7 @@ export async function getCalloutForAdmin(calloutId: string) {
                   id: true,
                   status: true,
                   provider: true,
+                  deliveryStatus: true,
                   errorCode: true,
                   errorSummary: true,
                   retryable: true,
