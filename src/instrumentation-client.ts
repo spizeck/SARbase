@@ -28,7 +28,22 @@ if (config.enabled) {
     environment: config.environment,
     release: config.release,
 
-    sendDefaultPii: false,
+    // SDK v11: sendDefaultPii removed; unset dataCollection would
+    // collect MORE than the v10 restricted default. Keep every
+    // privacy-sensitive category off explicitly (mirrors server config).
+    dataCollection: {
+      userInfo: false,
+      cookies: false,
+      httpHeaders: false,
+      httpBodies: [],
+      graphQL: { document: false, variables: false },
+      genAI: { inputs: false, outputs: false },
+      databaseQueryData: false,
+      queues: false,
+      urlQueryParams: true,
+      stackFrameVariables: true,
+      frameContextLines: 7,
+    },
     // No replay, no performance tracing, no session tracking by default.
     // Each has privacy and bundle cost; enable deliberately, per app.
     tracesSampleRate: 0,

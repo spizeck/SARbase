@@ -29,10 +29,28 @@ if (config.enabled) {
     release: config.release,
 
     // Privacy posture: no PII, no performance data, no session tracking.
-    sendDefaultPii: false,
+    // SDK v11 replaced sendDefaultPii with dataCollection and made the
+    // *defaults permissive* — every restrictive category must be opted
+    // out explicitly, otherwise user info, cookies, HTTP bodies, and DB
+    // query data would silently turn back on.
+    dataCollection: {
+      userInfo: false,
+      cookies: false,
+      httpHeaders: false,
+      httpBodies: [],
+      graphQL: { document: false, variables: false },
+      genAI: { inputs: false, outputs: false },
+      databaseQueryData: false,
+      queues: false,
+      // Matches the v10 restricted defaults for these categories.
+      urlQueryParams: true,
+      stackFrameVariables: true,
+      frameContextLines: 7,
+    },
     tracesSampleRate: 0,
-    profilesSampleRate: 0,
-    enableLogs: false,
+    // profilesSampleRate and enableLogs were removed in SDK v11 —
+    // profiling and SDK logs are opt-in integrations/features now, so
+    // simply omitting them keeps both off.
 
     // The SDK's ErrorEvent/Breadcrumb types are not nominally assignable
     // to the scrubber's structural types (Breadcrumb lacks an index
