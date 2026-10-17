@@ -52,7 +52,7 @@ import {
 } from "@/lib/domain/attachments";
 import { checkRateLimit } from "@/lib/rate-limit/rate-limit";
 import { rateLimitKey } from "@/lib/rate-limit/keys";
-import { InMemoryRateLimitStore } from "@/lib/rate-limit/memory-store";
+import { getRateLimitStore } from "@/lib/rate-limit/default-store";
 import { StorageConfigError, StorageError } from "@/lib/storage/provider";
 
 import type {
@@ -377,7 +377,7 @@ export async function createMySubmissionAction(
 /* -------- Submission evidence uploads (member-scoped) -------- */
 
 /** Member evidence uploads share the per-(org, actor) write budget. */
-const memberAttachmentStore = new InMemoryRateLimitStore();
+const memberAttachmentStore = getRateLimitStore();
 
 async function checkMemberAttachmentRateLimit(
   ctx: AuthContext,

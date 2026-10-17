@@ -191,10 +191,11 @@ accepting responses; no notifications are sent on close.
   no organization internals.
 - Token submissions are rate-limited (30/min fixed window) on a hashed
   key of `token hash + client IP` — the raw token never enters the
-  limiter or logs. Admin activation is rate-limited per org + actor. The
-  bundled in-memory store is per-process best-effort; a shared
-  Redis/Upstash store would be needed for authoritative multi-instance
-  enforcement (see `src/lib/rate-limit/rate-limit.ts`).
+  limiter or logs. Admin activation is rate-limited per org + actor.
+  Production resolves to `PostgresRateLimitStore` via
+  `getRateLimitStore()` (issue #55), so windows are shared and
+  authoritative across serverless instances; development/tests use the
+  per-process `InMemoryRateLimitStore`.
 
 ## What a callout is not
 

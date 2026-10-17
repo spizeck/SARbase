@@ -27,7 +27,7 @@ import { AuthorizationError, type AuthContext } from "@/lib/auth/context";
 import { requireOrgCapability } from "@/lib/auth/authorize";
 import { calendarDateInZone, formatDateOnly } from "@/lib/dates";
 import { prisma } from "@/lib/prisma";
-import { InMemoryRateLimitStore } from "@/lib/rate-limit/memory-store";
+import { getRateLimitStore } from "@/lib/rate-limit/default-store";
 import { checkRateLimit } from "@/lib/rate-limit/rate-limit";
 import { rateLimitKey } from "@/lib/rate-limit/keys";
 
@@ -38,7 +38,7 @@ import { auditFilterMetadata, parseExportFilters } from "./filters";
 /** Safety rail for in-memory CSV generation — see module docstring. */
 export const MAX_EXPORT_ROWS = 50_000;
 
-const exportRateLimitStore = new InMemoryRateLimitStore();
+const exportRateLimitStore = getRateLimitStore();
 const EXPORT_RATE_LIMIT = { limit: 60, windowMs: 60_000 };
 
 export class ExportRateLimitedError extends Error {

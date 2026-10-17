@@ -6,14 +6,14 @@
  * behavior, and honest documentation of what an in-memory store can and
  * cannot guarantee.
  *
- * IMPORTANT — store semantics: the bundled `InMemoryRateLimitStore` is
- * per-process. On serverless platforms (Vercel) each instance and region
- * has its own memory, so it is a *best-effort* throttle, not an
- * authoritative limit — an attacker hitting N instances gets N× the
- * budget. Where abuse matters (credential endpoints, expensive
- * operations), supply a shared `RateLimitStore` implementation backed by
- * Redis/Upstash/your database. The interface is deliberately tiny so
- * that swap is one file.
+ * IMPORTANT — store semantics: use `getRateLimitStore()`
+ * (rate-limit/default-store.ts) rather than constructing a store
+ * directly. Production resolves to `PostgresRateLimitStore`, which keeps
+ * windows in the database so limits are authoritative across every
+ * serverless instance; development and tests resolve to
+ * `InMemoryRateLimitStore` (per-process — fine for single-process dev
+ * and unit isolation, but an attacker hitting N instances would get N×
+ * the budget, which is why it must never be the production default).
  */
 
 export interface RateLimitWindow {

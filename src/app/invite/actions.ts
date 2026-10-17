@@ -18,7 +18,7 @@ import { hashMemberInvitationToken } from "@/lib/domain/invitationTokens";
 import { log, logExpected, summarizeError } from "@/lib/logging";
 import { checkRateLimit } from "@/lib/rate-limit/rate-limit";
 import { clientIpFromHeaders, rateLimitKey } from "@/lib/rate-limit/keys";
-import { InMemoryRateLimitStore } from "@/lib/rate-limit/memory-store";
+import { getRateLimitStore } from "@/lib/rate-limit/default-store";
 
 /**
  * Member-invitation acceptance — the public, token-gated counterpart of
@@ -35,7 +35,7 @@ import { InMemoryRateLimitStore } from "@/lib/rate-limit/memory-store";
  * this code runs.
  */
 
-const acceptRateLimitStore = new InMemoryRateLimitStore();
+const acceptRateLimitStore = getRateLimitStore();
 const ACCEPT_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
 
 const tokenSchema = z.string().min(1).max(512);

@@ -13,7 +13,7 @@ import { calloutResponseSchema } from "@/lib/domain/schemas";
 import { logExpected } from "@/lib/logging";
 import { checkRateLimit } from "@/lib/rate-limit/rate-limit";
 import { clientIpFromHeaders, rateLimitKey } from "@/lib/rate-limit/keys";
-import { InMemoryRateLimitStore } from "@/lib/rate-limit/memory-store";
+import { getRateLimitStore } from "@/lib/rate-limit/default-store";
 
 import type { ActionState } from "../admin/actions";
 
@@ -35,7 +35,7 @@ import type { ActionState } from "../admin/actions";
  * src/lib/rate-limit/rate-limit.ts.
  */
 
-const responseRateLimitStore = new InMemoryRateLimitStore();
+const responseRateLimitStore = getRateLimitStore();
 const RESPONSE_RATE_LIMIT = { limit: 30, windowMs: 60_000 };
 
 export async function respondToCalloutTokenAction(
