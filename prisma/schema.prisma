@@ -315,17 +315,23 @@ model Member {
 // bootstrap provisioning script. Deleting an identity must not destroy
 // Member history (SetNull on Member.authIdentityId).
 model AuthIdentity {
-  id          String             @id @default(cuid())
+  id           String             @id @default(cuid())
   // e.g. "firebase" — provider-specific, so migrations stay
   // provider-portable and a second provider could coexist.
-  provider    String
-  providerUid String
+  provider     String
+  providerUid  String
   // The account's sign-in email, normalized lowercase. Display/lookup
   // value only — deliberately NOT unique and NOT an authorization input.
-  email       String?
-  status      AuthIdentityStatus @default(ACTIVE)
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
+  email        String?
+  status       AuthIdentityStatus @default(ACTIVE)
+  // The most recent VERIFIED successful sign-in — recorded only after
+  // the ID token verified, the identity was ACTIVE, and the session
+  // cookie minted. NULL means no confirmed sign-in: the identity exists
+  // (auto-provisioned or linked) but has never completed login. Display
+  // value for admin onboarding views — never an authorization input.
+  lastSignInAt DateTime?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
 
   members              Member[]
   organizationAccesses OrganizationAccess[]

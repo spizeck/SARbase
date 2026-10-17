@@ -6,6 +6,7 @@ const {
   revokeRefreshTokensMock,
   cookieSetMock,
   upsertMock,
+  updateMock,
   isConfiguredMock,
 } = vi.hoisted(() => ({
   verifyIdTokenMock: vi.fn(),
@@ -13,6 +14,7 @@ const {
   revokeRefreshTokensMock: vi.fn(),
   cookieSetMock: vi.fn(),
   upsertMock: vi.fn(),
+  updateMock: vi.fn(),
   isConfiguredMock: vi.fn(),
 }));
 
@@ -30,7 +32,7 @@ vi.mock("@/lib/env", async (importOriginal) => ({
 }));
 
 vi.mock("@/lib/prisma", () => ({
-  prisma: { authIdentity: { upsert: upsertMock } },
+  prisma: { authIdentity: { upsert: upsertMock, update: updateMock } },
 }));
 
 vi.mock("next/headers", () => ({
@@ -117,6 +119,33 @@ describe("createSessionAction", () => {
     expect(value).toBe("session-cookie");
     expect(options.httpOnly).toBe(true);
     expect(options.sameSite).toBe("lax");
+  });
+
+  it("records the verified sign-in on the identity", async () => {
+    verifyIdTokenMock.mockResolvedValue({ sub: "uid-1" });
+    upsertMock.mockResolvedValue({ id: "ident-1", status: "ACTIVE" });
+    createSessionCookieMock.mockResolvedValue("session-cookie");
+
+    await expect(createSessionAction("token")).resolves.toEqual({ ok: true });
+
+    expect(updateMock).toHaveBeenCalledWith({
+      where: { id: "ident-1" },
+      data: { lastSignInAt: expect.any(Date) },
+    });
+  });
+
+  it("does not record sign-in activity when the session is denied or fails", async () => {
+    // DISABLED identity — denied before cookie mint.
+    verifyIdTokenMock.mockResolvedValue({ sub: "uid-1" });
+    upsertMock.mockResolvedValue({ id: "ident-1", status: "DISABLED" });
+    await createSessionAction("token");
+    expect(updateMock).not.toHaveBeenCalled();
+
+    // Cookie mint failure — token verified but no session issued.
+    upsertMock.mockResolvedValue({ id: "ident-1", status: "ACTIVE" });
+    createSessionCookieMock.mockRejectedValue(new Error("mint failed"));
+    await expect(createSessionAction("token")).rejects.toThrow();
+    expect(updateMock).not.toHaveBeenCalled();
   });
 
   it("refuses a session for a DISABLED identity", async () => {

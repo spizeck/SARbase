@@ -33,6 +33,7 @@ function ctxFor(
     providerUid: `${PREFIX}${role}`,
     email: null,
     status: "ACTIVE" as const,
+    lastSignInAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   };

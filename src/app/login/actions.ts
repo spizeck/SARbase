@@ -106,6 +106,13 @@ export async function createSessionAction(
   }
 
   const sessionCookie = await createSessionCookie(parsed.data);
+  // Verified successful sign-in — token verified, identity ACTIVE,
+  // cookie minted. Recorded here (not in the upsert above) so failed
+  // attempts against disabled accounts never count as sign-ins.
+  await prisma.authIdentity.update({
+    where: { id: identity.id },
+    data: { lastSignInAt: new Date() },
+  });
   const store = await cookies();
   store.set(SESSION_COOKIE_NAME, sessionCookie, sessionCookieOptions());
 

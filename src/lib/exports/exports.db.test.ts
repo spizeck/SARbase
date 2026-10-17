@@ -38,6 +38,7 @@ function ctxFor(organizationId: string, role: "ADMIN" | "MEMBER"): AuthContext {
     providerUid: `${PREFIX}${role}`,
     email: null,
     status: "ACTIVE" as const,
+    lastSignInAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   };

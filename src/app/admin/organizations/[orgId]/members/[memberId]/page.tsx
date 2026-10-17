@@ -23,9 +23,13 @@ import {
 import {
   getMemberInvitation,
   invitationDisplayState,
-  MEMBER_INVITATION_STATE_LABELS,
   MEMBER_INVITATION_ACTION_LABELS,
 } from "@/lib/domain/invitations";
+import {
+  memberAccountState,
+  memberAccountBadgeClass,
+  MEMBER_ACCOUNT_STATE_LABELS,
+} from "@/lib/domain/member-account";
 import { resolveActorLabels } from "@/lib/domain/actors";
 import { getOrganizationAccessRole } from "@/lib/domain/access";
 import {
@@ -154,12 +158,10 @@ export default async function MemberPage({
         invitation.events.map((e) => e.actorAuthIdentityId),
       )
     : new Map<string, string>();
-  const inviteBadgeClass =
-    inviteState === "pending"
-      ? "bg-amber-100 text-amber-800"
-      : inviteState === "accepted"
-        ? "bg-green-100 text-green-800"
-        : "bg-neutral-100 text-neutral-600";
+  // The unified account/onboarding state — invitation position for
+  // unlinked members, identity facts for linked ones. Computed from
+  // the same member row for every admin view of this member.
+  const accountState = memberAccountState(member);
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-6">
@@ -611,13 +613,11 @@ export default async function MemberPage({
             >
               Login account
             </h2>
-            {invitation && (
-              <span
-                className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${inviteBadgeClass}`}
-              >
-                {MEMBER_INVITATION_STATE_LABELS[inviteState]}
-              </span>
-            )}
+            <span
+              className={`inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ${memberAccountBadgeClass(accountState)}`}
+            >
+              {MEMBER_ACCOUNT_STATE_LABELS[accountState]}
+            </span>
           </div>
 
           {member.authIdentityId ? (
@@ -629,6 +629,17 @@ export default async function MemberPage({
                   : ""}
                 . Unlinking removes that identity&apos;s member context — it
                 does not remove the identity&apos;s organization access grants.
+              </p>
+              <p className="mt-2 text-sm text-neutral-600">
+                Account status:{" "}
+                <span className="font-medium text-neutral-800">
+                  {MEMBER_ACCOUNT_STATE_LABELS[accountState]}
+                </span>
+                {member.authIdentity?.status === "DISABLED"
+                  ? " — the linked identity cannot sign in."
+                  : member.authIdentity?.lastSignInAt
+                    ? ` — last verified sign-in ${relativeTimeLabel(member.authIdentity.lastSignInAt)}`
+                    : " — no verified sign-in recorded yet."}
               </p>
               <p className="mt-2 text-sm text-neutral-600">
                 Organization role:{" "}

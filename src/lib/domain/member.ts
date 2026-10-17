@@ -53,6 +53,40 @@ export async function listMembers(
   });
 }
 
+/**
+ * Member list for the admin members screen — everything `listMembers`
+ * returns plus the account/onboarding facts (linked identity status +
+ * sign-in marker, and the invitation row) needed to derive
+ * `memberAccountState`. The account column is admin-only in the UI;
+ * these facts are loaded for the query, never serialized to members
+ * who lack the capability to view them.
+ */
+export function listMembersWithAccount(
+  organizationId: string,
+  options: { unitId?: string } = {},
+) {
+  return prisma.member.findMany({
+    where: {
+      organizationId,
+      ...(options.unitId
+        ? { memberUnits: { some: { unitId: options.unitId } } }
+        : {}),
+    },
+    orderBy: { displayName: "asc" },
+    include: {
+      memberUnits: {
+        include: { unit: { select: { id: true, name: true } } },
+      },
+      authIdentity: {
+        select: { status: true, lastSignInAt: true },
+      },
+      memberInvitation: {
+        select: { status: true, expiresAt: true },
+      },
+    },
+  });
+}
+
 export async function getMember(id: string) {
   return prisma.member.findUnique({
     where: { id },
@@ -60,6 +94,15 @@ export async function getMember(id: string) {
       organization: { select: { id: true, name: true, timezone: true } },
       memberUnits: {
         include: { unit: { select: { id: true, name: true } } },
+      },
+      // Account-state facts for the admin Login account section —
+      // status drives "Account disabled", lastSignInAt separates
+      // "linked" from "verified sign-in".
+      authIdentity: {
+        select: { status: true, lastSignInAt: true },
+      },
+      memberInvitation: {
+        select: { status: true, expiresAt: true },
       },
     },
   });

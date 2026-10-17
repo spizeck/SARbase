@@ -2,7 +2,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { getOrganization } from "@/lib/domain/organization";
-import { listMembers } from "@/lib/domain/member";
+import { listMembersWithAccount } from "@/lib/domain/member";
+import {
+  memberAccountState,
+  memberAccountBadgeClass,
+  MEMBER_ACCOUNT_STATE_LABELS,
+} from "@/lib/domain/member-account";
 import {
   listOrganizationAvailability,
   AVAILABILITY_STATUS_LABELS,
@@ -48,7 +53,14 @@ export default async function MembersPage({
   const filterUnit = unitFilter
     ? organization.units.find((u) => u.id === unitFilter)
     : undefined;
-  const members = await listMembers(orgId, { unitId: filterUnit?.id });
+  const members = await listMembersWithAccount(orgId, {
+    unitId: filterUnit?.id,
+  });
+
+  // Account/onboarding facts are administrator-only (issue #84):
+  // a MEMBERS_MANAGE manager sees the same membership/availability
+  // columns but never sign-in or invitation state.
+  const showAccount = isOrgAdmin(ctx, orgId);
 
   // Current factual availability per member — informational only; the
   // table sorts alphabetically, never by "best" status.
@@ -137,6 +149,14 @@ export default async function MembersPage({
                 >
                   Status
                 </th>
+                {showAccount && (
+                  <th
+                    scope="col"
+                    className="px-4 py-2 text-left font-medium text-neutral-700"
+                  >
+                    Account
+                  </th>
+                )}
                 <th
                   scope="col"
                   className="px-4 py-2 text-left font-medium text-neutral-700"
@@ -174,6 +194,19 @@ export default async function MembersPage({
                         {member.status === "ACTIVE" ? "Active" : "Inactive"}
                       </span>
                     </td>
+                    {showAccount && (
+                      <td className="px-4 py-2">
+                        <span
+                          className={`inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ${memberAccountBadgeClass(memberAccountState(member))}`}
+                        >
+                          {
+                            MEMBER_ACCOUNT_STATE_LABELS[
+                              memberAccountState(member)
+                            ]
+                          }
+                        </span>
+                      </td>
+                    )}
                     <td className="px-4 py-2 text-neutral-600">
                       {
                         AVAILABILITY_STATUS_LABELS[
