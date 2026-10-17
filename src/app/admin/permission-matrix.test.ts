@@ -307,6 +307,10 @@ const PAGE_MATRIX: Record<string, string> = {
   "notifications/page.tsx": "OrgCapability.NOTIFICATIONS_MANAGE",
   "reports/page.tsx": "OrgCapability.REPORTS_EXPORT",
   "search/page.tsx": "requireOrgStaffOrNotFound",
+  // Staff-gated page with an additional in-page capability check —
+  // MEMBERS_MANAGE or OPERATIONS_MANAGE — since it has no dedicated
+  // capability of its own.
+  "availability/page.tsx": "requireOrgStaffOrNotFound",
   // The org landing — any access grant, not a staff surface.
   "page.tsx": "requireOrgAccessOrNotFound",
 };
