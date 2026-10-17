@@ -114,18 +114,22 @@ particular operational use, and nothing in this Agreement excludes
 liability the law prohibits excluding.
 
 4.2. The Operator selects the Service's processors (listed in the
-Privacy Policy) using reasonable care and will notify the Organization
-of material changes to that set. The Operator does not guarantee any
+Privacy Policy) using reasonable care, and will provide the
+Organization reasonable advance notice of intended new or replacement
+processors where practicable, before they handle workspace data, with
+a reasonable opportunity for the Organization to raise concerns.
+Should a separate data-processing addendum be adopted, its processor
+procedure replaces this clause. The Operator does not guarantee any
 processor's availability or performance — provider failures are a
 known limitation of the Service (Terms §9) — but will act reasonably
 to restore the Service when provider issues arise.
 
-4.3. After becoming aware of and confirming a security breach
-resulting in unauthorized access to the Organization's workspace
-data, the Operator will notify the Organization as soon as reasonably
-practicable, describing known scope and remediation. The Organization
-remains responsible for notifications owed to data subjects or
-authorities under its own obligations.
+4.3. Upon becoming aware of a personal-data breach affecting the
+Organization's workspace data, the Operator will notify the
+Organization as soon as reasonably practicable, describing known scope
+and remediation as they become clear. The Organization remains
+responsible for notifications owed to data subjects or authorities
+under its own obligations.
 
 ### 5. Shared responsibilities
 

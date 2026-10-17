@@ -13,9 +13,9 @@ GNU Affero General Public License v3.0 (AGPL-3.0) in the
 [spizeck/SARbase repository](https://github.com/spizeck/SARbase) (see
 `LICENSE`). Under AGPL-3.0 anyone may use, study, modify, and
 redistribute the software — including running it as a network service —
-subject to the license's terms, notably the obligation to offer the
-corresponding source (including modifications) to users interacting
-with the software over a network.
+subject to the license's terms, notably that a modified version run as
+a network service must offer its corresponding source to users
+interacting with it (AGPL §13).
 
 **SARbase the hosted instance** is a separate thing: a deployment of
 that software which the developer currently operates **voluntarily and
@@ -84,8 +84,11 @@ organization's external requirements.
 
 - Workspace records belong to the organization. The built-in export
   functions (organization exports, 42 datasets) are the supported way
-  to take data out, during use and for a reasonable window after
-  termination (window pending legal decision — Terms §16).
+  to take data out at any time during use. If the **operator**
+  discontinues hosted service, a reasonable post-termination export
+  window applies (window pending legal decision — Terms §16). An
+  organization choosing to leave is responsible for exporting before
+  it departs.
 - The developer does not provide free migration, transformation, or
   configuration services as an entitlement. Help may be offered at the
   developer's discretion, but departing organizations should plan on
@@ -115,9 +118,11 @@ If you run your own SARbase instance:
   your own privacy notice, set retention, and carry the legal
   responsibilities of a data controller/processor for the data you
   hold.
-- **AGPL-3.0 obligations apply** — including offering corresponding
-  source (with your modifications) to users who interact with your
-  instance over a network.
+- **AGPL-3.0 obligations apply.** In particular, if you modify the
+  program, section 13 requires your modified version to offer its
+  corresponding source to users interacting with it over a network.
+  Running an unmodified copy does not itself trigger that specific
+  obligation — but all other license conditions still apply.
 - **Security is yours.** The hosted instance's configurations (GuardDuty
   scanning, session hardening, secret storage) are in the repo for you
   to reproduce; whether you do is your responsibility.

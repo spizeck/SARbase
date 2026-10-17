@@ -469,7 +469,7 @@ export const TERMS_OF_SERVICE: LegalDocument = {
             "indefinite hosting, and may change, suspend, or discontinue " +
             "the hosted service — subject to applicable law, reasonable " +
             "advance notice where practicable, and the data-handover " +
-            "provisions in section 15.",
+            "provisions in section 16.",
         ),
         P(
           "Organizations should treat SARbase as a supporting tool with " +

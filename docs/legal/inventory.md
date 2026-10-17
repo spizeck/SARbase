@@ -105,7 +105,7 @@ holds theme and sidebar-pin UI preferences only (never transmitted).
 | Access     | Members view their own dashboard, availability, qualifications, training history, submissions.                            |
 | Correction | Self-service contact edits (audited); correction submissions (reviewed by org staff).                                     |
 | Consent    | WhatsApp consent is self-service only; opt-out via STOP or preference toggle — admins cannot grant it.                    |
-| Export     | Org-scoped CSV export datasets (52 keys) gated by `REPORTS_EXPORT`; exports themselves audited (`DataExportEvent`).       |
+| Export     | Org-scoped CSV export datasets (42 datasets) gated by `REPORTS_EXPORT`; exports themselves audited (`DataExportEvent`).   |
 | Deletion   | **None self-service.** Deactivation/unlink are administrative; account deletion would need a process (open gap, Phase 9). |
 
 ## Open gaps for governance review (Phase 9)
