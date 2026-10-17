@@ -31,6 +31,16 @@ export default defineConfig([
           ],
         },
       ],
+      // no-restricted-imports only sees static imports — catch
+      // await import("firebase/...") too.
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "ImportExpression[source.value=/^firebase($|\\/)/]",
+          message:
+            "Import from @firebase/app or @firebase/auth instead — the firebase umbrella reintroduces the firestore/gRPC subtree (issue #57).",
+        },
+      ],
     },
   },
   globalIgnores([
