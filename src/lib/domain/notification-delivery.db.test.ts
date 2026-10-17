@@ -177,7 +177,7 @@ describe.skipIf(!hasDb)("whatsapp delivery reconciliation", () => {
     // Composite-FK integrity: the event writes through the attempt's own
     // organizationId, so org B's history can never land on org A's rows.
     const wamid = uniq("shared-wamid");
-    const attemptA = await makeAttempt(orgA.id, wamid);
+    await makeAttempt(orgA.id, wamid);
     await makeAttempt(orgB.id, wamid);
     const result = await recordWhatsappDeliveryEvents([
       event(wamid, "DELIVERED", T3),
