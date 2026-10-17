@@ -159,35 +159,56 @@ export async function recordWhatsappOptOuts(
   const now = new Date();
   let optedOut = 0;
   for (const member of members) {
-    const pref = member.notificationPreference;
-    if (pref?.whatsappOptedOutAt != null) continue;
-    await prisma.$transaction(async (tx) => {
-      await tx.memberNotificationPreference.upsert({
+    const changed = await prisma.$transaction(async (tx) => {
+      // Conditional stamp — Meta can deliver the same STOP concurrently
+      // and exactly one winner may write the audit row.
+      const stamped = await tx.memberNotificationPreference.updateMany({
         where: {
-          memberId_organizationId: {
-            memberId: member.id,
-            organizationId: member.organizationId,
-          },
-        },
-        create: {
-          organizationId: member.organizationId,
           memberId: member.id,
-          whatsappOptedOutAt: now,
+          organizationId: member.organizationId,
+          whatsappOptedOutAt: null,
         },
-        update: { whatsappOptedOutAt: now },
+        data: { whatsappOptedOutAt: now },
       });
+      if (stamped.count === 0) {
+        // No preference row yet, or a concurrent/earlier delivery
+        // already stamped it. A create races once — a unique violation
+        // means someone else opted this member out.
+        try {
+          await tx.memberNotificationPreference.create({
+            data: {
+              organizationId: member.organizationId,
+              memberId: member.id,
+              whatsappOptedOutAt: now,
+            },
+          });
+        } catch (error) {
+          if (
+            error instanceof Prisma.PrismaClientKnownRequestError &&
+            error.code === "P2002"
+          ) {
+            return false;
+          }
+          throw error;
+        }
+      }
       await tx.memberContactChange.create({
         data: {
           organizationId: member.organizationId,
           memberId: member.id,
           field: "whatsappConsent",
-          previousValue: pref?.whatsappConsentAt != null ? "granted" : null,
+          previousValue:
+            member.notificationPreference?.whatsappConsentAt != null
+              ? "granted"
+              : null,
           newValue: "opted_out",
           selfReported: true,
           actorAuthIdentityId: WHATSAPP_WEBHOOK_ACTOR,
         },
       });
+      return true;
     });
+    if (!changed) continue;
     optedOut += 1;
     log({
       event: "contact_preference.whatsapp_opt_out_via_webhook",
