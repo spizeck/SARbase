@@ -46,19 +46,19 @@
     }
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1138.0",
-    "@aws-sdk/s3-presigned-post": "^3.1151.0",
-    "@firebase/app": "^0.16.2",
-    "@firebase/auth": "^1.13.6",
+    "@aws-sdk/client-s3": "^3.1152.0",
+    "@aws-sdk/s3-presigned-post": "^3.1152.0",
+    "@firebase/app": "^0.16.3",
+    "@firebase/auth": "^1.13.7",
     "@prisma/client": "^6.19.3",
     "@sentry/nextjs": "^11.8.0",
     "firebase-admin": "^14.5.0",
-    "libphonenumber-js": "^1.13.14",
+    "libphonenumber-js": "^1.13.15",
     "next": "^16.4.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "resend": "^6.32.1",
-    "zod": "^4.6.5"
+    "resend": "^6.33.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
