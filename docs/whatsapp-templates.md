@@ -87,7 +87,7 @@ Meta enforces platform-level STOP handling poorly for Cloud API
 senders — **SARbase's own consent model is the enforceable control**:
 a member's opt-out sets `whatsappOptedOutAt`, dispatch suppresses with
 `consent_missing`, and the MemberContactChange audit row proves when
-consent changed. If a member replies STOP to the sender number, an
-operator records the opt-out through the member's account page (the
-member can also do it themselves). See
-`docs/whatsapp-production-activation.md`.
+consent changed. If a member replies STOP to the sender number,
+SARbase records the opt-out automatically through the webhook — no
+operator action is needed (the member can also opt out on their
+account page). See `docs/whatsapp-production-activation.md`.

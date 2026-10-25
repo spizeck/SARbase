@@ -70,7 +70,9 @@ Never brief a coordinator that "delivered" means "coming".
    challenge — the route echoes it only when the token matches.
 8. **Subscribe to the `messages` webhook field** on the WABA — that is
    what delivers `statuses` callbacks. (Inbound `messages` also
-   arrive; SARbase ignores them.)
+   arrive. SARbase ignores them, except a reply that is only an
+   opt-out word such as STOP — see
+   [Consent and opt-out operations](#consent-and-opt-out-operations).)
 9. Record the **app secret** (App → Settings → Basic). This is
    `WHATSAPP_APP_SECRET`, used to verify `X-Hub-Signature-256` on
    every callback.
@@ -116,6 +118,14 @@ error.
 13. Respond through the link — the response records on the invitation.
     Verify in the callout detail that delivery state and response state
     are displayed as separate facts.
+14. **Test STOP.** From the test phone, reply `STOP` to the sender
+    number. Expected:
+    - The test member's account page now says they opted out of
+      SARbase WhatsApp messages (with today's date).
+    - A new test notification to that member is `SUPPRESSED` with
+      `consent_missing` — nothing is sent.
+    - Re-record consent on the member's account page if you want to
+      keep testing.
 
 ## Phase 5 — Production activation checklist
 
@@ -125,6 +135,8 @@ error.
 - [ ] All six env vars set on production; redeployed.
 - [ ] Webhook subscribed; a real status callback has been observed in
       `NotificationDeliveryEvent` (not just a successful challenge).
+- [ ] A STOP reply from the test phone opted the test member out
+      (Phase 4, step 14).
 - [ ] Messaging limit checked (Meta starts new senders at ~250
       business-initiated conversations/day — plenty for a pilot, but
       confirm the tier in WhatsApp Manager → Messaging limits).
@@ -139,11 +151,28 @@ error.
 - Consent is self-service: the member records it on their account page;
   it is timestamped, attributed, and audited (MemberContactChange).
   Administrators **cannot** grant it for a member — by design.
-- Members opt out the same way. Honor external opt-out signals
-  (verbal, WhatsApp STOP reply to the sender) by asking the member to
-  record it themselves; if they cannot, document the request and
-  disable `notifyWhatsapp` as staff — which stops sends via
-  `preference_disabled` without falsifying consent records.
+- Members opt out the same way, on their account page.
+- **WhatsApp STOP replies are handled automatically.** When a member
+  replies to the sender number with only `STOP` (or `STOP ALL`,
+  `UNSUBSCRIBE`, `CANCEL`, `END`, `QUIT` — the whole message, any
+  case), the webhook records the opt-out for every member whose stored
+  phone number matches the sender, in every organization. It is
+  audited as a `MemberContactChange` by the `whatsapp-webhook` actor,
+  and a new WhatsApp notification to that member is suppressed with
+  `consent_missing`. A staff retry of a notification that was already
+  sent before the STOP is refused instead ("The member has opted out of
+  WhatsApp messages.") and keeps its earlier status. Staff do not need
+  to do anything. A message that
+  merely contains the word ("can't stop now") is ignored. Code:
+  `parseWhatsappWebhookBody` in
+  [`src/lib/notifications/whatsapp-webhook.ts`](../src/lib/notifications/whatsapp-webhook.ts)
+  and `recordWhatsappOptOuts` in
+  [`src/lib/domain/notification-delivery.ts`](../src/lib/domain/notification-delivery.ts).
+- Other opt-out signals (verbal, a longer WhatsApp message, email) are
+  not automatic. Ask the member to record the opt-out themselves; if
+  they cannot, document the request and disable `notifyWhatsapp` as
+  staff — which stops sends via `preference_disabled` without
+  falsifying consent records.
 - Never re-import consent for a member who opted out without a fresh,
   documented, member-initiated grant.
 

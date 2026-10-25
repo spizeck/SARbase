@@ -214,7 +214,7 @@ Inherited from the foundation baseline, working today:
 
 ### Not yet implemented
 
-Background jobs (including automatic notification retries and provider delivery webhooks) and additional notification channels (SMS/WhatsApp/push) are **planned, not built**. `/admin` requires an authenticated identity with either an explicit `ADMIN` grant or a `MANAGER` grant carrying at least one capability for the target organization; each destination inside `/admin` then enforces its own capability independently, so a manager sees only the surfaces their grants cover. Qualification, equipment, and maintenance records state facts only — they never conclude SAR operational readiness.
+Background jobs (including automatic notification retries and email delivery webhooks) and the SMS and push notification channels are **planned, not built**. The WhatsApp channel (template sends, delivery-status webhooks, and STOP opt-out) is **built but switched off** in production until go-live ([#99](https://github.com/spizeck/SARbase/issues/99)); see `docs/whatsapp-production-activation.md`. `/admin` requires an authenticated identity with either an explicit `ADMIN` grant or a `MANAGER` grant carrying at least one capability for the target organization; each destination inside `/admin` then enforces its own capability independently, so a manager sees only the surfaces their grants cover. Qualification, equipment, and maintenance records state facts only — they never conclude SAR operational readiness.
 
 ## Status
 
